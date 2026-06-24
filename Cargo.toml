@@ -1,0 +1,18 @@
+[package]
+name = "ikigai-xslt"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Brian Sletten <brian.sletten@gmail.com>"]
+description = "XSLT transformation as an ikigai resource (urn:xslt:transform) — style arbitrary XML/RDF-XML with a stylesheet, both as cacheable resource references. Pure-Rust (xrust), wasm-ready."
+repository = "https://github.com/ikigai-rs/ikigai-xslt"
+homepage = "https://github.com/ikigai-rs/ikigai-xslt"
+keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
+
+[dependencies]
+ikigai-core = "0.1.20"
+async-trait = "0.1"
+xrust = "2.1.0"
+
+[dev-dependencies]
+futures = "0.3"
