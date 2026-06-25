@@ -16,3 +16,8 @@ xrust = "2.1.0"
 
 [dev-dependencies]
 futures = "0.3"
+# For the `uds-server` / `uds-client` examples only: run this XSLT space as a standalone
+# out-of-process module behind a Unix socket. A dev-dependency, so it never enters the
+# published library's dependency graph (and the direction xslt→module is acyclic —
+# ikigai-module depends on ikigai-core, not on ikigai-xslt).
+ikigai-module = "0.1.3"
