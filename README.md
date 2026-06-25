@@ -58,11 +58,15 @@ source urn:xslt:transform src=urn:data:catalog.rdf stylesheet=urn:style:cards as
 ## Mounting
 
 ```rust
-use ikigai_core::Kernel;
+use ikigai_core::{Fallback, Kernel, Space};
+use std::sync::Arc;
 
-let kernel = Kernel::builder()
-    .mount(ikigai_xslt::space()) // binds urn:xslt:transform
-    .build();
+// Mount `space()` (binds urn:xslt:transform) alongside the rest of your resources.
+let root: Arc<dyn Space> = Arc::new(Fallback::new(vec![
+    Arc::new(my_space) as Arc<dyn Space>,
+    Arc::new(ikigai_xslt::space()) as Arc<dyn Space>,
+]));
+let kernel = Kernel::new(root);
 ```
 
 ## License
