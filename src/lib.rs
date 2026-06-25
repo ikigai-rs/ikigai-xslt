@@ -268,3 +268,24 @@ mod tests {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// This library *as* a dynamically-loadable WASM module.
+//
+// With `--features module` on `wasm32`, `wasm_module!` emits the cdylib glue — a public
+// `invoke_session(Vec<u8>) -> Vec<u8>` that runs `ikigai_module::run_session` over our
+// `space()`, plus the `hostCall` import + the !Send→Send bridge — so a host can lazy-load
+// `ikigai_xslt.wasm` and resolve `urn:xslt:transform` against it (the module pulling its
+// `src`/`stylesheet` back over the byte channel). The whole module is one macro line:
+//
+//   cargo build --release --lib --features module --target wasm32-unknown-unknown
+// ---------------------------------------------------------------------------
+#[cfg(feature = "module")]
+ikigai_module::wasm_module!(crate::space);
+
+/// Surface a Rust panic in the browser console (module builds only).
+#[cfg(feature = "module")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn __module_start() {
+    console_error_panic_hook::set_once();
+}

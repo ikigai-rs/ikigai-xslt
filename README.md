@@ -88,6 +88,22 @@ cargo run --example uds-client -- /tmp/ikigai-xslt.sock
 (`ikigai-module` is a dev-dependency, used only by these examples — it isn't part of
 the published library's dependency graph.)
 
+## Build it as a browser WASM module
+
+The same `space()` is *also* this library's own lazily-loadable WASM module — no separate
+crate. The `module` feature pulls [`ikigai-module`](https://crates.io/crates/ikigai-module)
+and emits the module glue via `ikigai_module::wasm_module!` (an `invoke_session` entry point
++ the host-callback bridge):
+
+```sh
+cargo build --release --lib --features module --target wasm32-unknown-unknown
+# → target/wasm32-unknown-unknown/release/ikigai_xslt.wasm — wasm-bindgen it, lazy-load it,
+#   resolve urn:xslt:transform against it; it pulls src/stylesheet back over the byte channel.
+```
+
+The feature is off by default and its deps (wasm-bindgen et al.) are optional, so a normal
+(native/linked) consumer of the library never pulls them.
+
 ## License
 
 Licensed under either of MIT or Apache-2.0, at your option (`MIT OR Apache-2.0`).
