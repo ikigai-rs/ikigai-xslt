@@ -1,0 +1,70 @@
+# ikigai-xslt
+
+An **XSLT transformation** module for the [ikigai-core](https://crates.io/crates/ikigai-core)
+resolution kernel. It binds a single endpoint — `urn:xslt:transform` — that applies an
+XSLT stylesheet to an XML source document and returns the styled result.
+
+This is a standalone module crate: a host links it and mounts its endpoint into the
+kernel's root with [`space()`](#mounting). Because the source and the stylesheet are
+both resolved *through the kernel* as resource references, the transform composes with
+the rest of the resource graph — and inherits its caching for free.
+
+It is a general styling mechanism for arbitrary XML, RDF/XML in particular: the same
+cached graph can be rendered into different presentations just by swapping the
+stylesheet (e.g. turning a `urn:kernel:catalog` RDF/XML graph into a page of endpoint
+cards).
+
+## Arguments
+
+`urn:xslt:transform?src=<…>&stylesheet=<uri>&as=<media-type>`
+
+| Argument     | Required | Description |
+| ------------ | -------- | ----------- |
+| `stylesheet` | yes      | The XSLT stylesheet — a resolvable resource IRI (`urn:`, `file:`, or `http(s)://`). |
+| `src`        | yes\*    | The source document. Either a resolvable resource IRI, **inline XML** (any value beginning with `<`), or the value piped in from a previous step. |
+| `as`         | no       | Output media type. Default `text/html`. `text/plain` serializes the result's string value (a `method="text"` stylesheet); anything else is serialized as XML/markup. |
+
+\* `src` may be omitted when the document is piped in — the engine routes a piped value
+to the first input. An explicit `content=` argument is also accepted. So it slots into a
+pipeline, e.g. `… | urn:rdf:transrept as=application/rdf+xml | urn:xslt:transform stylesheet=<uri>`.
+
+## Caching
+
+Both `src` (when it is an IRI) and `stylesheet` are fetched with the kernel's own
+resolution path — an `http(s)://` reference goes through the HTTP module
+(`urn:httpGet`), any other IRI resolves directly via `inv.source`. Either way the kernel
+records each referent's **golden thread**, so the produced representation is
+`.cacheable()`: it is served from cache until *either* the source or the stylesheet
+changes, at which point it auto-invalidates. The transform therefore inherits the
+expiry and freshness of whatever it was built from.
+
+## Pure Rust, wasm-ready
+
+The transform is built on [`xrust`](https://crates.io/crates/xrust) (pure-Rust XPath 1.0
+/ XSLT 1.0) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
+and compiles to `wasm32` unchanged; the demo lazy-loads it in the browser as a WASM
+module via the sibling `ikigai-xslt-module`. The public, host-agnostic
+`transform_xml(src, stylesheet, text_output) -> Result<String, String>` entry point
+carries no ikigai-core types so it can be wrapped directly.
+
+## Usage
+
+From the ikigai shell:
+
+```shell
+source urn:xslt:transform src=urn:data:catalog.rdf stylesheet=urn:style:cards as=text/html
+```
+
+## Mounting
+
+```rust
+use ikigai_core::Kernel;
+
+let kernel = Kernel::builder()
+    .mount(ikigai_xslt::space()) // binds urn:xslt:transform
+    .build();
+```
+
+## License
+
+Licensed under either of MIT or Apache-2.0, at your option (`MIT OR Apache-2.0`).
