@@ -69,6 +69,25 @@ let root: Arc<dyn Space> = Arc::new(Fallback::new(vec![
 let kernel = Kernel::new(root);
 ```
 
+## Run as a standalone module server
+
+The same `space()` can run **out-of-process** behind a Unix socket, via
+[`ikigai-module`](https://crates.io/crates/ikigai-module)'s `serve` — so a host
+resolves `urn:xslt:transform` against it over a socket, and the module pulls its
+`src`/`stylesheet` back through that same socket (the by-reference module session).
+xrust then never has to be linked into the host. Two runnable examples show both ends:
+
+```sh
+# terminal 1 — the module server:
+cargo run --example uds-server -- /tmp/ikigai-xslt.sock
+# terminal 2 — a host that transforms a document through it:
+cargo run --example uds-client -- /tmp/ikigai-xslt.sock
+#   → transformed over the socket → "hello from across a socket"
+```
+
+(`ikigai-module` is a dev-dependency, used only by these examples — it isn't part of
+the published library's dependency graph.)
+
 ## License
 
 Licensed under either of MIT or Apache-2.0, at your option (`MIT OR Apache-2.0`).
