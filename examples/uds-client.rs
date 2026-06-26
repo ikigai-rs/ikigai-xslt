@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use ikigai_core::{
-    ArgRef, Capability, EndpointSpace, Exact, Fallback, FnEndpoint, Iri, Kernel, Representation,
-    ReprType, Request, Space, Verb,
+    ArgRef, Capability, EndpointSpace, Exact, Fallback, FnEndpoint, Iri, Kernel, ReprType,
+    Representation, Request, Space, Verb,
 };
 use ikigai_module::{ModuleSpace, UdsTransport};
 
@@ -57,9 +57,15 @@ fn main() {
         .with_arg("as", ArgRef::Inline(b"text/plain".to_vec()));
 
     match block_on(kernel.issue(request, &Capability::root())) {
-        Ok(rep) => println!("transformed over the socket → {:?}", String::from_utf8_lossy(&rep.bytes)),
+        Ok(rep) => println!(
+            "transformed over the socket → {:?}",
+            String::from_utf8_lossy(&rep.bytes)
+        ),
         Err(e) => {
-            eprintln!("error: {e}  (is the uds-server running on {}?)", path.display());
+            eprintln!(
+                "error: {e}  (is the uds-server running on {}?)",
+                path.display()
+            );
             std::process::exit(1);
         }
     }

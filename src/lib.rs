@@ -99,7 +99,8 @@ impl Endpoint for XsltEndpoint {
                 "the source XML/RDF-XML document: a resolvable resource IRI (or pipe it in)",
             ))
             .input(
-                ArgSpec::new("stylesheet").summary("the XSLT stylesheet: a resolvable resource IRI"),
+                ArgSpec::new("stylesheet")
+                    .summary("the XSLT stylesheet: a resolvable resource IRI"),
             )
             .input(ArgSpec::new("as").summary("output media type (default text/html)"))
             .output("text/html;charset=utf-8")
@@ -113,12 +114,12 @@ impl Endpoint for XsltEndpoint {
 async fn resolve_ref(inv: &Invocation<'_>, uri: &str) -> Result<Representation> {
     if uri.starts_with("http://") || uri.starts_with("https://") {
         let get = Iri::parse("urn:httpGet").expect("urn:httpGet is a valid IRI");
-        let request =
-            Request::new(Verb::Source, get).with_arg("url", ArgRef::Inline(uri.as_bytes().to_vec()));
+        let request = Request::new(Verb::Source, get)
+            .with_arg("url", ArgRef::Inline(uri.as_bytes().to_vec()));
         inv.issue(request).await
     } else {
-        let iri =
-            Iri::parse(uri).map_err(|e| Error::Endpoint(format!("bad resource IRI `{uri}`: {e}")))?;
+        let iri = Iri::parse(uri)
+            .map_err(|e| Error::Endpoint(format!("bad resource IRI `{uri}`: {e}")))?;
         inv.source(&iri).await
     }
 }
@@ -185,7 +186,11 @@ fn transform(src_xml: &str, stylesheet_xml: &str, text_output: bool) -> Result<S
 /// Parse an XML string into an `xrust` document tree.
 fn parse_xml(s: &str) -> std::result::Result<RNode, XsltError> {
     let doc = RNode::new_document();
-    xmlparse(doc.clone(), s, Some(|_: &_| Err(ParseError::MissingNameSpace)))?;
+    xmlparse(
+        doc.clone(),
+        s,
+        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+    )?;
     Ok(doc)
 }
 
@@ -261,13 +266,22 @@ mod tests {
         // single-quoted attributes.)
         let cards = out.matches("'cat-card'").count() + out.matches("\"cat-card\"").count();
         assert_eq!(cards, 2, "two cards: {out}");
-        assert!(out.contains("Upper-case") && out.contains("Reverse list"), "titles: {out}");
-        assert!(out.contains("toUpper") && out.contains("reverseList"), "ids: {out}");
+        assert!(
+            out.contains("Upper-case") && out.contains("Reverse list"),
+            "titles: {out}"
+        );
+        assert!(
+            out.contains("toUpper") && out.contains("reverseList"),
+            "ids: {out}"
+        );
         // Multiple verbs for the first endpoint render as separate badges (2 + 1).
-        assert_eq!(out.matches("cat-verb").count(), 3, "3 verb badges total: {out}");
+        assert_eq!(
+            out.matches("cat-verb").count(),
+            3,
+            "3 verb badges total: {out}"
+        );
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // This library *as* a dynamically-loadable WASM module.
