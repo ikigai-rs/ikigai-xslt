@@ -104,6 +104,15 @@ impl Endpoint for XsltEndpoint {
             )
             .input(ArgSpec::new("as").summary("output media type (default text/html)"))
             .output("text/html;charset=utf-8")
+            // A first-class `ik:Transreptor` for *discovery* — but a parameterized one:
+            // it requires a `stylesheet`, so it is NOT auto-invocable (selection skips it,
+            // since it can't be driven from `content` + `as` alone) and must be invoked
+            // explicitly with its stylesheet. The matrix is indicative; the real output
+            // is whatever the stylesheet emits.
+            .transreptor(
+                ["application/xml", "text/xml", "application/rdf+xml"],
+                ["text/html", "text/plain"],
+            )
     }
 }
 
@@ -280,6 +289,20 @@ mod tests {
             3,
             "3 verb badges total: {out}"
         );
+    }
+
+    #[test]
+    fn describes_itself_as_a_parameterized_transreptor() {
+        let description = XsltEndpoint.describe();
+        let t = description
+            .transreption()
+            .expect("xslt-transform is an ik:Transreptor");
+        assert!(t.from.contains(&"application/rdf+xml".to_string()));
+        assert!(t.to.contains(&"text/html".to_string()));
+        // It needs a `stylesheet` input — that's what makes it a transreptor for
+        // discovery but NOT auto-invocable: selection skips it because it can't be
+        // driven from `content` + `as` alone.
+        assert!(description.inputs.iter().any(|i| i.name == "stylesheet"));
     }
 }
 
