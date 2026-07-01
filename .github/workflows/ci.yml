@@ -1,0 +1,34 @@
+# CI for ikigai-xslt (xrust-based XSLT). Published native crate (rlib, linked by
+# the CLI) plus a lazy-loadable wasm module (the `module` feature builds the
+# browser artifact). Check both faces so a native-only change can't break the
+# wasm module and surface only downstream.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (native, all targets)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test
+
+      # The lazy-loaded browser artifact.
+      - name: clippy (wasm module lib)
+        run: cargo clippy --lib --features module --target wasm32-unknown-unknown -- -D warnings
