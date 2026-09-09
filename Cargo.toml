@@ -15,9 +15,19 @@ keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ikigai-core = "0.1.22"
+# 0.1.47 is the floor: it introduced `Error::NotFound`, which names an unresolvable
+# `xsl:import`/`xsl:include` module.
+ikigai-core = "0.1.47"
 async-trait = "0.1"
+# 2.2.0 differs from 2.1.0 only in item visibility and security docs; every restriction
+# listed in the README holds on both.
 xrust = "2.1.0"
+# `xsl:import`/`xsl:include` hrefs: `oxiri` resolves a relative href against the
+# stylesheet's own IRI (RFC 3986 — the `url` crate cannot join onto a `urn:` base), and
+# `url` is the type xrust hands its module fetcher, so the key we precompute and the key
+# it looks up are the same join.
+oxiri = "0.2"
+url = "2"
 
 # The `module` feature turns this library into a standalone dynamically-loadable WASM
 # module via `ikigai_module::wasm_module!` — so a host can lazy-load `ikigai_xslt.wasm` and
