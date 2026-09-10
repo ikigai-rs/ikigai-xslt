@@ -20,23 +20,64 @@ cards).
 
 | Argument     | Required | Description |
 | ------------ | -------- | ----------- |
-| `stylesheet` | yes      | The XSLT stylesheet — a resolvable resource IRI (`urn:`, `file:`, or `http(s)://`). |
+| `stylesheet` | yes      | The XSLT stylesheet — a resolvable resource IRI (`urn:`, `file:`, or `http(s)://`), or the **stylesheet itself** (any value beginning with `<`). |
 | `src`        | yes\*    | The source document. Either a resolvable resource IRI, **inline XML** (any value beginning with `<`), or the value piped in from a previous step. |
-| `as`         | no       | Output media type. Default `text/html`. `text/plain` serializes the result's string value (a `method="text"` stylesheet); anything else is serialized as XML/markup. |
+| `content`    | no       | The source document by value — where a pipeline's upstream value arrives. `src` takes precedence when both are given. |
+| `as`         | no       | Output media type. Omitted, it follows the stylesheet's `xsl:output method` (see below). |
 
 \* `src` may be omitted when the document is piped in — the engine routes a piped value
 to the first input. An explicit `content=` argument is also accepted. So it slots into a
 pipeline, e.g. `… | urn:rdf:transrept as=application/rdf+xml | urn:xslt:transform stylesheet=<uri>`.
 
+Every input is declared with an XSD class (`xsd:string` for all four: `src` and
+`stylesheet` are each a union of an IRI and a document, which no ArgSpec class states
+more precisely), so the manifold and `urn:kernel:validate` can form and check a call.
+
+## Output media type
+
+The result is labeled by `as=` when given; otherwise by what the stylesheet's top-level
+`xsl:output method` implies — the three declared outputs:
+
+| `xsl:output method` | media type | serialization |
+| ------------------- | ---------- | ------------- |
+| `html` (or no `xsl:output`) | `text/html` | markup |
+| `xml` | `application/xml` | markup |
+| `text` | `text/plain` | the result's string value, whitespace preserved, nothing escaped |
+
+A `method="text"` stylesheet is serialized as text whatever `as=` says, and `as=text/plain`
+selects text serialization for any stylesheet. `as=` may relabel the markup with a type the
+declaration does not list (`image/svg+xml` for an SVG-emitting stylesheet); the declared
+three are what the endpoint chooses by itself.
+
+`document()` is not supported: the transform runs synchronously and a kernel resolution
+does not, so the engine's fetcher refuses every URL. A stylesheet that calls it fails with
+a typed `Endpoint` error naming the function, and the referenced resource is never
+resolved — there is no read for a capability to gate.
+
 ## Caching
 
-Both `src` (when it is an IRI) and `stylesheet` are fetched with the kernel's own
+Both `src` and `stylesheet`, when they are IRIs, are fetched with the kernel's own
 resolution path — an `http(s)://` reference goes through the HTTP module
-(`urn:httpGet`), any other IRI resolves directly via `inv.source`. Either way the kernel
-records each referent's **golden thread**, so the produced representation is
-`.cacheable()`: it is served from cache until *either* the source or the stylesheet
-changes, at which point it auto-invalidates. The transform therefore inherits the
-expiry and freshness of whatever it was built from.
+(`urn:httpGet`, gated by its `urn:cap:net:<host>` scope), any other IRI resolves
+directly via `inv.source`. Either way the kernel records each referent's **golden
+thread**, so the produced representation is `.cacheable()`: it is served from cache
+until *either* the source or the stylesheet changes, at which point it auto-invalidates.
+The transform therefore inherits the expiry and freshness of whatever it was built from —
+a stylesheet served live makes the transform live too, and with both inputs inline it is
+a pure function of them.
+
+## Conformance
+
+**Passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)** with
+no opt-outs: `tests/conformance.rs` walks `urn:xslt:transform` and runs every check —
+ArgSpecs, declared = enforced, the RDF faces (none: the output is the stylesheet's, not a
+graph this module authors), the cacheable-twice probe, pipeline citizenship, naming. Three
+walks: both inputs inline (declared `pure` and `cacheable`), both by reference under
+threads (`cacheable` — the result carries `urn:file:foaf.xsl` and recomputes after a cut),
+and both by reference served live (nothing is cached, and declaring otherwise is the one
+red line). What the suite cannot see is pinned by hand in the same file: the declared
+outputs against what each `xsl:output method` serves, `document()` never reaching the
+kernel, and the `urn:cap:net` gate on a remote stylesheet.
 
 ## Pure Rust, wasm-ready
 

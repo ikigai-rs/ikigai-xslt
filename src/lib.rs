@@ -6,7 +6,12 @@
 //! depends on both golden threads, so it is `.cacheable()` and auto-invalidates when
 //! either the source or the stylesheet changes. `src` may instead be piped in (so it
 //! also composes in a pipeline, e.g. `… | urn:rdf:transrept as=application/rdf+xml |
-//! urn:xslt:transform stylesheet=<uri>`).
+//! urn:xslt:transform stylesheet=<uri>`). Either may also be given **inline** — any value
+//! beginning with `<` is the document itself, not a reference — and with both inline the
+//! transform is a pure function of its inputs.
+//!
+//! The result's media type follows the stylesheet's `xsl:output method` (`html` →
+//! `text/html`, `xml` → `application/xml`, `text` → `text/plain`) unless `as=` names one.
 //!
 //! This is a general styling mechanism for arbitrary XML — RDF/XML in particular — so
 //! the same cached graph can be rendered into different presentations by swapping the
@@ -38,20 +43,25 @@ struct XsltEndpoint;
 #[async_trait]
 impl Endpoint for XsltEndpoint {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
-        // The stylesheet — always a resolvable resource reference.
-        let style_uri = inv.inline_str("stylesheet").map_err(|_| {
+        // The stylesheet — a resolvable resource reference, or the stylesheet itself
+        // inline (the same `<` discriminator as `src`: XML starts with `<`, an IRI never).
+        let style_ref = inv.inline_str("stylesheet").map_err(|_| {
             Error::Endpoint(
                 "urn:xslt:transform needs a `stylesheet=<uri>` resource reference".to_string(),
             )
         })?;
-        let stylesheet = utf8(resolve_ref(inv, style_uri).await?, "stylesheet")?;
+        let stylesheet = if is_inline_xml(style_ref) {
+            style_ref.to_string()
+        } else {
+            utf8(resolve_ref(inv, style_ref).await?, "stylesheet")?
+        };
 
         // The source document. `src` is either a resource IRI to resolve, or — when the
         // document is piped in (the engine routes a piped value to the first input) — the
         // inline XML itself. XML always starts with `<`, an IRI never does, so that's the
         // discriminator. An explicit `content=` is also accepted.
         let source = if let Ok(src) = inv.inline_str("src") {
-            if src.trim_start().starts_with('<') {
+            if is_inline_xml(src) {
                 src.to_string()
             } else {
                 utf8(resolve_ref(inv, src).await?, "src")?
@@ -65,11 +75,19 @@ impl Endpoint for XsltEndpoint {
             ));
         };
 
-        // The output media type — default text/html (styling RDF/XML into a page).
-        let media = inv.inline_str("as").unwrap_or("text/html").to_string();
-        // `text/plain` output is a `method="text"` stylesheet: serialize the result's
-        // string value (whitespace preserved). Anything else is markup → XML serialize.
-        let text_output = media.split(';').next().unwrap_or(&media).trim() == "text/plain";
+        // The output media type: what `as=` names, else what the stylesheet's
+        // `xsl:output method` implies (html is the default, as in XSLT itself — the
+        // common case here is styling RDF/XML into a page).
+        let method = stylesheet_output_method(&stylesheet).map_err(Error::Endpoint)?;
+        let media = match inv.inline_str("as") {
+            Ok(media) => media.to_string(),
+            Err(_) => media_type_for(method.as_deref()).to_string(),
+        };
+        // A `method="text"` stylesheet — or a caller asking for `text/plain` — wants the
+        // result's string value, whitespace preserved. Anything else is markup → XML
+        // serialize.
+        let text_output = method.as_deref() == Some("text")
+            || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
 
         // Transform synchronously — xrust's tree types never cross an `await`, so the
         // endpoint future stays `Send`. Cacheable — the result inherits the src +
@@ -95,15 +113,49 @@ impl Endpoint for XsltEndpoint {
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("src").summary(
-                "the source XML/RDF-XML document: a resolvable resource IRI (or pipe it in)",
-            ))
+            // `src` and `stylesheet` are each EITHER a resource IRI OR the XML itself
+            // (any value beginning with `<`). A union of `xsd:anyURI` and a document has
+            // no ArgSpec spelling, so the class is the wire's type, `xsd:string`.
+            .input(
+                ArgSpec::new("src")
+                    .summary(
+                        "the source XML/RDF-XML document: a resolvable resource IRI, or the \
+                         XML itself (or pipe it in)",
+                    )
+                    .class(XSD_STRING),
+            )
             .input(
                 ArgSpec::new("stylesheet")
-                    .summary("the XSLT stylesheet: a resolvable resource IRI"),
+                    .summary(
+                        "the XSLT stylesheet: a resolvable resource IRI, or the stylesheet \
+                         itself",
+                    )
+                    .class(XSD_STRING),
             )
-            .input(ArgSpec::new("as").summary("output media type (default text/html)"))
+            .input(
+                ArgSpec::new("content")
+                    .summary(
+                        "the source document by value (a pipeline's upstream value); `src` \
+                         takes precedence when both are given",
+                    )
+                    .class(XSD_STRING)
+                    .optional(),
+            )
+            .input(
+                ArgSpec::new("as")
+                    .summary(
+                        "output media type; omitted, it follows the stylesheet's xsl:output \
+                         method (html → text/html, xml → application/xml, text → text/plain)",
+                    )
+                    .class(XSD_STRING)
+                    .optional(),
+            )
+            // The three media types `xsl:output method` can imply. `as=` may relabel the
+            // markup with any type (`image/svg+xml` for an SVG-emitting stylesheet); the
+            // declared list is what the endpoint chooses by itself.
             .output("text/html;charset=utf-8")
+            .output("application/xml;charset=utf-8")
+            .output("text/plain;charset=utf-8")
             // A first-class `ik:Transreptor` for *discovery* — but a parameterized one:
             // it requires a `stylesheet`, so it is NOT auto-invocable (selection skips it,
             // since it can't be driven from `content` + `as` alone) and must be invoked
@@ -111,9 +163,66 @@ impl Endpoint for XsltEndpoint {
             // is whatever the stylesheet emits.
             .transreptor(
                 ["application/xml", "text/xml", "application/rdf+xml"],
-                ["text/html", "text/plain"],
+                ["text/html", "application/xml", "text/plain"],
             )
     }
+}
+
+/// The XSD datatype every by-value input here declares: each is a string on the wire
+/// (an IRI or a document), and no ArgSpec class states that union more precisely.
+const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+
+/// The XSLT namespace, as xrust's `QName` displays it (`{ns}local`).
+const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
+
+/// Whether an argument value is a document rather than a reference to one: XML always
+/// starts with `<` (after leading whitespace) and an IRI never does.
+fn is_inline_xml(value: &str) -> bool {
+    value.trim_start().starts_with('<')
+}
+
+/// The media type an `xsl:output method` implies; `None` (no `xsl:output`) is XSLT's own
+/// default, which — for an engine whose job is styling into pages — is `html`.
+fn media_type_for(method: Option<&str>) -> &'static str {
+    match method {
+        Some("text") => "text/plain",
+        Some("xml") => "application/xml",
+        _ => "text/html",
+    }
+}
+
+/// The `method` of a stylesheet's top-level `xsl:output` element (`"html"`, `"xml"`,
+/// `"text"`, …), or `None` when the stylesheet declares none. Read before the transform
+/// runs, so a host can label the result without inspecting it.
+///
+/// ```
+/// let text = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:output method="text"/>
+///   <xsl:template match="/">x</xsl:template>
+/// </xsl:stylesheet>"#;
+/// assert_eq!(ikigai_xslt::stylesheet_output_method(text).unwrap().as_deref(), Some("text"));
+/// let plain = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"/>"#;
+/// assert_eq!(ikigai_xslt::stylesheet_output_method(plain).unwrap(), None);
+/// ```
+pub fn stylesheet_output_method(
+    stylesheet_xml: &str,
+) -> std::result::Result<Option<String>, String> {
+    let doc =
+        parse_xml(stylesheet_xml).map_err(|e| format!("stylesheet parse error: {}", e.message))?;
+    let Some(root) = doc.child_iter().find(|c| c.is_element()) else {
+        return Ok(None);
+    };
+    let output_name = format!("{{{XSL_NS}}}output");
+    Ok(root
+        .child_iter()
+        .filter(|c| c.is_element())
+        .filter(|c| c.name().is_some_and(|n| n.to_string() == output_name))
+        .find_map(|output| {
+            output
+                .attribute_iter()
+                .find(|a| a.name().is_some_and(|n| n.to_string() == "method"))
+                .map(|a| a.value().to_string())
+        }))
 }
 
 /// Resolve a resource reference through the kernel. An `http(s)://` URL is fetched via
