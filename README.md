@@ -66,6 +66,41 @@ The transform therefore inherits the expiry and freshness of whatever it was bui
 a stylesheet served live makes the transform live too, and with both inputs inline it is
 a pure function of them.
 
+## Compiling the stylesheet is the cost, and it is reused
+
+Almost all of an XSLT call is parsing and compiling the **stylesheet**, which has nothing
+to do with the document being styled. Measured on gonk's 38 KB, 56-template stylesheet
+(`cargo run --release --example stylesheet-cost -- <stylesheet.xsl> [source.xml]`):
+
+| | cost |
+| --- | --- |
+| parse the stylesheet | ~34 ms |
+| compile the parsed tree | ~119 ms |
+| ready a compiled stylesheet for one run | ~0.012 ms |
+| run a real page through it | ~3.7 ms |
+
+Through 0.1.2 that whole ~156 ms was paid on **every** call, so an empty document cost
+157 ms and a real page 163 ms — fixed overhead, identical whatever the data, and with no
+warm-up between calls. From 0.1.3:
+
+* **`CompiledStylesheet::compile(stylesheet)`** parses and compiles once and
+  `.transform(src, text_output)` runs any number of documents against it, each run
+  independent of the last. It also carries `.output_method()`, so labelling a result no
+  longer costs a second parse of the stylesheet.
+* **`transform_xml` keeps its exact signature** and memoizes the compile per thread,
+  keyed on the stylesheet's full text. Existing callers get the saving with no change:
+  the empty document goes 157 ms → **0.14 ms**, a real gonk page 163 ms → **3.7 ms**.
+
+The memo is keyed on the bytes the caller just passed — not on a path, an IRI or a
+timestamp — so an edited stylesheet is simply a different key and there is nothing that
+can go stale under the kernel's golden threads. It holds four entries per thread
+(~369 KB each for a stylesheet this size); `clear_stylesheet_cache()` drops them, and
+changes no answer.
+
+⚠ A compiled stylesheet is **`!Send` and `!Sync`**, and cannot be otherwise: xrust's tree
+is `Rc`-based. A multi-threaded host holds one per thread (which is what `transform_xml`
+does for you), per connection or per task — never in shared state.
+
 ## Conformance
 
 **Passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)** with
@@ -85,8 +120,9 @@ The transform is built on [`xrust`](https://crates.io/crates/xrust) (pure-Rust X
 / XSLT 1.0) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
 and compiles to `wasm32` unchanged; the demo lazy-loads it in the browser as a WASM
 module via the sibling `ikigai-xslt-module`. The public, host-agnostic
-`transform_xml(src, stylesheet, text_output) -> Result<String, String>` entry point
-carries no ikigai-core types so it can be wrapped directly.
+`transform_xml(src, stylesheet, text_output) -> Result<String, String>` entry point —
+and `CompiledStylesheet`, which has the same plain-string errors — carry no ikigai-core
+types, so they can be wrapped directly.
 
 ## Usage
 
