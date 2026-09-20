@@ -17,10 +17,22 @@
 //! the same cached graph can be rendered into different presentations by swapping the
 //! stylesheet. Built on `xrust` (pure-Rust XPath 1.0 / XSLT 1.0), so it runs natively
 //! and in the browser (wasm) alike.
+//!
+//! ## Compiling the stylesheet is the cost, and it is reusable
+//!
+//! Almost all of an XSLT call is parsing and compiling the *stylesheet*, which has nothing
+//! to do with the document being styled: on gonk's 38 KB stylesheet, ~34 ms to parse and
+//! ~118 ms to compile against ~3.7 ms to run a page (ledger #453). [`CompiledStylesheet`]
+//! pays that once and runs many documents — ~12 µs to ready each run. [`transform_xml`]
+//! keeps its exact signature and memoizes the compile per thread on the stylesheet's full
+//! text, so existing callers get the same saving without changing a line.
 
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ikigai_core::{
     ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
     Representation, Request, Result, Verb,
@@ -28,7 +40,7 @@ use ikigai_core::{
 use xrust::item::{Item, Node, SequenceTrait};
 use xrust::parser::xml::parse as xmlparse;
 use xrust::parser::ParseError;
-use xrust::transform::context::StaticContextBuilder;
+use xrust::transform::context::{Context, StaticContextBuilder};
 use xrust::trees::smite::RNode;
 use xrust::xdmerror::{Error as XsltError, ErrorKind as XsltErrorKind};
 use xrust::xslt::from_document;
@@ -75,24 +87,12 @@ impl Endpoint for XsltEndpoint {
             ));
         };
 
-        // The output media type: what `as=` names, else what the stylesheet's
-        // `xsl:output method` implies (html is the default, as in XSLT itself — the
-        // common case here is styling RDF/XML into a page).
-        let method = stylesheet_output_method(&stylesheet).map_err(Error::Endpoint)?;
-        let media = match inv.inline_str("as") {
-            Ok(media) => media.to_string(),
-            Err(_) => media_type_for(method.as_deref()).to_string(),
-        };
-        // A `method="text"` stylesheet — or a caller asking for `text/plain` — wants the
-        // result's string value, whitespace preserved. Anything else is markup → XML
-        // serialize.
-        let text_output = method.as_deref() == Some("text")
-            || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
-
-        // Transform synchronously — xrust's tree types never cross an `await`, so the
-        // endpoint future stays `Send`. Cacheable — the result inherits the src +
+        // Decide the media type and transform — synchronously, in one helper, with no
+        // `await` inside it. That is load-bearing rather than tidy: a compiled stylesheet
+        // holds `Rc`s, so it is `!Send`, and keeping it out of the async body is what lets
+        // the endpoint's future stay `Send`. Cacheable — the result inherits the src +
         // stylesheet threads.
-        let out = transform(&source, &stylesheet, text_output)?;
+        let (media, out) = render(&source, &stylesheet, inv.inline_str("as").ok())?;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
             out.into_bytes(),
@@ -209,12 +209,17 @@ pub fn stylesheet_output_method(
 ) -> std::result::Result<Option<String>, String> {
     let doc =
         parse_xml(stylesheet_xml).map_err(|e| format!("stylesheet parse error: {}", e.message))?;
-    let Some(root) = doc.child_iter().find(|c| c.is_element()) else {
-        return Ok(None);
-    };
+    Ok(output_method_of(&doc))
+}
+
+/// The same reading, from an already-parsed stylesheet. Kept separate because
+/// [`CompiledStylesheet::compile`] must read the method from the tree it is about to hand
+/// to `from_document` — which strips whitespace *destructively*, through the `Rc` the tree
+/// is shared by — so the read happens first and the parse happens once.
+fn output_method_of(doc: &RNode) -> Option<String> {
+    let root = doc.child_iter().find(|c| c.is_element())?;
     let output_name = format!("{{{XSL_NS}}}output");
-    Ok(root
-        .child_iter()
+    root.child_iter()
         .filter(|c| c.is_element())
         .filter(|c| c.name().is_some_and(|n| n.to_string() == output_name))
         .find_map(|output| {
@@ -222,7 +227,7 @@ pub fn stylesheet_output_method(
                 .attribute_iter()
                 .find(|a| a.name().is_some_and(|n| n.to_string() == "method"))
                 .map(|a| a.value().to_string())
-        }))
+        })
 }
 
 /// Resolve a resource reference through the kernel. An `http(s)://` URL is fetched via
@@ -248,57 +253,201 @@ fn utf8(repr: Representation, role: &str) -> Result<String> {
         .map_err(|e| Error::Endpoint(format!("{role} is not valid UTF-8: {e}")))
 }
 
+/// A stylesheet **parsed and compiled once**, ready to transform many source documents.
+///
+/// Compiling is where an XSLT call's time goes, and it does not depend on the source
+/// document at all. Measured on gonk's 38 KB stylesheet (ledger #453): parsing it costs
+/// ~34 ms and compiling the parsed tree ~118 ms, against ~3.7 ms to actually run a page
+/// and ~0.012 ms to ready this handle for a run. So holding one turns a ~163 ms transform
+/// into a ~3.7 ms one — and the saving is *fixed overhead*, identical for an empty
+/// document and a large one.
+///
+/// ```
+/// let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:output method="text"/>
+///   <xsl:template match="/"><xsl:value-of select="doc/item"/></xsl:template>
+/// </xsl:stylesheet>"#;
+/// let compiled = ikigai_xslt::CompiledStylesheet::compile(style).unwrap();
+/// assert_eq!(compiled.output_method(), Some("text"));
+/// // The same handle runs any number of documents, and each run is independent.
+/// assert_eq!(compiled.transform("<doc><item>a</item></doc>", true).unwrap(), "a");
+/// assert_eq!(compiled.transform("<doc><item>b</item></doc>", true).unwrap(), "b");
+/// ```
+///
+/// ⚠ **This handle is `!Send` and `!Sync`, and cannot be made otherwise here.** xrust's
+/// tree (`smite::RNode`) is `Rc<Node>`, so every compiled artifact is reference-counted
+/// non-atomically. A multi-threaded server therefore cannot park one in shared state: it
+/// holds one per thread (a `thread_local!`), or per connection, or per task. That is what
+/// [`transform_xml`] does for callers who would rather not think about it.
+pub struct CompiledStylesheet {
+    /// The compiled transformation context. Cloned per run rather than reused in place,
+    /// because a run mutates it (context item, result document, key values, variables).
+    /// The clone is cheap — templates are behind `Rc` — and measured at ~12 µs for a
+    /// 56-template stylesheet, five orders of magnitude under the compile it replaces.
+    ctxt: Context<RNode>,
+    output_method: Option<String>,
+}
+
+impl CompiledStylesheet {
+    /// Parse and compile a stylesheet. Errors are plain strings, like [`transform_xml`]'s,
+    /// so this type carries no ikigai-core types either.
+    pub fn compile(stylesheet_xml: &str) -> std::result::Result<Self, String> {
+        let styledoc = parse_xml(stylesheet_xml)
+            .map_err(|e| format!("stylesheet parse error: {}", e.message))?;
+        // Read `xsl:output method` BEFORE compiling: `from_document` strips whitespace
+        // destructively and the tree is shared through `Rc`, so afterwards the document
+        // is no longer the one that was parsed.
+        let output_method = output_method_of(&styledoc);
+        let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
+            .map_err(|e| format!("stylesheet compile error: {}", e.message))?;
+        Ok(CompiledStylesheet {
+            ctxt,
+            output_method,
+        })
+    }
+
+    /// The `method` of the stylesheet's top-level `xsl:output`, read at compile time —
+    /// the same answer [`stylesheet_output_method`] gives, without parsing again.
+    pub fn output_method(&self) -> Option<&str> {
+        self.output_method.as_deref()
+    }
+
+    /// Transform one source document. Serializes the result as its string value when
+    /// `text_output` (a `method="text"` stylesheet, whitespace preserved), otherwise as
+    /// XML/markup.
+    pub fn transform(
+        &self,
+        src_xml: &str,
+        text_output: bool,
+    ) -> std::result::Result<String, String> {
+        let srcdoc = parse_xml(src_xml)
+            .map_err(|e| format!("source document parse error: {}", e.message))?;
+
+        let mut stctxt = StaticContextBuilder::new()
+            .message(|_| Ok(()))
+            .fetcher(|_| {
+                Err(XsltError::new(
+                    XsltErrorKind::NotImplemented,
+                    "document() fetching is not supported".to_string(),
+                ))
+            })
+            .parser(|_| {
+                Err(XsltError::new(
+                    XsltErrorKind::NotImplemented,
+                    "runtime parsing is not supported".to_string(),
+                ))
+            })
+            .build();
+
+        let mut ctxt = self.ctxt.clone();
+        ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
+        ctxt.result_document(RNode::new_document());
+        ctxt.populate_key_values(&mut stctxt, srcdoc.clone())
+            .map_err(|e| format!("xsl:key error: {}", e.message))?;
+        let seq = ctxt
+            .evaluate(&mut stctxt)
+            .map_err(|e| format!("transform error: {}", e.message))?;
+        Ok(if text_output {
+            seq.to_string()
+        } else {
+            seq.to_xml()
+        })
+    }
+}
+
+/// How many compiled stylesheets [`transform_xml`] keeps per thread. Small on purpose: a
+/// compiled stylesheet measured ~369 KB for gonk's (38 KB, 56 templates), and this is
+/// per-thread storage in every host that links the crate.
+const STYLESHEET_CACHE_ENTRIES: usize = 4;
+
+thread_local! {
+    /// Most-recently-used first. Keyed on the stylesheet's **full text**, which is the
+    /// whole invalidation story: the key is the argument the caller just passed, so there
+    /// is no identity, path, IRI or timestamp that could go stale, and a stylesheet that
+    /// changed by one byte is simply a different key. This memoizes a pure compile of an
+    /// argument; it is not a second resolution cache under the kernel's golden threads,
+    /// and nothing it returns outlives a call unless the content is identical.
+    static COMPILED: RefCell<Vec<(Rc<str>, Rc<CompiledStylesheet>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The compiled form of this exact stylesheet text, from the per-thread memo if it is
+/// there and compiled (and remembered) if it is not.
+fn compiled_for(stylesheet_xml: &str) -> std::result::Result<Rc<CompiledStylesheet>, String> {
+    let hit = COMPILED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let found = cache.iter().position(|(key, _)| &**key == stylesheet_xml)?;
+        let entry = cache.remove(found);
+        let compiled = Rc::clone(&entry.1);
+        cache.insert(0, entry);
+        Some(compiled)
+    });
+    if let Some(compiled) = hit {
+        return Ok(compiled);
+    }
+    let compiled = Rc::new(CompiledStylesheet::compile(stylesheet_xml)?);
+    COMPILED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.insert(0, (Rc::from(stylesheet_xml), Rc::clone(&compiled)));
+        cache.truncate(STYLESHEET_CACHE_ENTRIES);
+    });
+    Ok(compiled)
+}
+
+/// Drop this thread's compiled stylesheets. Only memory is at stake — every entry is a
+/// pure function of its key, so dropping one costs the next call a recompile and changes
+/// no answer. A host that has finished with one set of stylesheets can call this; nothing
+/// needs to.
+pub fn clear_stylesheet_cache() {
+    COMPILED.with(|cache| cache.borrow_mut().clear());
+}
+
 /// The synchronous XSLT transform — the crate's public, host-agnostic entry point.
 /// Parses `src_xml` and `stylesheet_xml`, applies the stylesheet, and serializes the
 /// result: as its string value when `text_output` (a `method="text"` stylesheet,
 /// whitespace preserved), otherwise as XML/markup. Errors are returned as plain
 /// strings so the function carries no ikigai-core types — which lets a standalone
 /// **wasm module** wrapper expose it directly. (The endpoint above wraps it.)
+///
+/// The compile is memoized per thread on the stylesheet's full text (see
+/// [`clear_stylesheet_cache`]), so a caller that transforms many documents through one
+/// stylesheet pays the ~150 ms compile once rather than on every call. The answer is
+/// unchanged either way; hold a [`CompiledStylesheet`] instead when you want the reuse to
+/// be explicit rather than inferred from the bytes.
+///
+/// ⚠ One observable difference from the pre-memo version, and only one: when **both**
+/// arguments are malformed the stylesheet's parse error is now reported rather than the
+/// source document's, because the stylesheet is what gets looked at first.
 pub fn transform_xml(
     src_xml: &str,
     stylesheet_xml: &str,
     text_output: bool,
 ) -> std::result::Result<String, String> {
-    let srcdoc =
-        parse_xml(src_xml).map_err(|e| format!("source document parse error: {}", e.message))?;
-    let styledoc =
-        parse_xml(stylesheet_xml).map_err(|e| format!("stylesheet parse error: {}", e.message))?;
-
-    let mut stctxt = StaticContextBuilder::new()
-        .message(|_| Ok(()))
-        .fetcher(|_| {
-            Err(XsltError::new(
-                XsltErrorKind::NotImplemented,
-                "document() fetching is not supported".to_string(),
-            ))
-        })
-        .parser(|_| {
-            Err(XsltError::new(
-                XsltErrorKind::NotImplemented,
-                "runtime parsing is not supported".to_string(),
-            ))
-        })
-        .build();
-
-    let mut ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
-        .map_err(|e| format!("stylesheet compile error: {}", e.message))?;
-    ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
-    ctxt.result_document(RNode::new_document());
-    ctxt.populate_key_values(&mut stctxt, srcdoc.clone())
-        .map_err(|e| format!("xsl:key error: {}", e.message))?;
-    let seq = ctxt
-        .evaluate(&mut stctxt)
-        .map_err(|e| format!("transform error: {}", e.message))?;
-    Ok(if text_output {
-        seq.to_string()
-    } else {
-        seq.to_xml()
-    })
+    compiled_for(stylesheet_xml)?.transform(src_xml, text_output)
 }
 
-/// Endpoint-facing wrapper: the public [`transform_xml`] mapped into an ikigai error.
-fn transform(src_xml: &str, stylesheet_xml: &str, text_output: bool) -> Result<String> {
-    transform_xml(src_xml, stylesheet_xml, text_output).map_err(Error::Endpoint)
+/// Compile (or reuse) the stylesheet, settle the result's media type, and run the
+/// transform — the endpoint's whole synchronous half, in one non-`async` function so that
+/// the `!Send` compiled stylesheet can never be live across an `await`.
+fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(String, String)> {
+    let compiled = compiled_for(stylesheet).map_err(Error::Endpoint)?;
+    // The output media type: what `as=` names, else what the stylesheet's `xsl:output
+    // method` implies (html is the default, as in XSLT itself — the common case here is
+    // styling RDF/XML into a page).
+    let method = compiled.output_method();
+    let media = match as_media {
+        Some(media) => media.to_string(),
+        None => media_type_for(method).to_string(),
+    };
+    // A `method="text"` stylesheet — or a caller asking for `text/plain` — wants the
+    // result's string value, whitespace preserved. Anything else is markup → XML
+    // serialize.
+    let text_output =
+        method == Some("text") || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
+    let out = compiled
+        .transform(source, text_output)
+        .map_err(Error::Endpoint)?;
+    Ok((media, out))
 }
 
 /// Parse an XML string into an `xrust` document tree.
@@ -325,7 +474,7 @@ mod tests {
             <xsl:template match='/'><ul><xsl:apply-templates select='doc/item'/></ul></xsl:template>
             <xsl:template match='item'><li class='card'><xsl:value-of select='.'/></li></xsl:template>
         </xsl:stylesheet>"#;
-        let out = transform(src, style, false).expect("transform");
+        let out = transform_xml(src, style, false).expect("transform");
         assert!(
             out.contains("<li class=\"card\">") || out.contains("<li class='card'>"),
             "got: {out}"
@@ -335,7 +484,9 @@ mod tests {
 
     #[test]
     fn reports_a_stylesheet_error() {
-        let err = transform("<a/>", "not a stylesheet", false).unwrap_err();
+        // Through `render`, which is the endpoint's half: it is what maps a plain-string
+        // failure into an ikigai error, and the only caller that still does.
+        let err = render("<a/>", "not a stylesheet", None).unwrap_err();
         assert!(matches!(err, Error::Endpoint(_)));
     }
 
@@ -378,7 +529,7 @@ mod tests {
     </div>
   </xsl:template>
 </xsl:stylesheet>"#;
-        let out = transform(rdfxml, xsl, false).expect("transform");
+        let out = transform_xml(rdfxml, xsl, false).expect("transform");
         // Two cards, one per endpoint, with their titles and ids. (Match the full class
         // attribute so the `cat-cards` wrapper isn't counted as a `cat-card`; xrust emits
         // single-quoted attributes.)
@@ -398,6 +549,121 @@ mod tests {
             3,
             "3 verb badges total: {out}"
         );
+    }
+
+    /// The stylesheet used by the reuse tests: two templates, an `xsl:output`, and a
+    /// value that differs per source document, so a stale answer would be visible.
+    fn reuse_style(tag: &str) -> String {
+        format!(
+            r#"<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>
+            <xsl:output method='text'/>
+            <xsl:template match='/'><xsl:value-of select='doc/item'/>-{tag}</xsl:template>
+        </xsl:stylesheet>"#
+        )
+    }
+
+    /// The whole premise of [`CompiledStylesheet`]: a run mutates the context, so reuse
+    /// goes through a clone — and that clone has to be a *complete* reset. xrust's trees
+    /// are `Rc`-shared and interior-mutable, so "the second run sees the first run's
+    /// leftovers" is a real failure mode rather than a theoretical one. Pin it.
+    #[test]
+    fn one_compiled_stylesheet_runs_many_documents_independently() {
+        let style = reuse_style("x");
+        let compiled = CompiledStylesheet::compile(&style).expect("compile");
+        let a = compiled
+            .transform("<doc><item>alpha</item></doc>", true)
+            .expect("run a");
+        let b = compiled
+            .transform("<doc><item>beta</item></doc>", true)
+            .expect("run b");
+        let a_again = compiled
+            .transform("<doc><item>alpha</item></doc>", true)
+            .expect("run a again");
+        assert_eq!(a, "alpha-x");
+        assert_eq!(b, "beta-x");
+        assert_eq!(a, a_again, "a reused handle must not drift between runs");
+    }
+
+    /// A compiled handle answers exactly what a fresh compile answers — the property that
+    /// makes the memo inside `transform_xml` invisible.
+    #[test]
+    fn a_reused_compile_equals_a_fresh_one() {
+        let style = reuse_style("y");
+        let src = "<doc><item>gamma</item></doc>";
+        let compiled = CompiledStylesheet::compile(&style).expect("compile");
+        let reused = compiled.transform(src, true).expect("reused");
+        clear_stylesheet_cache();
+        let fresh = transform_xml(src, &style, true).expect("fresh");
+        assert_eq!(reused, fresh);
+    }
+
+    /// The invalidation story in one test: the memo is keyed on the stylesheet's full
+    /// text, so an edited stylesheet is a different key and cannot be answered from the
+    /// old one. This is what a content-keyed memo buys over a cache keyed on identity.
+    #[test]
+    fn an_edited_stylesheet_is_never_answered_from_the_memo() {
+        let src = "<doc><item>delta</item></doc>";
+        assert_eq!(
+            transform_xml(src, &reuse_style("first"), true).expect("first"),
+            "delta-first"
+        );
+        assert_eq!(
+            transform_xml(src, &reuse_style("second"), true).expect("second"),
+            "delta-second"
+        );
+        // …and the original is still itself, not overwritten by the edit.
+        assert_eq!(
+            transform_xml(src, &reuse_style("first"), true).expect("first again"),
+            "delta-first"
+        );
+    }
+
+    /// More distinct stylesheets than the memo holds: every one still answers correctly,
+    /// which is the only guarantee eviction owes anyone.
+    #[test]
+    fn eviction_costs_a_recompile_and_nothing_else() {
+        clear_stylesheet_cache();
+        let styles: Vec<String> = (0..STYLESHEET_CACHE_ENTRIES + 3)
+            .map(|i| reuse_style(&format!("s{i}")))
+            .collect();
+        for _round in 0..2 {
+            for (i, style) in styles.iter().enumerate() {
+                let out = transform_xml("<doc><item>e</item></doc>", style, true).expect("run");
+                assert_eq!(out, format!("e-s{i}"));
+            }
+        }
+    }
+
+    /// `CompiledStylesheet` reads `xsl:output method` from the tree it is about to hand to
+    /// the (destructive) compiler, so it must agree with the standalone parse.
+    #[test]
+    fn a_compiled_stylesheet_reports_the_same_output_method() {
+        for style in [
+            reuse_style("m"),
+            r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                 <xsl:output method="xml"/><xsl:template match="/"><a/></xsl:template>
+               </xsl:stylesheet>"#
+                .to_string(),
+            r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                 <xsl:template match="/"><a/></xsl:template>
+               </xsl:stylesheet>"#
+                .to_string(),
+        ] {
+            let standalone = stylesheet_output_method(&style).expect("read method");
+            let compiled = CompiledStylesheet::compile(&style).expect("compile");
+            assert_eq!(compiled.output_method(), standalone.as_deref(), "{style}");
+        }
+    }
+
+    /// A stylesheet that fails to compile must fail every time, not be remembered as a
+    /// hole in the memo — and must still fail after a good one has been cached.
+    #[test]
+    fn a_broken_stylesheet_fails_every_time() {
+        for _ in 0..3 {
+            assert!(transform_xml("<a/>", "not a stylesheet", false).is_err());
+        }
+        transform_xml("<doc><item>ok</item></doc>", &reuse_style("z"), true).expect("good one");
+        assert!(transform_xml("<a/>", "not a stylesheet", false).is_err());
     }
 
     #[test]
