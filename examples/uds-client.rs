@@ -13,7 +13,7 @@ use ikigai_core::{
     ArgRef, Capability, EndpointSpace, Exact, Fallback, FnEndpoint, Iri, Kernel, ReprType,
     Representation, Request, Space, Verb,
 };
-use ikigai_module::{ModuleSpace, UdsTransport};
+use ikigai_module::{ModuleFloor, ModuleSpace, UdsTransport};
 
 // The two resources the module will reach back for. They live ONLY on this host — the
 // module server has never heard of them; it learns them through the callback channel.
@@ -44,7 +44,14 @@ fn main() {
     let host = EndpointSpace::new()
         .bind(Exact::new("urn:demo:src"), fixed("application/xml", SRC))
         .bind(Exact::new("urn:demo:style"), fixed("text/xml", STYLE));
-    let module = ModuleSpace::new(["urn:xslt:"], Arc::new(UdsTransport::connect(&path)));
+    // The floor is the host's authority declaration for the mount. `urn:xslt:transform`
+    // requires no capability of its own (it reaches its inputs through this kernel, under
+    // the caller's capability), so the mount is public, and says so.
+    let module = ModuleSpace::new(
+        ["urn:xslt:"],
+        Arc::new(UdsTransport::connect(&path)),
+        ModuleFloor::public(),
+    );
     let root: Arc<dyn Space> = Arc::new(Fallback::new(vec![
         Arc::new(host) as Arc<dyn Space>,
         Arc::new(module) as Arc<dyn Space>,
