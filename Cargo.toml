@@ -20,6 +20,11 @@ crate-type = ["cdylib", "rlib"]
 ikigai-core = "0.1.89"
 async-trait = "0.1"
 xrust = "2.1.0"
+# Only to NAME the types in xrust's `Node` trait, which `src/node_id.rs` implements (ledger
+# #1047): xrust does not re-export them. It must be the qualname xrust itself depends on — 0.0.1
+# for xrust 2.1 and 2.2 — and a `^0.0.1` pin is exactly `=0.0.1`. If a later xrust moves to
+# another qualname, this crate stops COMPILING (two `QName` types), loudly, rather than drifting.
+qualname = "0.0.1"
 
 # The `module` feature turns this library into a standalone dynamically-loadable WASM
 # module via `ikigai_module::wasm_module!` — so a host can lazy-load `ikigai_xslt.wasm` and

@@ -42,10 +42,28 @@
 //! it, and a panic inside xrust is answered as an `Endpoint` error rather than raised on the
 //! caller's thread (ledger #1040). The work past a deadline is abandoned, not cancelled — xrust
 //! cannot be stopped — and capped in number; see [`limits::on_xslt_stack_within`].
+//!
+//! ## `generate-id()` is a position, not an address
+//!
+//! xrust answers `generate-id()` with the node's heap address, which differs from process to
+//! process and so made a `.cacheable()` answer depend on more than its inputs, and told a
+//! stylesheet's author where the heap is. Since 0.2.1 the id is the node's path in its tree,
+//! in letters and digits — the source document is `d1`, its document element `d1c1`, that
+//! element's first attribute `d1c1a1` — the same in every process (ledger #1047):
+//!
+//! ```
+//! let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+//!   <xsl:output method="text"/>
+//!   <xsl:template match="/"><xsl:value-of select="generate-id(doc/b[2]/@c)"/></xsl:template>
+//! </xsl:stylesheet>"#;
+//! let id = ikigai_xslt::transform_xml("<doc><a/><b/><b c='1'/></doc>", style, true);
+//! assert_eq!(id.unwrap(), "d1c1c3a1");
+//! ```
 
 #![forbid(unsafe_code)]
 
 pub mod limits;
+mod node_id;
 
 use async_trait::async_trait;
 use std::cell::RefCell;
@@ -55,11 +73,11 @@ use ikigai_core::{
     space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
     Iri, ReprType, Representation, Request, Result, Verb,
 };
+use node_id::IdNode;
 use xrust::item::{Item, Node, SequenceTrait};
 use xrust::parser::xml::parse as xmlparse;
 use xrust::parser::ParseError;
 use xrust::transform::context::{Context, StaticContextBuilder};
-use xrust::trees::smite::RNode;
 use xrust::xdmerror::{Error as XsltError, ErrorKind as XsltErrorKind};
 use xrust::xslt::from_document;
 
@@ -263,7 +281,7 @@ pub fn stylesheet_output_method(
 /// [`CompiledStylesheet::compile`] must read the method from the tree it is about to hand
 /// to `from_document` — which strips whitespace *destructively*, through the `Rc` the tree
 /// is shared by — so the read happens first and the parse happens once.
-fn output_method_of(doc: &RNode) -> Option<String> {
+fn output_method_of(doc: &IdNode) -> Option<String> {
     let root = doc.child_iter().find(|c| c.is_element())?;
     let output_name = format!("{{{XSL_NS}}}output");
     root.child_iter()
@@ -340,7 +358,7 @@ pub struct CompiledStylesheet {
     /// because a run mutates it (context item, result document, key values, variables).
     /// The clone is cheap — templates are behind `Rc` — and measured at ~12 µs for a
     /// 56-template stylesheet, five orders of magnitude under the compile it replaces.
-    ctxt: Context<RNode>,
+    ctxt: Context<IdNode>,
     output_method: Option<String>,
 }
 
@@ -406,9 +424,12 @@ impl CompiledStylesheet {
             })
             .build();
 
+        // `generate-id()` numbers this run's trees from the source document (ledger #1047),
+        // and forgets them when the run ends, however it ends.
+        let _ids = node_id::Scope::open(&srcdoc);
         let mut ctxt = self.ctxt.clone();
         ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
-        ctxt.result_document(RNode::new_document());
+        ctxt.result_document(IdNode::new_document());
         ctxt.populate_key_values(&mut stctxt, srcdoc.clone())
             .map_err(|e| format!("xsl:key error: {}", e.message))?;
         let seq = ctxt
@@ -569,8 +590,8 @@ fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(Str
 }
 
 /// Parse an XML string into an `xrust` document tree.
-fn parse_xml(s: &str) -> std::result::Result<RNode, XsltError> {
-    let doc = RNode::new_document();
+fn parse_xml(s: &str) -> std::result::Result<IdNode, XsltError> {
+    let doc = IdNode::new_document();
     xmlparse(
         doc.clone(),
         s,
