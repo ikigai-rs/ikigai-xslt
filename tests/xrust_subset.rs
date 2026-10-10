@@ -2,21 +2,29 @@
 //!
 //! gonk measured this on 2026-09-15 by rendering its pages through this crate; these tests
 //! re-measure it on the xrust this crate builds against, so the README's subset table is
-//! evidence. Three groups:
+//! evidence. Four groups:
 //!
 //! - **works**: constructs that give the XSLT 1.0 answer;
 //! - **refused**: constructs xrust rejects with an error, which is the safe failure, since a
 //!   stylesheet author sees it;
-//! - **silent**: constructs that give a WRONG answer with no error at all. Each `silent_*`
-//!   test pins today's wrong output AND checks that stock xrust (its own `smite::RNode`,
-//!   not this crate's `IdNode` wrapper) gives the same one, so the defect is xrust's and
-//!   the reproduction in `docs/upstream-xrust.md` is honest.
+//! - **refused here**: constructs xrust answers WRONGLY with no error at all, which this
+//!   crate therefore refuses before xrust compiles them (`src/subset.rs`, since 0.3.0). Each
+//!   `refused_*` test checks the refusal names the construct, AND that stock xrust (its own
+//!   `smite::RNode`, not this crate's `IdNode` wrapper) still gives the pinned wrong answer,
+//!   so the defect is xrust's, the refusal is still earning its keep, and the reproduction in
+//!   `docs/upstream-xrust.md` is honest;
+//! - **silent**: wrong answers with no error that no lexical scan can see (one is left), pinned
+//!   the same way through both paths.
 //!
-//! ★ **A failing `silent_*` test is GOOD NEWS, on purpose.** It means xrust changed its
-//! answer: if it now gives the correct one, the failure says so. Either way, update the
-//! "XSLT subset" section of `README.md` and `docs/upstream-xrust.md`, then the test. The
-//! same goes for `the_subset_was_measured_on_xrust_2_2_0`, which fails on any other xrust:
-//! the README names the version these answers were measured on.
+//! ★ **A failing `refused_*` or `silent_*` test is GOOD NEWS, on purpose.** It means xrust
+//! changed its answer: if it now gives the correct one, the failure says so, and the refusal
+//! in `src/subset.rs` can go. Either way, update the "XSLT subset" section of `README.md` and
+//! `docs/upstream-xrust.md`, then the test.
+//!
+//! The xrust release these answers were measured on is RECORDED, not gated
+//! (`ikigai_xslt::subset::XRUST_MEASURED_ON`, Brian's decision on ledger #193): a newer xrust on
+//! crates.io is a warning in the ecosystem's daily scan, and a build on another xrust prints a
+//! note here. What fails is an answer that changed.
 
 use ikigai_xslt::transform_xml;
 use xrust::item::{Item, Node, SequenceTrait};
@@ -28,6 +36,9 @@ use xrust::xdmerror::{Error, ErrorKind};
 use xrust::xslt::from_document;
 
 /// The xrust version every answer in this file was measured on, and the README states.
+/// ⚠ Keep this line's exact shape: ikigai-devtools' daily scan (`xrust-drift.py`) reads it as
+/// THE record and warns when crates.io has a newer xrust. `subset::XRUST_MEASURED_ON` is the
+/// crate's own copy, and the test below holds the two equal.
 const MEASURED_ON: &str = "2.2.0";
 
 /// A plain, namespace-free source.
@@ -104,6 +115,29 @@ fn pin_silent(src: &str, templates: &str, wrong: &str, correct: &str) {
     }
 }
 
+/// Pin a construct this crate refuses because xrust answers it wrongly: through this crate it
+/// is refused as an `InvalidArgument` naming the README `row`; through stock xrust it still
+/// gives `wrong`, with no error, where XSLT 1.0 says `correct`.
+fn pin_refused(src: &str, templates: &str, wrong: &str, correct: &str, row: &str) {
+    assert_ne!(wrong, correct, "a refused case pins a WRONG answer");
+    let err = ours(src, templates).expect_err("refused before xrust compiles it");
+    assert!(
+        err.starts_with("invalid argument `stylesheet`: refused:") && err.contains(row),
+        "the refusal names the construct `{row}`: {err}"
+    );
+    let answer = stock(src, templates).unwrap_or_else(|e| {
+        panic!("stock xrust now REFUSES this (`{e}`) by itself: drop the refusal from src/subset.rs and move the row to the refused table in README.md")
+    });
+    assert!(
+        answer != correct,
+        "stock xrust's silent defect is FIXED (it now answers the XSLT 1.0 `{correct}`): drop the refusal from src/subset.rs and update README.md and docs/upstream-xrust.md"
+    );
+    assert_eq!(
+        answer, wrong,
+        "stock xrust's answer changed but is still not `{correct}`: re-measure and update README.md and docs/upstream-xrust.md"
+    );
+}
+
 /// The xrust in this build, read from the lock file the build resolved.
 fn xrust_in_this_build() -> String {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -121,15 +155,38 @@ fn xrust_in_this_build() -> String {
     panic!("no xrust in Cargo.lock")
 }
 
+/// The measured version is a RECORD, never a gate: a new xrust release must not turn a PR red
+/// (ledger #193). What this checks is that the record is one record: the constant, the README
+/// and the upstream drafts name the same release. On another xrust it prints a note; every
+/// other test in this file is what fails if an answer moved.
 #[test]
-fn the_subset_was_measured_on_xrust_2_2_0() {
+fn the_measured_xrust_is_recorded_in_one_place() {
     assert_eq!(
-        xrust_in_this_build(),
+        ikigai_xslt::subset::XRUST_MEASURED_ON,
         MEASURED_ON,
-        "this build uses another xrust than the README's subset table was measured on: \
-         if every other test here passes, the table still holds, so update MEASURED_ON and \
-         the version named in README.md and docs/upstream-xrust.md"
+        "the crate's record and this file's (which the daily scan reads) name one release"
     );
+    let named = format!("xrust {MEASURED_ON}");
+    for (file, text) in [
+        ("README.md", include_str!("../README.md")),
+        (
+            "docs/upstream-xrust.md",
+            include_str!("../docs/upstream-xrust.md"),
+        ),
+    ] {
+        assert!(
+            text.contains(&format!("**{named}**")),
+            "{file} names the measured release as **{named}**, as subset::XRUST_MEASURED_ON does"
+        );
+    }
+    let built = xrust_in_this_build();
+    if built != MEASURED_ON {
+        eprintln!(
+            "note: this build uses xrust {built}, and the subset table was measured on {MEASURED_ON}. \
+             If every other test here passes, the table still holds: re-measure, then update \
+             subset::XRUST_MEASURED_ON, README.md and docs/upstream-xrust.md together."
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------- works
@@ -281,82 +338,194 @@ fn unsupported_constructs_are_refused_by_name() {
     assert!(err.contains("not an XSLT stylesheet"), "{err}");
 }
 
-// --------------------------------------------------------------------------- silent
+// --------------------------------------------------------------------- refused here
 
 /// An attribute value template that names a PREFIXED node is empty: `{@rdf:about}`,
 /// `{l:child}`, and the prefixed name inside a function (`{concat('x', @rdf:about)}` is
 /// `x`). Unprefixed names work, functions and absolute paths included (see the works
 /// table); `xsl:attribute` with `xsl:value-of` is the workaround.
 #[test]
-fn silent_a_prefixed_name_in_an_attribute_value_template_is_empty() {
-    pin_silent(
+fn refused_a_prefixed_name_in_an_attribute_value_template() {
+    pin_refused(
         NS_SRC,
         r#"<xsl:template match="/"><out><xsl:for-each select="page/l:Item"><a href="{@rdf:about}" t="{concat('x', @rdf:about)}"/></xsl:for-each></out></xsl:template>"#,
         "<out><a href='' t='x'/><a href='' t='x'/></out>",
         "<out><a href='urn:i:1' t='xurn:i:1'/><a href='urn:i:2' t='xurn:i:2'/></out>",
+        "a prefixed name in an attribute value template",
     );
 }
 
 /// A predicate in a MATCH pattern is ignored: `item[@k='2']` matches every `item`.
 #[test]
-fn silent_a_predicate_in_a_match_pattern_is_ignored() {
-    pin_silent(
+fn refused_a_predicate_in_a_match_pattern() {
+    pin_refused(
         SRC,
         r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item[@k='2']"><hit><xsl:value-of select="."/></hit></xsl:template>"#,
         "<out><hit>one</hit><hit>two</hit><hit>three</hit></out>",
         "<out>one<hit>two</hit>three</out>",
+        "a predicate in a match pattern",
     );
 }
 
 /// With two templates for one name, the FIRST declared wins whatever its predicate: XSLT
 /// gives `item[@k='1']` priority 0.5 over `item`'s 0, and xrust ignores both the predicate
-/// and the priority.
+/// and the priority. Refused as the match predicate it holds.
 #[test]
-fn silent_template_priority_ignores_the_predicate_and_takes_the_first_declared() {
-    pin_silent(
+fn refused_template_priority_by_its_predicate() {
+    pin_refused(
         SRC,
         r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item"><other/></xsl:template><xsl:template match="item[@k='1']"><one/></xsl:template>"#,
         "<out><other/><other/><other/></out>",
         "<out><one/><other/><one/></out>",
+        "a predicate in a match pattern",
+    );
+}
+
+/// The predicate in an `xsl:key`'s match pattern is ignored too: every `item` is keyed.
+#[test]
+fn refused_a_predicate_in_a_key_pattern() {
+    pin_refused(
+        SRC,
+        r#"<xsl:key name="k" match="item[@k='1']" use="@id"/><xsl:template match="/"><out><xsl:value-of select="count(key('k','b'))"/></out></xsl:template>"#,
+        "<out>1</out>",
+        "<out>0</out>",
+        "a predicate in a match pattern",
     );
 }
 
 /// A numeric predicate on a path is ignored: `item[1]` and `item[last()]` select every
-/// `item`. `[position() = 1]` works (see the works table).
+/// `item`, after a filter and on a parenthesized expression alike. `[position() = 1]` works
+/// (see the works table).
 #[test]
-fn silent_a_numeric_path_predicate_is_ignored() {
-    pin_silent(
-        SRC,
-        r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[1])"/>,<xsl:value-of select="count(doc/item[last()])"/></out></xsl:template>"#,
-        "<out>3,3</out>",
-        "<out>1,1</out>",
-    );
+fn refused_a_numeric_path_predicate() {
+    for (templates, wrong, correct) in [
+        (
+            r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[1])"/>,<xsl:value-of select="count(doc/item[last()])"/></out></xsl:template>"#,
+            "<out>3,3</out>",
+            "<out>1,1</out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[@k='1'][1])"/>,<xsl:value-of select="count((doc/item)[2])"/></out></xsl:template>"#,
+            "<out>2,3</out>",
+            "<out>1,1</out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out n="{count(doc/item[1])}"/></xsl:template>"#,
+            "<out n='3'/>",
+            "<out n='1'/>",
+        ),
+    ] {
+        pin_refused(SRC, templates, wrong, correct, "a numeric predicate");
+    }
 }
 
 /// `position()` and `last()` are always 1 inside `for-each` and `apply-templates`, so a
-/// test such as `position() = 2` is never true and its content is silently absent.
+/// test such as `position() = 2` is never true and its content is silently absent; and
+/// `last()` is 1 inside a predicate too. `position()` inside a predicate works.
 #[test]
-fn silent_position_and_last_are_always_one() {
-    pin_silent(
+fn refused_position_and_last_away_from_the_root() {
+    pin_refused(
         SRC,
         r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><p><xsl:value-of select="position()"/>/<xsl:value-of select="last()"/></p></xsl:for-each><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item"><xsl:if test="position() = 2"><second/></xsl:if></xsl:template>"#,
         "<out><p>1/1</p><p>1/1</p><p>1/1</p></out>",
         "<out><p>1/3</p><p>2/3</p><p>3/3</p><second/></out>",
+        "position() or last() away from the root",
+    );
+    pin_refused(
+        SRC,
+        r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[position() &lt; last()])"/></out></xsl:template>"#,
+        "<out>0</out>",
+        "<out>2</out>",
+        "position() or last() away from the root",
     );
 }
 
 /// `//name` is evaluated from the CONTEXT node, not the document root, so from inside a
-/// nested template it finds only the context's own descendants (usually none). `/doc//name`
-/// works (see the works table).
+/// nested template it finds only the context's own descendants (usually none) — and the same
+/// inside a named template, the body of an `xsl:for-each` and a predicate, wherever they are.
+/// `/doc//name` works (see the works table).
 #[test]
-fn silent_a_leading_double_slash_is_relative_to_the_context_node() {
-    pin_silent(
-        SRC,
-        r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item"><p><xsl:value-of select="count(//item)"/></p></xsl:template>"#,
-        "<out><p>0</p><p>0</p><p>0</p></out>",
-        "<out><p>3</p><p>3</p><p>3</p></out>",
+fn refused_a_leading_double_slash_away_from_the_root() {
+    for (templates, wrong, correct) in [
+        (
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item"><p><xsl:value-of select="count(//item)"/></p></xsl:template>"#,
+            "<out><p>0</p><p>0</p><p>0</p></out>",
+            "<out><p>3</p><p>3</p><p>3</p></out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:value-of select="count(//item)"/></xsl:for-each></out></xsl:template>"#,
+            "<out>000</out>",
+            "<out>333</out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[//item])"/></out></xsl:template>"#,
+            "<out>0</out>",
+            "<out>3</out>",
+        ),
+    ] {
+        pin_refused(
+            SRC,
+            templates,
+            wrong,
+            correct,
+            "a leading // away from the root",
+        );
+    }
+}
+
+/// Where the context IS the root, the same constructs give the XSLT answer, and are not
+/// refused: the scan is conservative.
+#[test]
+fn the_same_constructs_at_the_root_are_admitted() {
+    let cases: &[(&str, &str)] = &[
+        (
+            r#"<xsl:template match="/"><out><xsl:value-of select="count(//item)"/>,<xsl:value-of select="position()"/>,<xsl:value-of select="last()"/></out></xsl:template>"#,
+            "<out>3,1,1</out>",
+        ),
+        (
+            r#"<xsl:variable name="n" select="count(//item)"/><xsl:template match="/"><out><xsl:apply-templates select="//item[@k='2']"/></out></xsl:template><xsl:template match="item"><xsl:value-of select="."/></xsl:template>"#,
+            "<out>two</out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item[position() = 2]"/></out></xsl:template><xsl:template match="item"><p t="{concat('[1]', '//', 'rdf:about')}"><xsl:value-of select="'item[1]'"/></p></xsl:template>"#,
+            "<out><p t='[1]//rdf:about'>item[1]</p></out>",
+        ),
+    ];
+    for (templates, expected) in cases {
+        assert_eq!(
+            ours(SRC, templates).as_deref(),
+            Ok(*expected),
+            "{templates}"
+        );
+    }
+}
+
+/// Through the endpoint the refusal is TYPED: an `InvalidArgument` naming `stylesheet`, as
+/// a bound is, so a caller can tell a stylesheet it must change from a transform that failed.
+#[test]
+fn the_endpoint_refuses_with_a_typed_invalid_argument() {
+    use futures::executor::block_on;
+    use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
+    use std::sync::Arc;
+
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    let req = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
+        .with_arg("src", ArgRef::Inline(SRC.as_bytes().to_vec()))
+        .with_arg(
+            "stylesheet",
+            ArgRef::Inline(
+                style(r#"<xsl:template match="item[1]"><x/></xsl:template>"#).into_bytes(),
+            ),
+        );
+    let err = block_on(kernel.issue(req, &Capability::root())).expect_err("refused");
+    assert!(
+        matches!(&err, IkError::InvalidArgument { name, detail }
+            if name == "stylesheet" && detail.contains("a predicate in a match pattern")),
+        "{err}"
     );
 }
+
+// --------------------------------------------------------------------------- silent
 
 /// `xsl:value-of` of several nodes concatenates them all with no separator. XSLT 1.0 takes
 /// the FIRST node's string value (and a 2.0+ processor running a 1.0 stylesheet does too).
@@ -370,17 +539,48 @@ fn silent_value_of_a_node_set_concatenates_every_node() {
     );
 }
 
-/// `xsl:output method="html"` still serializes XML: every empty element is self-closed,
-/// and a browser reads `<script …/>` as an OPEN script element that swallows the rest of
-/// the page (`<textarea/>` does the same to everything after it). Not compared against
-/// stock xrust: the serializer is the same `to_xml` the stock runner calls.
+/// `xsl:output method="html"`: stock xrust serializes XML, so every empty element is
+/// self-closed and a browser reads `<script …/>` as an OPEN script element that swallows the
+/// rest of the page. Since 0.3.0 this crate serializes HTML (`tests/html_output.rs` has the
+/// rest); this pins that the gap is still xrust's, so the crate's serialization still earns
+/// its keep.
 #[test]
-fn silent_html_output_is_serialized_as_xml() {
-    let html = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:output method="html"/><xsl:template match="/"><html><head><script src="a.js"></script></head><body><textarea></textarea><br/></body></html></xsl:template></xsl:stylesheet>"#;
-    let out = transform_xml(SRC, html, false).expect("it renders");
+fn html_output_is_html_here_and_xml_in_stock_xrust() {
+    let templates = r#"<xsl:template match="/"><html><head><script src="a.js"></script></head><body><textarea></textarea><br/></body></html></xsl:template>"#;
+    let html = |t: &str| style(t).replace(r#"method="xml""#, r#"method="html""#);
     assert_eq!(
-        out, "<html><head><script src='a.js'/></head><body><textarea/><br/></body></html>",
-        "the HTML serialization changed: if `<script>` now has a close tag, update the README's \
-         serialization note and docs/upstream-xrust.md"
+        transform_xml(SRC, &html(templates), false).as_deref(),
+        Ok("<html><head><script src='a.js'></script></head><body><textarea></textarea><br/></body></html>")
+    );
+    // Stock xrust, through the same harness: XML whatever the method says.
+    let stock_html = {
+        let doc = |s: &str| {
+            let d = RNode::new_document();
+            parse(
+                d.clone(),
+                s,
+                Some(|_: &_| Err(ParseError::MissingNameSpace)),
+            )
+            .map(|_| d)
+        };
+        let src = doc(SRC).unwrap();
+        let mut stctxt = StaticContextBuilder::new()
+            .message(|_| Ok(()))
+            .fetcher(|_| Err(Error::new(ErrorKind::NotImplemented, "no fetcher")))
+            .parser(|_| Err(Error::new(ErrorKind::NotImplemented, "no parser")))
+            .build();
+        let mut ctxt = from_document(doc(&html(templates)).unwrap(), None, doc, |_| {
+            Ok(String::new())
+        })
+        .unwrap();
+        ctxt.context(vec![Item::Node(src.clone())], 0);
+        ctxt.result_document(RNode::new_document());
+        ctxt.populate_key_values(&mut stctxt, src).unwrap();
+        ctxt.evaluate(&mut stctxt).unwrap().to_xml()
+    };
+    assert_eq!(
+        stock_html, "<html><head><script src='a.js'/></head><body><textarea/><br/></body></html>",
+        "stock xrust's serialization changed: if it now writes HTML for method=\"html\", \
+         src/html.rs may be redundant; update the README and docs/upstream-xrust.md"
     );
 }

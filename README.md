@@ -40,8 +40,8 @@ The result is labeled by `as=` when given; otherwise by what the stylesheet's to
 
 | `xsl:output method` | media type | serialization |
 | ------------------- | ---------- | ------------- |
-| `html` (or no `xsl:output`) | `text/html` | markup |
-| `xml` | `application/xml` | markup |
+| `html` (or no `xsl:output`) | `text/html` | HTML (since 0.3.0; see [below](#methodhtml-is-serialized-as-html)) |
+| `xml` | `application/xml` | XML |
 | `text` | `text/plain` | the result's string value, whitespace preserved, nothing escaped |
 
 A `method="text"` stylesheet is serialized as text whatever `as=` says, and `as=text/plain`
@@ -58,12 +58,15 @@ resolved — there is no read for a capability to gate.
 
 xrust implements a **subset** of XSLT 1.0, and the dangerous part of it is not what it
 refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's author cannot
-discover those from errors, so they are listed here. Every row below was measured on
-**xrust 2.2.0** (2026-10-10, ledger #193) by `tests/xrust_subset.rs`, and each silent row is
+discover those from errors, so since 0.3.0 this crate **refuses** every one of them it can
+see, before xrust compiles the stylesheet. Every row below was measured on
+**xrust 2.2.0** (2026-10-10, ledger #193) by `tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
-[`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin today's wrong answers,
-so the day xrust fixes one, a test fails and says so: that is the signal to update this
-table.
+[`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
+answers, so the day xrust fixes one, a test fails and says so: that is the signal to drop
+the refusal and update this table. The measured release is a record
+(`ikigai_xslt::subset::XRUST_MEASURED_ON`), not a gate: a newer xrust on crates.io is a
+warning in the ecosystem's daily scan, not a red build.
 
 **Works**: `xsl:if`, `xsl:choose`, `xsl:attribute` (prefixed names included),
 `call-template`, modes, `apply-templates` with `xsl:sort`, `count()`, a `[@attr = '…']` or
@@ -82,24 +85,57 @@ over unprefixed names, and `xsl:comment`.
 | `xsl:key` over prefixed names (`match="l:Item"`) | `MissingNameSpace` |
 | a stylesheet whose first node is a comment | `not an XSLT stylesheet` |
 
-⚠ **Silently wrong: an answer, no error.**
+**Refused before it compiles** (since 0.3.0): xrust 2.2.0 answers these wrongly, with no
+error, so this crate refuses a stylesheet holding one, as an `InvalidArgument` naming
+`stylesheet` that quotes the attribute, its element and the row below
+(`invalid argument `stylesheet`: refused: match="item[@k='2']" on <xsl:template> holds "a
+predicate in a match pattern", …`). `ikigai_xslt::subset::silent_constructs(stylesheet)`
+lists every one at once, and `cargo run --example subset-scan -- file.xsl` does the same from
+a shell.
 
 | construct | XSLT 1.0 answer | xrust 2.2.0 answer | instead, write |
 | --- | --- | --- | --- |
-| a **prefixed** name in an attribute value template: `href="{@rdf:about}"` | the attribute's value | **empty** (`{concat('x', @rdf:about)}` is `x`) | `<xsl:attribute name="href"><xsl:value-of select="@rdf:about"/></xsl:attribute>` |
-| a predicate in a **match pattern**: `match="item[@k='2']"` | the items whose `k` is 2 | **every** `item` | `match="item"` and an `xsl:if` / `xsl:choose` inside it |
-| two templates for one name, one with a predicate | the predicate's (priority 0.5 beats 0) | the **first declared**, for every node | one template, branching inside |
-| a numeric path predicate: `item[1]`, `item[last()]` | one node | **every** `item` | `item[position() = 1]` |
-| `position()`, `last()` inside `for-each` or `apply-templates` | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data |
-| a leading `//name` inside a nested template | from the document root | from the **context node**, so usually nothing | `/doc//name` |
+| a predicate in a match pattern: `match="item[@k='2']"`, in `xsl:template` or `xsl:key` | the items whose `k` is 2 | **every** `item`; and with two templates for one name, the **first declared** wins whatever its priority | `match="item"` and an `xsl:if` / `xsl:choose` inside it |
+| a numeric predicate: [1], [last()] — `item[1]`, `(…)[2]`, `item[@k='1'][1]`, `{count(item[1])}` | one node | **every** `item` | `item[position() = 1]` |
+| position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
+| a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
+| a prefixed name in an attribute value template: `href="{@rdf:about}"` on a literal result element | the attribute's value | **empty** (`{concat('x', @rdf:about)}` is `x`) | `<xsl:attribute name="href"><xsl:value-of select="@rdf:about"/></xsl:attribute>` |
+
+"Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
+`xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
+root, xrust's answer is right, and nothing is refused. The scan is lexical and
+conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
+`/doc//b` are not a leading `//`, and `[position() = 1]` is not a numeric predicate.
+
+⚠ **Still silently wrong: an answer, no error.** One case no lexical scan can see, because
+whether a path selects one node or several is a property of the data, not of the
+stylesheet (`ik:title` is usually one node; `../@title` always is; `item` often is not):
+
+| construct | XSLT 1.0 answer | xrust 2.2.0 answer | instead, write |
+| --- | --- | --- | --- |
 | `xsl:value-of` over several nodes | the **first** node's string value | **all** of them concatenated, no separator | `select="item[position() = 1]"` |
 
-⚠ **And `method="html"` is serialized as XML.** Every empty element comes out self-closed
-(`<script src='a.js'/>`, `<textarea/>`), and a browser reads `<script …/>` as an **open**
-script element that swallows the rest of the page (`<textarea/>` does the same to
-everything after it). The result is labeled `text/html` all the same. A host that serves
-the result to a browser rewrites self-closed non-void elements as open/close pairs; gonk
-does exactly that (`ikigai-gonk/src/render.rs`).
+### `method="html"` is serialized as HTML
+
+xrust has only an XML serializer, so through 0.2.x every empty element came out
+self-closed (`<script src='a.js'/>`, `<textarea/>`), and a browser reads `<script …/>` as an
+**open** script element that swallows the rest of the page. Since 0.3.0 a `method="html"`
+result (or, with no `xsl:output`, one whose first element is `html`, XSLT 1.0's default) is
+serialized as HTML, by `CompiledStylesheet::transform`, `transform_xml` and the endpoint
+alike:
+
+- an empty element HTML does not call void keeps its end tag: `<script src='a.js'></script>`,
+  `<textarea></textarea>`, `<div></div>`;
+- a void element (`br`, `img`, `input`, `meta`, `link`, … compared ignoring case) has none:
+  `<br/>`. The trailing slash is xrust's and HTML ignores it on a void element, which also
+  makes the output byte for byte what gonk's own pass wrote (`ikigai-gonk/src/render.rs`);
+- an element in a namespace (inline SVG) is XML, as XSLT 1.0 §16.2 says: `<path/>`.
+
+Everything else (escaping, quoting, namespace declarations) is xrust's, unchanged. ⚠ One
+part of §16.2 is not done: `script` and `style` content is still escaped, so an INLINE script
+with a `'` or a `<` in it breaks (`'` becomes `&apos;`). Writing it raw would make any data a
+stylesheet copies into a script executable markup, so it stays a host's decision; keep scripts
+and styles in their own files.
 
 What the gaps cost a real stylesheet, and how one is written around them, is measured in
 gonk's renderer: everything a template would compute arrives as data on the node it
