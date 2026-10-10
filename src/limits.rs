@@ -48,12 +48,26 @@
 //! ⚠ **On wasm there is no thread**: [`on_xslt_stack`] runs inline there, so only the first
 //! layer applies, on whatever stack the host gave the module.
 //!
-//! ⚠ **Neither layer bounds TIME.** Some flat shapes are super-linear in xrust (an XPath chain
-//! of 8,192 `+1` terms takes ~3.5 s in a debug build), and a recursive template can loop
-//! [`XRUST_MAX_DEPTH`] deep at every level of a large document. This module is about the
-//! stack, because an abort takes down every request at once.
+//! ## Time (ledger #1040)
+//!
+//! Neither layer bounds TIME, and some shapes inside both are super-linear in xrust: a long
+//! operator chain in the compile, a template recursing to build a deep result about as the
+//! cube of its depth. So [`on_xslt_stack_within`] answers the caller at a deadline —
+//! [`DEFAULT_TIME_BUDGET`], 5 s, for everything this crate runs on its own — with a typed
+//! `Timeout`, never a partial result. ⚠ The work is **abandoned, not cancelled**: xrust has
+//! no cancellation point, so it runs to its end on its own thread, and what bounds the CPU is
+//! a cap on how many may be running like that at once ([`max_overdue_transforms`]). See
+//! [`on_xslt_stack_within`] and [`DEFAULT_TIME_BUDGET`] for the evidence and the trade.
+//!
+//! ## Panics
+//!
+//! xrust panics on some input a caller controls (an attribute or the document node at the top
+//! of the result, an `xsl:sort` key that fails to evaluate). [`on_xslt_stack`] and
+//! [`on_xslt_stack_within`] catch it on the pooled thread and answer `Endpoint` naming it.
 
 use ikigai_core::{Error, Result};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 /// The deepest either input's elements may nest — **64**.
 ///
@@ -488,9 +502,84 @@ pub const fn xslt_stack_size() -> usize {
 /// memo of compiled stylesheets (see `transform_xml`), so a kept thread is a warm one.
 pub const MAX_IDLE_THREADS: usize = 8;
 
+/// The time every transform this crate starts on its own gets: **5 seconds** — what
+/// `urn:xslt:transform` gives every request, and what `transform_xml` and
+/// `stylesheet_output_method` are answered within. Past it the caller gets a typed
+/// [`Error::Timeout`] naming the budget, never a partial result (ledger #1040). The same
+/// number as `ikigai-store`'s and `ikigai-sparql`'s SPARQL budgets, so one default holds
+/// across the ecosystem's caller-supplied query languages.
+///
+/// The evidence, measured 2026-10-10 with xrust 2.2.0 in a release build on an 18-core
+/// machine (`cargo run --release --example time-cost -- <gonk.xsl> <cms-web styles>`). COLD
+/// is a stylesheet not yet compiled on that thread — what a caller sending its own stylesheet
+/// always costs; WARM is the compile memoized:
+///
+/// | input | cold | warm |
+/// | --- | --- | --- |
+/// | gonk's 98 KB stylesheet, a 10-row queue chunk (what gonk renders: `CHUNK_ROWS`) | 0.73 s | 0.31 s |
+/// | the same, 25 rows in one document | 1.2 s | 0.78 s |
+/// | the same, 50 rows in one document | 2.0 s | 1.6 s |
+/// | the same, 100 rows in one document † | 5.9 s | 5.8 s |
+/// | the reading room's `catalog.xsl`, a 60-resource page (its page size) | 0.045 s | 0.031 s |
+/// | the same, 600 resources | 0.90 s | 0.88 s |
+/// | an XPath of 8,192 `+1` terms (16 KB of stylesheet) | 0.69 s | 0.004 s |
+/// | the same, 16,384 terms (32 KB) | 1.9 s | 0.007 s |
+/// | a template recursing to build an 800-level result (~600 bytes) | 0.49 s | 0.49 s |
+/// | the same, 1,200 levels | 1.6 s | 1.6 s |
+/// | the same, 1,592 levels | 3.7 s | 3.8 s |
+///
+/// † measured while another build pushed the load average from 7 to 35, so high.
+///
+/// So 5 s is about seven times gonk's cold chunk and a hundred times the reading room's page,
+/// while the attacks are already past it a step or two up their curves: the operator chain
+/// is in the COMPILE (warm, it is nothing), and the recursion grows about as the CUBE of the
+/// result's depth, which xrust lets reach 199 calls of up to 60 nested elements each — minutes,
+/// from a stylesheet under 1 KB. Nothing in either input's bytes or nesting bounds that, so
+/// time is bounded as time.
+///
+/// ⚠ A host that renders larger single documents than these on purpose — gonk's 400-row
+/// queue in one document took 23.6 s before it was chunked — calls `transform_xml_within`
+/// (or [`on_xslt_stack_within`]) with its own budget. The endpoint has no host constructor
+/// and no argument a budget could ride on, so its budget is this constant.
+pub const DEFAULT_TIME_BUDGET: Duration = Duration::from_secs(5);
+
+/// A quarter of this machine's available parallelism, and at least one: how many transforms
+/// may still be running after their callers' budgets ran out before new ones are refused.
+/// See [`on_xslt_stack_within`].
+pub fn max_overdue_transforms() -> usize {
+    static MAX: OnceLock<usize> = OnceLock::new();
+    *MAX.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get() / 4)
+            .unwrap_or(1)
+            .max(1)
+    })
+}
+
+/// How many transforms are running right now after their callers were answered with a
+/// [`Error::Timeout`] — work xrust cannot be told to stop. Always 0 on wasm.
+pub fn overdue_transforms() -> usize {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        pool::overdue()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        0
+    }
+}
+
 /// Run `work` — a parse, compile and transform of inputs [`check_source`] and
 /// [`check_stylesheet`] admitted — on a thread with [`xslt_stack_size`] of stack, and return
-/// what it returns. A panic in `work` is resumed on the caller's thread.
+/// what it returns, however long it takes. [`on_xslt_stack_within`] is the same with a
+/// deadline; everything this crate runs on its own uses that one.
+///
+/// ★ **A panic in `work` is answered, not resumed**: the caller gets [`Error::Endpoint`]
+/// naming it (ledger #1040). xrust panics on some input a caller controls — `<xsl:copy-of
+/// select="/"/>` (it cannot attach a document node to the result), an attribute at the top of
+/// the result, an `xsl:sort` key that fails to evaluate — and through 0.2.0 that panic was
+/// re-raised on the caller's thread, which in a host is a request handler. The default panic
+/// hook still prints the panic's message to stderr: that hook is the host's, not this crate's.
 ///
 /// The threads are pooled: a call takes an idle one (or starts one) and gives it back, keeping
 /// at most [`MAX_IDLE_THREADS`]. That matters because a compiled stylesheet is memoized per
@@ -500,11 +589,14 @@ pub const MAX_IDLE_THREADS: usize = 8;
 /// it rather than trusted.
 ///
 /// ⚠ On wasm there is no thread to start: `work` runs inline, on whatever stack the host gave
-/// the module, so only the bounds protect it there.
+/// the module, so only the bounds protect it there, and a panic is whatever the module's
+/// panic strategy makes it (an abort, on `wasm32-unknown-unknown`).
 ///
 /// ```
 /// let answer = ikigai_xslt::limits::on_xslt_stack(|| 6 * 7).unwrap();
 /// assert_eq!(answer, 42);
+/// let refused = ikigai_xslt::limits::on_xslt_stack(|| -> u8 { panic!("inside") });
+/// assert!(matches!(refused, Err(ikigai_core::Error::Endpoint(m)) if m.contains("inside")));
 /// ```
 pub fn on_xslt_stack<T, F>(work: F) -> Result<T>
 where
@@ -513,10 +605,51 @@ where
 {
     #[cfg(not(target_family = "wasm"))]
     {
-        pool::run(work)
+        pool::run(None, work)
     }
     #[cfg(target_family = "wasm")]
     {
+        Ok(work())
+    }
+}
+
+/// [`on_xslt_stack`], answered within `budget`: past it the caller gets a typed
+/// [`Error::Timeout`] naming the budget — never a partial result (ledger #1040).
+///
+/// ⚠ **The work is ABANDONED, not cancelled.** xrust has no cancellation point — no hook is
+/// called per step, and its only callbacks (`xsl:message`, `document()`, runtime parsing) are
+/// ones a stylesheet need not reach — and there is no way to stop a Rust thread from outside
+/// it. So the pooled thread runs the work to its end and then exits (it is never given back
+/// to the pool). What the budget buys is that the CALLER is answered on time and an async
+/// worker is not held. What bounds the CPU is a count: a transform still running after its
+/// caller was answered is OVERDUE ([`overdue_transforms`]), and while
+/// [`max_overdue_transforms`] are, every new call is refused at once with a transient
+/// [`Error::Unavailable`] saying why — the store's answer to the same problem (ledger #964).
+///
+/// On wasm there is no thread, so there is no deadline: `work` runs inline, to its end.
+///
+/// ```
+/// use std::time::Duration;
+/// use ikigai_xslt::limits::on_xslt_stack_within;
+///
+/// assert_eq!(on_xslt_stack_within(Duration::from_secs(5), || 6 * 7).unwrap(), 42);
+/// let late = on_xslt_stack_within(Duration::from_millis(10), || {
+///     std::thread::sleep(Duration::from_millis(200));
+/// });
+/// assert!(matches!(late, Err(ikigai_core::Error::Timeout(m)) if m.contains("10 ms")));
+/// ```
+pub fn on_xslt_stack_within<T, F>(budget: Duration, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        pool::run(Some(budget), work)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = budget;
         Ok(work())
     }
 }
@@ -528,13 +661,42 @@ pub fn release_idle_threads() {
     pool::release_idle();
 }
 
+/// The refusal a transform past its budget is answered with.
+#[cfg(not(target_family = "wasm"))]
+fn timeout(budget: Duration) -> Error {
+    Error::Timeout(format!(
+        "this XSLT transform ran past its time budget of {} ms and its caller was answered \
+         instead of waiting (ledger #1040); nothing it produced is returned. The XSLT engine \
+         cannot be stopped partway, so it finishes on its own thread and is counted until it \
+         does. Some shapes are super-linear in the engine — a long chain of operators, a \
+         template that recurses to build a deep result, a path nested inside a predicate \
+         over every node — so make the input or the stylesheet smaller, or, as the host, run \
+         it with a larger budget",
+        budget.as_millis()
+    ))
+}
+
+/// What a caught panic carried, as text.
+#[cfg(not(target_family = "wasm"))]
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "a panic with no message".to_string())
+}
+
 #[cfg(not(target_family = "wasm"))]
 mod pool {
-    use super::{xslt_stack_size, MAX_IDLE_THREADS};
+    use super::{
+        max_overdue_transforms, panic_message, timeout, xslt_stack_size, MAX_IDLE_THREADS,
+    };
     use ikigai_core::{Error, Result};
-    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-    use std::sync::mpsc::{channel, sync_channel, Sender};
-    use std::sync::Mutex;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::{channel, sync_channel, RecvTimeoutError, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     /// One unit of work for a pooled thread; it answers whether the thread may be reused.
     type Job = Box<dyn FnOnce() -> bool + Send>;
@@ -542,9 +704,28 @@ mod pool {
     /// The idle threads, each reached through the sender of its job queue.
     static IDLE: Mutex<Vec<Sender<Job>>> = Mutex::new(Vec::new());
 
-    fn idle() -> std::sync::MutexGuard<'static, Vec<Sender<Job>>> {
-        // A panic while holding this lock leaves a Vec of senders, which is still valid.
-        IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Transforms still running after their callers were answered with a timeout.
+    static OVERDUE: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn overdue() -> usize {
+        OVERDUE.load(Ordering::SeqCst)
+    }
+
+    /// Where one call stands, shared by its worker and the caller waiting for it.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Running,
+        /// The worker finished while the caller was still waiting: the caller takes its
+        /// answer, whatever the clock says by the time it looks.
+        Settled,
+        /// The caller gave up: the answer is discarded, and the finish uncounts it.
+        Abandoned,
+    }
+
+    fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        // Both guarded values (a Vec of senders, a plain enum) are valid whatever a panic
+        // interrupted, so poisoning carries no meaning here.
+        m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn start() -> Result<Sender<Job>> {
@@ -570,17 +751,46 @@ mod pool {
 
     pub(super) fn release_idle() {
         // Dropping a sender ends that thread's job loop.
-        idle().clear();
+        lock(&IDLE).clear();
     }
 
-    pub(super) fn run<T, F>(work: F) -> Result<T>
+    pub(super) fn run<T, F>(budget: Option<Duration>, work: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
+        if budget.is_some() {
+            let (running, most) = (overdue(), max_overdue_transforms());
+            if running >= most {
+                return Err(Error::Unavailable(format!(
+                    "{running} XSLT transforms are still running after their callers' time \
+                     budgets ran out (the most allowed is {most}, a quarter of this machine's \
+                     cores); the engine cannot be stopped partway, so new transforms are \
+                     refused until one finishes, rather than letting each request hold \
+                     another core (ledger #1040). Retry shortly"
+                )));
+            }
+        }
+        let state = Arc::new(Mutex::new(State::Running));
         let (answer, reply) = sync_channel(1);
+        let worker_state = Arc::clone(&state);
         let mut job: Job = Box::new(move || {
             let outcome = catch_unwind(AssertUnwindSafe(work));
+            let abandoned = {
+                let mut state = lock(&worker_state);
+                if *state == State::Abandoned {
+                    true
+                } else {
+                    *state = State::Settled;
+                    false
+                }
+            };
+            if abandoned {
+                // Uncounted only now that it has actually finished. The thread is not given
+                // back (its caller dropped the queue's sender), so it exits.
+                OVERDUE.fetch_sub(1, Ordering::SeqCst);
+                return false;
+            }
             let reusable = outcome.is_ok();
             let _ = answer.send(outcome);
             reusable
@@ -588,7 +798,7 @@ mod pool {
         // An idle thread can have exited (its queue then refuses the job and hands it back);
         // fall through to a fresh one rather than fail the call.
         let worker = loop {
-            let Some(worker) = idle().pop() else {
+            let Some(worker) = lock(&IDLE).pop() else {
                 let worker = start()?;
                 if worker.send(job).is_err() {
                     return Err(Error::Unavailable(
@@ -602,18 +812,42 @@ mod pool {
                 Err(refused) => job = refused.0,
             }
         };
-        match reply.recv() {
-            Ok(Ok(value)) => {
-                let mut idle = idle();
+        let lost = || Error::Unavailable("the XSLT thread exited without an answer".to_string());
+        let outcome = match budget {
+            None => reply.recv().map_err(|_| lost())?,
+            Some(budget) => match reply.recv_timeout(budget) {
+                Ok(outcome) => outcome,
+                Err(RecvTimeoutError::Timeout) => {
+                    {
+                        let mut state = lock(&state);
+                        if *state == State::Running {
+                            *state = State::Abandoned;
+                            OVERDUE.fetch_add(1, Ordering::SeqCst);
+                            // `worker` drops here: the thread exits after this job.
+                            return Err(timeout(budget));
+                        }
+                    }
+                    // Settled: it finished in time and its answer is on the way.
+                    reply.recv().map_err(|_| lost())?
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(lost()),
+            },
+        };
+        match outcome {
+            Ok(value) => {
+                let mut idle = lock(&IDLE);
                 if idle.len() < MAX_IDLE_THREADS {
                     idle.push(worker);
                 }
                 Ok(value)
             }
-            Ok(Err(panic)) => resume_unwind(panic),
-            Err(_) => Err(Error::Unavailable(
-                "the XSLT thread exited without an answer".to_string(),
-            )),
+            Err(panic) => Err(Error::Endpoint(format!(
+                "the XSLT engine (xrust) panicked on this input instead of answering: {}. \
+                 It is an input the engine cannot run — for example copying the document \
+                 node or an attribute to the top of the result, or an xsl:sort key that \
+                 fails to evaluate — and nothing was produced",
+                panic_message(&*panic)
+            ))),
         }
     }
 }
@@ -741,9 +975,15 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_is_resumed_on_the_caller_and_the_pool_keeps_working() {
-        let caught = std::panic::catch_unwind(|| on_xslt_stack(|| panic!("inside")));
-        assert!(caught.is_err());
+    fn a_panic_is_answered_on_the_caller_and_the_pool_keeps_working() {
+        let caught = std::panic::catch_unwind(|| on_xslt_stack(|| -> u8 { panic!("inside") }));
+        let answer = caught.expect("a panic in the work is answered, never resumed");
+        assert!(
+            matches!(&answer, Err(Error::Endpoint(m)) if m.contains("inside")),
+            "{answer:?}"
+        );
+        let within = on_xslt_stack_within(Duration::from_secs(60), || -> u8 { panic!("again") });
+        assert!(matches!(&within, Err(Error::Endpoint(m)) if m.contains("again")));
         assert_eq!(on_xslt_stack(|| 1 + 1).unwrap(), 2);
         // Calls from many threads at once each get an answer.
         let handles: Vec<_> = (0..16)

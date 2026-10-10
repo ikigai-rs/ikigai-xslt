@@ -34,6 +34,14 @@
 //! (a typed `InvalidArgument` naming the argument), and the transform runs on a pooled
 //! thread whose stack holds anything the bounds admit, in a debug and a release build alike
 //! (ledger #916). See [`limits`] for the bounds, what they cost, and how declarations are read.
+//!
+//! ## And it is answered within a time budget
+//!
+//! Some shapes inside those bounds are super-linear in xrust, so every transform this crate
+//! starts is answered within [`limits::DEFAULT_TIME_BUDGET`] (5 s) with a typed `Timeout` past
+//! it, and a panic inside xrust is answered as an `Endpoint` error rather than raised on the
+//! caller's thread (ledger #1040). The work past a deadline is abandoned, not cancelled — xrust
+//! cannot be stopped — and capped in number; see [`limits::on_xslt_stack_within`].
 
 #![forbid(unsafe_code)]
 
@@ -118,8 +126,12 @@ impl Endpoint for XsltEndpoint {
         // endpoint's future stay `Send`. Cacheable — the result inherits the src +
         // stylesheet threads.
         let as_media = inv.inline_str("as").ok().map(str::to_string);
-        let (media, out) =
-            limits::on_xslt_stack(move || render(&source, &stylesheet, as_media.as_deref()))??;
+        // Within [`limits::DEFAULT_TIME_BUDGET`]: past it the caller is answered with a typed
+        // `Timeout`, and the work — which xrust cannot be told to stop — is counted until it
+        // ends (ledger #1040).
+        let (media, out) = limits::on_xslt_stack_within(limits::DEFAULT_TIME_BUDGET, move || {
+            render(&source, &stylesheet, as_media.as_deref())
+        })??;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
             out.into_bytes(),
@@ -233,13 +245,13 @@ fn media_type_for(method: Option<&str>) -> &'static str {
 /// ```
 ///
 /// Like [`transform_xml`], it refuses a stylesheet past [`limits::check_stylesheet`]'s bounds
-/// and parses on [`limits::on_xslt_stack`].
+/// and parses on [`limits::on_xslt_stack_within`], within [`limits::DEFAULT_TIME_BUDGET`].
 pub fn stylesheet_output_method(
     stylesheet_xml: &str,
 ) -> std::result::Result<Option<String>, String> {
     limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
     let stylesheet_xml = stylesheet_xml.to_string();
-    limits::on_xslt_stack(move || {
+    limits::on_xslt_stack_within(limits::DEFAULT_TIME_BUDGET, move || {
         let doc = parse_xml(&stylesheet_xml)
             .map_err(|e| format!("stylesheet parse error: {}", e.message))?;
         Ok(output_method_of(&doc))
@@ -479,19 +491,58 @@ pub fn clear_stylesheet_cache() {
 /// source document's, because the stylesheet is what gets looked at first.
 ///
 /// Both arguments are checked against [`limits`]' bounds before xrust sees either, and the
-/// transform runs on [`limits::on_xslt_stack`] — a pooled thread with the stack those bounds
-/// need — so the memo above lives on those threads, and this is safe to call from any thread,
-/// a 2 MiB async worker included. Each call copies both arguments to hand them over.
+/// transform runs on [`limits::on_xslt_stack_within`] — a pooled thread with the stack those
+/// bounds need — so the memo above lives on those threads, and this is safe to call from any
+/// thread, a 2 MiB async worker included. Each call copies both arguments to hand them over.
+///
+/// ⚠ **Since 0.2.1 it is answered within [`limits::DEFAULT_TIME_BUDGET`]** (5 s): past it the
+/// answer is an error beginning `timeout:`, never a partial result, and the work — which
+/// xrust cannot be told to stop — finishes on its own thread (ledger #1040). A host that
+/// renders larger documents than that on purpose calls [`transform_xml_within`] with its own
+/// budget. A panic inside xrust is an error beginning `endpoint error:`, no longer a panic on
+/// the calling thread.
 pub fn transform_xml(
     src_xml: &str,
     stylesheet_xml: &str,
     text_output: bool,
 ) -> std::result::Result<String, String> {
+    transform_xml_within(
+        src_xml,
+        stylesheet_xml,
+        text_output,
+        limits::DEFAULT_TIME_BUDGET,
+    )
+}
+
+/// [`transform_xml`] answered within `budget` rather than [`limits::DEFAULT_TIME_BUDGET`]:
+/// for a host that knows its own documents need more (or should get less). The caller is
+/// the host here, so the budget is not clamped; see [`limits::on_xslt_stack_within`] for what
+/// a budget can and cannot stop.
+///
+/// ```
+/// use std::time::Duration;
+/// let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:output method="text"/>
+///   <xsl:template match="/"><xsl:value-of select="doc/item"/></xsl:template>
+/// </xsl:stylesheet>"#;
+/// let out = ikigai_xslt::transform_xml_within(
+///     "<doc><item>a</item></doc>", style, true, Duration::from_secs(30),
+/// );
+/// assert_eq!(out.unwrap(), "a");
+/// ```
+pub fn transform_xml_within(
+    src_xml: &str,
+    stylesheet_xml: &str,
+    text_output: bool,
+    budget: std::time::Duration,
+) -> std::result::Result<String, String> {
     limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
     limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
     let (src_xml, stylesheet_xml) = (src_xml.to_string(), stylesheet_xml.to_string());
-    limits::on_xslt_stack(move || compiled_for(&stylesheet_xml)?.run(&src_xml, text_output))
-        .map_err(|e| e.to_string())?
+    limits::on_xslt_stack_within(budget, move || {
+        compiled_for(&stylesheet_xml)?.run(&src_xml, text_output)
+    })
+    .map_err(|e| e.to_string())?
 }
 
 /// Compile (or reuse) the stylesheet, settle the result's media type, and run the
