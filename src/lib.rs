@@ -26,8 +26,18 @@
 //! pays that once and runs many documents — ~12 µs to ready each run. [`transform_xml`]
 //! keeps its exact signature and memoizes the compile per thread on the stylesheet's full
 //! text, so existing callers get the same saving without changing a line.
+//!
+//! ## Caller XML is bounded, and runs on a stack sized for the bound
+//!
+//! xrust recurses once per level of nesting, and a stack overflow aborts the whole process,
+//! so both inputs are scanned before xrust sees them and refused past [`limits`]' bounds
+//! (a typed `InvalidArgument` naming the argument), and the transform runs on a pooled
+//! thread whose stack holds anything the bounds admit, in a debug and a release build alike
+//! (ledger #916). See [`limits`] for the bounds, what they cost, and how declarations are read.
 
 #![forbid(unsafe_code)]
+
+pub mod limits;
 
 use async_trait::async_trait;
 use std::cell::RefCell;
@@ -80,14 +90,14 @@ impl Endpoint for XsltEndpoint {
         // document is piped in (the engine routes a piped value to the first input) — the
         // inline XML itself. XML always starts with `<`, an IRI never does, so that's the
         // discriminator. An explicit `content=` is also accepted.
-        let source = if let Ok(src) = inv.inline_str("src") {
+        let (source, source_arg) = if let Ok(src) = inv.inline_str("src") {
             if is_inline_xml(src) {
-                src.to_string()
+                (src.to_string(), "src")
             } else {
-                utf8(resolve_ref(inv, src).await?, "src")?
+                (utf8(resolve_ref(inv, src).await?, "src")?, "src")
             }
         } else if let Ok(content) = inv.inline_str("content") {
-            content.to_string()
+            (content.to_string(), "content")
         } else {
             return Err(Error::Endpoint(
                 "urn:xslt:transform needs a `src=<uri>` resource reference (or a piped document)"
@@ -95,12 +105,21 @@ impl Endpoint for XsltEndpoint {
             ));
         };
 
+        // Both inputs are caller XML: refuse what would overflow the stack before xrust sees
+        // a byte of either (ledger #916). A refusal names the argument the text came in by —
+        // for a reference, the argument that named it.
+        limits::check_stylesheet(&stylesheet, "stylesheet")?;
+        limits::check_source(&source, source_arg)?;
+
         // Decide the media type and transform — synchronously, in one helper, with no
-        // `await` inside it. That is load-bearing rather than tidy: a compiled stylesheet
-        // holds `Rc`s, so it is `!Send`, and keeping it out of the async body is what lets
-        // the endpoint's future stay `Send`. Cacheable — the result inherits the src +
+        // `await` inside it, on a thread whose stack holds anything the bounds admit. That
+        // is load-bearing rather than tidy: a compiled stylesheet holds `Rc`s, so it is
+        // `!Send`, and it lives and dies on that thread — which is also what lets the
+        // endpoint's future stay `Send`. Cacheable — the result inherits the src +
         // stylesheet threads.
-        let (media, out) = render(&source, &stylesheet, inv.inline_str("as").ok())?;
+        let as_media = inv.inline_str("as").ok().map(str::to_string);
+        let (media, out) =
+            limits::on_xslt_stack(move || render(&source, &stylesheet, as_media.as_deref()))??;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
             out.into_bytes(),
@@ -212,12 +231,20 @@ fn media_type_for(method: Option<&str>) -> &'static str {
 /// let plain = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"/>"#;
 /// assert_eq!(ikigai_xslt::stylesheet_output_method(plain).unwrap(), None);
 /// ```
+///
+/// Like [`transform_xml`], it refuses a stylesheet past [`limits::check_stylesheet`]'s bounds
+/// and parses on [`limits::on_xslt_stack`].
 pub fn stylesheet_output_method(
     stylesheet_xml: &str,
 ) -> std::result::Result<Option<String>, String> {
-    let doc =
-        parse_xml(stylesheet_xml).map_err(|e| format!("stylesheet parse error: {}", e.message))?;
-    Ok(output_method_of(&doc))
+    limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
+    let stylesheet_xml = stylesheet_xml.to_string();
+    limits::on_xslt_stack(move || {
+        let doc = parse_xml(&stylesheet_xml)
+            .map_err(|e| format!("stylesheet parse error: {}", e.message))?;
+        Ok(output_method_of(&doc))
+    })
+    .map_err(|e| e.to_string())?
 }
 
 /// The same reading, from an already-parsed stylesheet. Kept separate because
@@ -282,6 +309,15 @@ fn utf8(repr: Representation, role: &str) -> Result<String> {
 /// assert_eq!(compiled.transform("<doc><item>b</item></doc>", true).unwrap(), "b");
 /// ```
 ///
+/// ⚠ **It runs on the CALLER'S thread, so the caller owes it the stack.** [`compile`] and
+/// [`transform`] refuse input past [`limits`]' bounds, but what the bounds admit needs up to
+/// [`limits::xslt_stack_size`] of stack — more than a 2 MiB tokio worker has. Build and use
+/// the handle on a thread that size (or inside [`limits::on_xslt_stack`]), or call
+/// [`transform_xml`], which does that for you.
+///
+/// [`compile`]: CompiledStylesheet::compile
+/// [`transform`]: CompiledStylesheet::transform
+///
 /// ⚠ **This handle is `!Send` and `!Sync`, and cannot be made otherwise here.** xrust's
 /// tree (`smite::RNode`) is `Rc<Node>`, so every compiled artifact is reference-counted
 /// non-atomically. A multi-threaded server therefore cannot park one in shared state: it
@@ -299,7 +335,10 @@ pub struct CompiledStylesheet {
 impl CompiledStylesheet {
     /// Parse and compile a stylesheet. Errors are plain strings, like [`transform_xml`]'s,
     /// so this type carries no ikigai-core types either.
+    ///
+    /// Refuses a stylesheet past [`limits::check_stylesheet`]'s bounds before parsing it.
     pub fn compile(stylesheet_xml: &str) -> std::result::Result<Self, String> {
+        limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
         let styledoc = parse_xml(stylesheet_xml)
             .map_err(|e| format!("stylesheet parse error: {}", e.message))?;
         // Read `xsl:output method` BEFORE compiling: `from_document` strips whitespace
@@ -323,11 +362,19 @@ impl CompiledStylesheet {
     /// Transform one source document. Serializes the result as its string value when
     /// `text_output` (a `method="text"` stylesheet, whitespace preserved), otherwise as
     /// XML/markup.
+    ///
+    /// Refuses a document past [`limits::check_source`]'s bounds before parsing it.
     pub fn transform(
         &self,
         src_xml: &str,
         text_output: bool,
     ) -> std::result::Result<String, String> {
+        limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
+        self.run(src_xml, text_output)
+    }
+
+    /// [`CompiledStylesheet::transform`] without the check, for a caller that has made it.
+    fn run(&self, src_xml: &str, text_output: bool) -> std::result::Result<String, String> {
         let srcdoc = parse_xml(src_xml)
             .map_err(|e| format!("source document parse error: {}", e.message))?;
 
@@ -363,7 +410,8 @@ impl CompiledStylesheet {
     }
 }
 
-/// How many compiled stylesheets [`transform_xml`] keeps per thread. Small on purpose: a
+/// How many compiled stylesheets [`transform_xml`] keeps per thread (per pooled thread, see
+/// [`limits::on_xslt_stack`], so up to [`limits::MAX_IDLE_THREADS`] times this in all). Small on purpose: a
 /// compiled stylesheet measured ~369 KB for gonk's (38 KB, 56 templates), and this is
 /// per-thread storage in every host that links the crate.
 const STYLESHEET_CACHE_ENTRIES: usize = 4;
@@ -402,12 +450,15 @@ fn compiled_for(stylesheet_xml: &str) -> std::result::Result<Rc<CompiledStyleshe
     Ok(compiled)
 }
 
-/// Drop this thread's compiled stylesheets. Only memory is at stake — every entry is a
-/// pure function of its key, so dropping one costs the next call a recompile and changes
-/// no answer. A host that has finished with one set of stylesheets can call this; nothing
-/// needs to.
+/// Drop the compiled stylesheets of this thread and of every IDLE pooled thread — the ones
+/// [`transform_xml`] and the endpoint run on (see [`limits::on_xslt_stack`]): the idle
+/// threads are let go, and their memos with them. A thread busy with a call keeps its memo.
+/// Only memory is at stake — every entry is a pure function of its key, so dropping one
+/// costs the next call a recompile and changes no answer. A host that has finished with one
+/// set of stylesheets can call this; nothing needs to.
 pub fn clear_stylesheet_cache() {
     COMPILED.with(|cache| cache.borrow_mut().clear());
+    limits::release_idle_threads();
 }
 
 /// The synchronous XSLT transform — the crate's public, host-agnostic entry point.
@@ -426,17 +477,27 @@ pub fn clear_stylesheet_cache() {
 /// ⚠ One observable difference from the pre-memo version, and only one: when **both**
 /// arguments are malformed the stylesheet's parse error is now reported rather than the
 /// source document's, because the stylesheet is what gets looked at first.
+///
+/// Both arguments are checked against [`limits`]' bounds before xrust sees either, and the
+/// transform runs on [`limits::on_xslt_stack`] — a pooled thread with the stack those bounds
+/// need — so the memo above lives on those threads, and this is safe to call from any thread,
+/// a 2 MiB async worker included. Each call copies both arguments to hand them over.
 pub fn transform_xml(
     src_xml: &str,
     stylesheet_xml: &str,
     text_output: bool,
 ) -> std::result::Result<String, String> {
-    compiled_for(stylesheet_xml)?.transform(src_xml, text_output)
+    limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
+    limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
+    let (src_xml, stylesheet_xml) = (src_xml.to_string(), stylesheet_xml.to_string());
+    limits::on_xslt_stack(move || compiled_for(&stylesheet_xml)?.run(&src_xml, text_output))
+        .map_err(|e| e.to_string())?
 }
 
 /// Compile (or reuse) the stylesheet, settle the result's media type, and run the
 /// transform — the endpoint's whole synchronous half, in one non-`async` function so that
-/// the `!Send` compiled stylesheet can never be live across an `await`.
+/// the `!Send` compiled stylesheet can never be live across an `await`. The endpoint checks
+/// both inputs and calls this on [`limits::on_xslt_stack`]; it checks nothing itself.
 fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(String, String)> {
     let compiled = compiled_for(stylesheet).map_err(Error::Endpoint)?;
     // The output media type: what `as=` names, else what the stylesheet's `xsl:output
@@ -452,9 +513,7 @@ fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(Str
     // serialize.
     let text_output =
         method == Some("text") || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
-    let out = compiled
-        .transform(source, text_output)
-        .map_err(Error::Endpoint)?;
+    let out = compiled.run(source, text_output).map_err(Error::Endpoint)?;
     Ok((media, out))
 }
 

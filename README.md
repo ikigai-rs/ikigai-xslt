@@ -66,6 +66,39 @@ The transform therefore inherits the expiry and freshness of whatever it was bui
 a stylesheet served live makes the transform live too, and with both inputs inline it is
 a pure function of them.
 
+## Caller XML is bounded, and cannot take the process down
+
+xrust parses, compiles and evaluates by recursion, and a stack overflow aborts the whole
+process. Measured on a 2 MiB thread (a tokio worker's) through 0.2.0: 24 nested source
+elements aborted a debug build and 114 a release one, and an XPath nesting 13 parentheses —
+about 40 bytes of stylesheet — aborted a release build (7 in debug). Both inputs are caller
+XML wherever a host offers the endpoint, so from 0.2.1 (ledger #916):
+
+| bound | value | refused as |
+| --- | --- | --- |
+| element nesting, either input (`limits::MAX_XML_DEPTH`) | 64 | `InvalidArgument` naming `src`, `content` or `stylesheet` |
+| bracket nesting in one stylesheet attribute value — XPath and `{…}` templates (`limits::MAX_EXPR_DEPTH`) | 32 | `InvalidArgument` naming `stylesheet` |
+| text the declared entities expand to (`limits::MAX_ENTITY_EXPANSION`) | 1 MiB | `InvalidArgument` |
+
+The check is one non-recursive scan before xrust sees a byte; comments, CDATA sections and
+processing instructions are skipped exactly. A `<!DOCTYPE` internal subset is read: an
+entity whose value holds `<`, `&` or `%` (markup, a reference, or a character reference that
+becomes markup), a parameter entity, and an external entity are refused, because xrust
+expands entities as content and the tag scan cannot see what they build. The declaration
+RDF/XML uses — a name for a namespace IRI — is admitted. No external DTD is ever fetched.
+
+Then the transform runs on a **pooled thread whose stack holds anything the bounds admit**
+in that build (`limits::xslt_stack_size()`: ~45 MiB release, ~338 MiB debug — reserved
+address space, committed only as it is touched), so a call from a 2 MiB async worker is as
+safe as any other. That covers what no lexical bound can: a template that calls itself
+nests its result once a call, up to xrust's own 200 calls. The threads are kept (up to 8
+idle) because the compiled-stylesheet memo below lives on them. On wasm there is no thread,
+so only the bounds apply there.
+
+Real input is far inside the bounds: gonk's 98 KB stylesheet nests 14 elements, the reading
+room's stylesheets 5 to 9, and their expressions two or three brackets. Neither layer bounds
+**time**: some flat shapes are super-linear in xrust, and that is not this section's claim.
+
 ## Compiling the stylesheet is the cost, and it is reused
 
 Almost all of an XSLT call is parsing and compiling the **stylesheet**, which has nothing
@@ -87,19 +120,22 @@ warm-up between calls. From 0.1.3:
   `.transform(src, text_output)` runs any number of documents against it, each run
   independent of the last. It also carries `.output_method()`, so labelling a result no
   longer costs a second parse of the stylesheet.
-* **`transform_xml` keeps its exact signature** and memoizes the compile per thread,
-  keyed on the stylesheet's full text. Existing callers get the saving with no change:
+* **`transform_xml` keeps its exact signature** and memoizes the compile per thread
+  (since 0.2.1, per pooled transform thread), keyed on the stylesheet's full text. Existing callers get the saving with no change:
   the empty document goes 157 ms → **0.14 ms**, a real gonk page 163 ms → **3.7 ms**.
 
 The memo is keyed on the bytes the caller just passed — not on a path, an IRI or a
 timestamp — so an edited stylesheet is simply a different key and there is nothing that
 can go stale under the kernel's golden threads. It holds four entries per thread
-(~369 KB each for a stylesheet this size); `clear_stylesheet_cache()` drops them, and
-changes no answer.
+(~369 KB each for a stylesheet this size); `clear_stylesheet_cache()` drops them (and lets
+the idle pooled threads go), and changes no answer.
 
 ⚠ A compiled stylesheet is **`!Send` and `!Sync`**, and cannot be otherwise: xrust's tree
 is `Rc`-based. A multi-threaded host holds one per thread (which is what `transform_xml`
-does for you), per connection or per task — never in shared state.
+does for you), per connection or per task — never in shared state. And it runs on the
+caller's thread: `compile` and `transform` enforce the bounds, but the stack they need is
+the caller's to provide (`limits::xslt_stack_size()`, or run inside
+`limits::on_xslt_stack`). `transform_xml` does that for you too.
 
 ## Conformance
 
