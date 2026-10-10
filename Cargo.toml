@@ -15,8 +15,9 @@ keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.1.26 is the floor: it introduced `ArgSpec::class`, which every input here declares.
-ikigai-core = "0.1.26"
+# 0.1.89 is the floor: it added `space_iri` and made `bind` drop a space's name, so
+# `space()` can name itself last (ledger #987).
+ikigai-core = "0.1.89"
 async-trait = "0.1"
 xrust = "2.1.0"
 
@@ -66,5 +67,6 @@ futures = "0.3"
 # published library's dependency graph. Same floor as the optional dependency above.
 ikigai-module = "0.3.1"
 # The module recipe as one test (`tests/conformance.rs`): walks `space()` and reports
-# every violation at once. Pins ikigai-core 0.1.67 into the dev graph.
-ikigai-conformance = "0.2.0"
+# every violation at once. 0.6.0 is the floor for SPACE-NAME (`self_named_space`);
+# a `^0.6.0` pin is also a CEILING (<0.7.0).
+ikigai-conformance = "0.6.0"

@@ -41,7 +41,15 @@
 //!   network. The gate lives in the sub-resolution, which ENFORCED cannot see with
 //!   the fixture's inline inputs, so the typed `Denied` is pinned here.
 //!
-//! No opt-outs, no module namespace, and NAMES runs: the id is kebab-case.
+//! ## The space's name
+//!
+//! `space()` is configuration-free, so it names itself `urn:iki:space:xslt` and
+//! [`conforms`] declares it self-named (SPACE-NAME). The walks below that bind
+//! fixture doors onto it get an anonymous space: binding drops the name.
+//!
+//! No opt-outs on the module's endpoint (the two threaded stand-in files are waived
+//! from CACHEABLE, see `WATCHER_CUT`), no module namespace, and NAMES runs: the id
+//! is kebab-case.
 
 use ikigai_conformance::{Check, Fixture, Report, Suite};
 use ikigai_core::{
@@ -111,10 +119,18 @@ fn suite(src: &str, stylesheet: &str) -> Suite {
     )
 }
 
+/// Why the threaded stand-ins are waived from `CACHEABLE`: they cache on their own
+/// name and take no writes through it, which the suite reports as "nothing to cut
+/// it". The real `ikigai-fs` read takes a `Sink` through that name; these stand-ins
+/// model the other cutter, a watcher, and the test is that cut (`kernel.cut`).
+const WATCHER_CUT: &str = "test stand-in for an ikigai-fs file under a watcher: the \
+     watcher's cut is the test's own kernel.cut, which \
+     a_stylesheet_by_reference_inherits_its_thread exercises";
+
 /// A file resource — what `urn:file:<name>` is to the module: bytes behind an IRI,
 /// resolved through the kernel. `threaded` is a store that names its own IRI as the
-/// golden thread (and cuts it on a write); `false` is a live store, served
-/// uncacheable and read every time. The suite walks this endpoint beside the
+/// golden thread, cut from outside the way a watcher cuts it; `false` is a live
+/// store, served uncacheable and read every time. The suite walks this endpoint beside the
 /// module's, so it describes itself the way a module endpoint must.
 fn file_resource(
     id: &'static str,
@@ -203,11 +219,16 @@ fn conforms() {
     let report = suite(DOC, STYLE_HTML)
         .pure(TRANSFORM)
         .cacheable(TRANSFORM)
+        .self_named_space("xslt", ikigai_xslt::space)
         .run_blocking(&kernel);
     // Printed even when clean (`--nocapture`): the report is the record.
     eprintln!("{report}");
     assert!(report.is_clean(), "{report}");
     assert_shape(&report, 0);
+    assert_eq!(
+        ikigai_core::space_iri("xslt").as_str(),
+        ikigai_xslt::SPACE_ID
+    );
 }
 
 /// Both inputs by IRI, served under threads: the transform is cached, carries BOTH
@@ -223,6 +244,8 @@ fn a_stylesheet_by_reference_inherits_its_thread() {
 
     let report = suite(DOCUMENT_IRI, STYLESHEET_IRI)
         .cacheable(TRANSFORM)
+        .opt_out_check("foaf-xsl", Check::Cacheable, WATCHER_CUT)
+        .opt_out_check("brian-rdf", Check::Cacheable, WATCHER_CUT)
         .run_blocking(&kernel);
     eprintln!("[threaded files]\n{report}");
     assert!(report.is_clean(), "{report}");
