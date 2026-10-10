@@ -97,7 +97,44 @@ so only the bounds apply there.
 
 Real input is far inside the bounds: gonk's 98 KB stylesheet nests 14 elements, the reading
 room's stylesheets 5 to 9, and their expressions two or three brackets. Neither layer bounds
-**time**: some flat shapes are super-linear in xrust, and that is not this section's claim.
+**time**; the next section does.
+
+## A transform is answered within a time budget
+
+Some shapes inside every bound above are super-linear in xrust. Measured in a release build
+(`cargo run --release --example time-cost -- <gonk.xsl> <cms-web styles dir>`, 2026-10-10):
+
+| input | time |
+| --- | --- |
+| gonk's 98 KB stylesheet, a 10-row queue chunk (what gonk renders), cold compile included | 0.73 s |
+| the reading room's `catalog.xsl`, a 60-resource page | 0.045 s |
+| an XPath of 16,384 `+1` terms (32 KB of stylesheet, cold) | 1.9 s |
+| a template recursing to build a 1,592-level result (~600 bytes of stylesheet) | 3.7 s |
+
+and the recursion grows about as the cube of the result's depth, which xrust lets reach 199
+calls of up to 60 nested elements each: minutes, from under 1 KB. So from 0.2.1 (ledger #1040)
+every transform this crate starts — the endpoint, `transform_xml`, `stylesheet_output_method`
+— is answered within **`limits::DEFAULT_TIME_BUDGET`, 5 s** (the same base as the
+ecosystem's SPARQL budgets), with a typed `Timeout` naming the budget past it and never a
+partial result. A host that renders larger documents on purpose calls
+`transform_xml_within(src, stylesheet, text_output, budget)`. The endpoint has no host
+constructor and no argument for a budget, so its budget is the constant.
+
+⚠ **The work is abandoned, not cancelled.** xrust has no cancellation point, and a Rust
+thread cannot be stopped from outside, so a transform past its deadline runs to its end on
+its own thread. The caller is still answered on time, and the CPU is bounded by a count: while
+`limits::max_overdue_transforms()` (a quarter of the machine's cores, at least one) are still
+running after their callers were answered, every new transform is refused at once with a
+transient `Unavailable`, until one ends — `limits::overdue_transforms()` says how many there
+are. That trades XSLT availability for the host's other work, as `ikigai-store` does for
+SPARQL. On wasm there is no thread, so there is no deadline either.
+
+**A panic inside xrust is an error, not a panic.** xrust 2.2.0 panics on some input a caller
+controls — `<xsl:copy-of select="/"/>`, an attribute or the document node at the top of the
+result, an `xsl:sort` key that fails to evaluate — and through 0.2.0 that panic reached the
+caller's thread. It is now caught on the transform thread and answered as an `Endpoint` error
+naming it (`endpoint error:` from `transform_xml`). The default panic hook still prints the
+message to stderr; that hook is the host's.
 
 ## Compiling the stylesheet is the cost, and it is reused
 
