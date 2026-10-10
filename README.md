@@ -66,6 +66,26 @@ The transform therefore inherits the expiry and freshness of whatever it was bui
 a stylesheet served live makes the transform live too, and with both inputs inline it is
 a pure function of them.
 
+### `generate-id()` is a position, so the answer is the same in every process
+
+xrust answers `generate-id()` with the node's heap address (`0x00000076eb01c790`), which
+differs from process to process: a cached answer was not a function of its inputs, the
+stylesheet's author learned where the heap is, and the value was not the "alphanumeric,
+starting with a letter" string XSLT promises. From 0.2.1 (ledger #1047) this crate runs xrust
+over its own node type, which answers the node's **path in its tree** instead, in letters and
+digits:
+
+| node | id |
+| --- | --- |
+| the source document | `d1` |
+| its document element | `d1c1` |
+| that element's 2nd child (any kind of node) | `d1c1c2` |
+| its 1st attribute (in name order) | `d1c1c2a1` |
+| the top of any other tree, numbered as first asked | `d2`, `u3` (not in a document) |
+
+The same node always has the same id within a transform and two nodes never share one, as
+XSLT requires; across documents an inserted node renumbers its later siblings.
+
 ## Caller XML is bounded, and cannot take the process down
 
 xrust parses, compiles and evaluates by recursion, and a stack overflow aborts the whole
