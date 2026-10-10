@@ -34,8 +34,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ikigai_core::{
-    ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
-    Representation, Request, Result, Verb,
+    space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
+    Iri, ReprType, Representation, Request, Result, Verb,
 };
 use xrust::item::{Item, Node, SequenceTrait};
 use xrust::parser::xml::parse as xmlparse;
@@ -45,9 +45,17 @@ use xrust::trees::smite::RNode;
 use xrust::xdmerror::{Error as XsltError, ErrorKind as XsltErrorKind};
 use xrust::xslt::from_document;
 
+/// The name [`space`] claims: `urn:iki:space:xslt`.
+pub const SPACE_ID: &str = "urn:iki:space:xslt";
+
 /// Bind `urn:xslt:transform`. Mount this space in a host kernel's root.
+///
+/// Configuration-free, so it names itself [`SPACE_ID`]. Binding another door onto it
+/// drops that name (core 0.1.89): an extended space is a different set of doors.
 pub fn space() -> EndpointSpace {
-    EndpointSpace::new().bind(Exact::new("urn:xslt:transform"), XsltEndpoint)
+    EndpointSpace::new()
+        .bind(Exact::new("urn:xslt:transform"), XsltEndpoint)
+        .named(space_iri("xslt"))
 }
 
 struct XsltEndpoint;

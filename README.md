@@ -104,9 +104,12 @@ does for you), per connection or per task — never in shared state.
 ## Conformance
 
 **Passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)** with
-no opt-outs: `tests/conformance.rs` walks `urn:xslt:transform` and runs every check —
-ArgSpecs, declared = enforced, the RDF faces (none: the output is the stylesheet's, not a
-graph this module authors), the cacheable-twice probe, pipeline citizenship, naming. Three
+no opt-outs on the module's endpoint: `tests/conformance.rs` walks `urn:xslt:transform`
+and runs every check — ArgSpecs, declared = enforced, the RDF faces (none: the output is
+the stylesheet's, not a graph this module authors), the cacheable-twice probe, pipeline
+citizenship, naming, and the space's name (`space()` is declared self-named). The one
+waiver is on the test's own stand-in files, which model a watched `ikigai-fs` file and
+are cut by the test rather than by a write through their name. Three
 walks: both inputs inline (declared `pure` and `cacheable`), both by reference under
 threads (`cacheable` — the result carries `urn:file:foaf.xsl` and recomputes after a cut),
 and both by reference served live (nothing is cached, and declaring otherwise is the one
@@ -145,6 +148,10 @@ let root: Arc<dyn Space> = Arc::new(Fallback::new(vec![
 ]));
 let kernel = Kernel::new(root);
 ```
+
+`space()` is configuration-free, so it names itself `urn:iki:space:xslt`
+(`ikigai_xslt::SPACE_ID`), which is how `urn:kernel:topology`, `answered_by` and the space
+diagrams show it. Binding another door onto it drops the name.
 
 ## Run as a standalone module server
 
