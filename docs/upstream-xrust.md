@@ -4,7 +4,9 @@ Drafts for upstream reports to [xrust](https://github.com/ballsteve/xrust). **No
 has been filed**: filing is an outward-facing action and is Brian's call (ledger #193, part 4).
 
 Each case below is a stylesheet and an input that xrust evaluates **without an error** to an
-answer XSLT 1.0 does not give. All were measured on **xrust 2.2.0** (the newest release on
+answer XSLT 1.0 does not give. Since ikigai-xslt 0.3.0 the crate refuses cases 1 to 6
+before xrust compiles them (`src/subset.rs`), so these drafts reproduce through stock xrust
+only; case 7 is still answered. All were measured on **xrust 2.2.0** (the newest release on
 crates.io, 2026-07-07) on 2026-10-10, through stock xrust (`trees::smite::RNode`, driven
 exactly as the `xrust::xslt` module documentation drives it) and not through ikigai-xslt's
 node wrapper. `tests/xrust_subset.rs` runs every case both ways and pins the answers, so if
@@ -198,6 +200,11 @@ xrust 2.2.0 has only an XML serializer (`to_xml`, `to_xml_with_options`), and it
 request rather than a bug report. It is listed because the consequence is severe and
 silent: a browser reads `<script …/>` as an open script element and the rest of the page
 disappears into it.
+
+ikigai-xslt 0.3.0 works around it: for the html method it gives each empty, non-void element
+in no namespace an empty text child before calling `to_xml`, so xrust's own serializer writes
+the end tag (`src/html.rs`). Void elements stay `<br/>`, not §16.2's `<br>`, and script and
+style content is still escaped.
 
 ## Not reported: the refused cases
 

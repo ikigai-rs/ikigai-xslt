@@ -43,6 +43,14 @@
 //! caller's thread (ledger #1040). The work past a deadline is abandoned, not cancelled — xrust
 //! cannot be stopped — and capped in number; see [`limits::on_xslt_stack_within`].
 //!
+//! ## What xrust answers wrongly is refused, and `method="html"` is HTML
+//!
+//! xrust runs a subset of XSLT 1.0, and part of what it does not run it answers WRONGLY with
+//! no error. Since 0.3.0 a stylesheet holding one of those constructs is refused before xrust
+//! compiles it, as a typed `InvalidArgument` naming the construct ([`subset`]); and a
+//! `method="html"` result is serialized as HTML, with an end tag on every empty element HTML
+//! does not call void, rather than as XML (ledger #193).
+//!
 //! ## `generate-id()` is a position, not an address
 //!
 //! xrust answers `generate-id()` with the node's heap address, which differs from process to
@@ -54,7 +62,7 @@
 //! ```
 //! let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
 //!   <xsl:output method="text"/>
-//!   <xsl:template match="/"><xsl:value-of select="generate-id(doc/b[2]/@c)"/></xsl:template>
+//!   <xsl:template match="/"><xsl:value-of select="generate-id(doc/b[position() = 2]/@c)"/></xsl:template>
 //! </xsl:stylesheet>"#;
 //! let id = ikigai_xslt::transform_xml("<doc><a/><b/><b c='1'/></doc>", style, true);
 //! assert_eq!(id.unwrap(), "d1c1c3a1");
@@ -62,8 +70,10 @@
 
 #![forbid(unsafe_code)]
 
+mod html;
 pub mod limits;
 mod node_id;
+pub mod subset;
 
 use async_trait::async_trait;
 use std::cell::RefCell;
@@ -366,17 +376,28 @@ impl CompiledStylesheet {
     /// Parse and compile a stylesheet. Errors are plain strings, like [`transform_xml`]'s,
     /// so this type carries no ikigai-core types either.
     ///
-    /// Refuses a stylesheet past [`limits::check_stylesheet`]'s bounds before parsing it.
+    /// Refuses a stylesheet past [`limits::check_stylesheet`]'s bounds before parsing it, and
+    /// — since 0.3.0 — one holding a construct xrust answers wrongly without an error
+    /// ([`subset`]), before compiling it. Either refusal reads `invalid argument
+    /// `stylesheet`: …`, naming the bound or the construct.
     pub fn compile(stylesheet_xml: &str) -> std::result::Result<Self, String> {
-        limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
+        Self::compile_typed(stylesheet_xml).map_err(plain)
+    }
+
+    /// [`CompiledStylesheet::compile`] with its refusals typed: a bound or a [`subset`]
+    /// construct is an `InvalidArgument` naming `stylesheet`, anything xrust refuses is an
+    /// `Endpoint` error.
+    fn compile_typed(stylesheet_xml: &str) -> Result<Self> {
+        limits::check_stylesheet(stylesheet_xml, "stylesheet")?;
         let styledoc = parse_xml(stylesheet_xml)
-            .map_err(|e| format!("stylesheet parse error: {}", e.message))?;
-        // Read `xsl:output method` BEFORE compiling: `from_document` strips whitespace
-        // destructively and the tree is shared through `Rc`, so afterwards the document
-        // is no longer the one that was parsed.
+            .map_err(|e| Error::Endpoint(format!("stylesheet parse error: {}", e.message)))?;
+        // Read `xsl:output method` and scan for the silent constructs BEFORE compiling:
+        // `from_document` strips whitespace destructively and the tree is shared through
+        // `Rc`, so afterwards the document is no longer the one that was parsed.
         let output_method = output_method_of(&styledoc);
+        subset::check(&styledoc)?;
         let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
-            .map_err(|e| format!("stylesheet compile error: {}", e.message))?;
+            .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
         Ok(CompiledStylesheet {
             ctxt,
             output_method,
@@ -391,7 +412,26 @@ impl CompiledStylesheet {
 
     /// Transform one source document. Serializes the result as its string value when
     /// `text_output` (a `method="text"` stylesheet, whitespace preserved), otherwise as
-    /// XML/markup.
+    /// markup: HTML for a `method="html"` stylesheet (and, with no `xsl:output`, for a result
+    /// whose first element is `html`, as XSLT 1.0 §16 says), XML for any other.
+    ///
+    /// Since 0.3.0 the HTML serialization writes an end tag for every empty element HTML does
+    /// not call void, so `<script src='a.js'></script>` and `<textarea></textarea>` reach a
+    /// browser intact; a void element stays `<br/>`. Through 0.2.x every empty element was
+    /// self-closed, and a browser read `<script …/>` as an open element that swallowed the
+    /// rest of the page:
+    ///
+    /// ```
+    /// let style = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+    ///   <xsl:output method="html"/>
+    ///   <xsl:template match="/"><p><script src="a.js"></script><br/><textarea/></p></xsl:template>
+    /// </xsl:stylesheet>"#;
+    /// let compiled = ikigai_xslt::CompiledStylesheet::compile(style).unwrap();
+    /// assert_eq!(
+    ///     compiled.transform("<doc/>", false).unwrap(),
+    ///     "<p><script src='a.js'></script><br/><textarea></textarea></p>"
+    /// );
+    /// ```
     ///
     /// Refuses a document past [`limits::check_source`]'s bounds before parsing it.
     pub fn transform(
@@ -435,11 +475,13 @@ impl CompiledStylesheet {
         let seq = ctxt
             .evaluate(&mut stctxt)
             .map_err(|e| format!("transform error: {}", e.message))?;
-        Ok(if text_output {
-            seq.to_string()
-        } else {
-            seq.to_xml()
-        })
+        if text_output {
+            return Ok(seq.to_string());
+        }
+        if html::is_html(self.output_method(), &seq) {
+            html::open_empty_elements(&seq)?;
+        }
+        Ok(seq.to_xml())
     }
 }
 
@@ -462,7 +504,7 @@ thread_local! {
 
 /// The compiled form of this exact stylesheet text, from the per-thread memo if it is
 /// there and compiled (and remembered) if it is not.
-fn compiled_for(stylesheet_xml: &str) -> std::result::Result<Rc<CompiledStylesheet>, String> {
+fn compiled_for(stylesheet_xml: &str) -> Result<Rc<CompiledStylesheet>> {
     let hit = COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
         let found = cache.iter().position(|(key, _)| &**key == stylesheet_xml)?;
@@ -474,7 +516,7 @@ fn compiled_for(stylesheet_xml: &str) -> std::result::Result<Rc<CompiledStyleshe
     if let Some(compiled) = hit {
         return Ok(compiled);
     }
-    let compiled = Rc::new(CompiledStylesheet::compile(stylesheet_xml)?);
+    let compiled = Rc::new(CompiledStylesheet::compile_typed(stylesheet_xml)?);
     COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.insert(0, (Rc::from(stylesheet_xml), Rc::clone(&compiled)));
@@ -497,7 +539,8 @@ pub fn clear_stylesheet_cache() {
 /// The synchronous XSLT transform — the crate's public, host-agnostic entry point.
 /// Parses `src_xml` and `stylesheet_xml`, applies the stylesheet, and serializes the
 /// result: as its string value when `text_output` (a `method="text"` stylesheet,
-/// whitespace preserved), otherwise as XML/markup. Errors are returned as plain
+/// whitespace preserved), otherwise as markup — HTML for a `method="html"` stylesheet
+/// (see [`CompiledStylesheet::transform`]), XML otherwise. Errors are returned as plain
 /// strings so the function carries no ikigai-core types — which lets a standalone
 /// **wasm module** wrapper expose it directly. (The endpoint above wraps it.)
 ///
@@ -561,7 +604,9 @@ pub fn transform_xml_within(
     limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
     let (src_xml, stylesheet_xml) = (src_xml.to_string(), stylesheet_xml.to_string());
     limits::on_xslt_stack_within(budget, move || {
-        compiled_for(&stylesheet_xml)?.run(&src_xml, text_output)
+        compiled_for(&stylesheet_xml)
+            .map_err(plain)?
+            .run(&src_xml, text_output)
     })
     .map_err(|e| e.to_string())?
 }
@@ -571,7 +616,9 @@ pub fn transform_xml_within(
 /// the `!Send` compiled stylesheet can never be live across an `await`. The endpoint checks
 /// both inputs and calls this on [`limits::on_xslt_stack`]; it checks nothing itself.
 fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(String, String)> {
-    let compiled = compiled_for(stylesheet).map_err(Error::Endpoint)?;
+    // A refused construct stays the typed `InvalidArgument` it is; anything xrust refuses
+    // is an `Endpoint` error.
+    let compiled = compiled_for(stylesheet)?;
     // The output media type: what `as=` names, else what the stylesheet's `xsl:output
     // method` implies (html is the default, as in XSLT itself — the common case here is
     // styling RDF/XML into a page).
@@ -581,12 +628,21 @@ fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(Str
         None => media_type_for(method).to_string(),
     };
     // A `method="text"` stylesheet — or a caller asking for `text/plain` — wants the
-    // result's string value, whitespace preserved. Anything else is markup → XML
-    // serialize.
+    // result's string value, whitespace preserved. Anything else is markup: HTML for the html
+    // method, XML otherwise (`CompiledStylesheet::run` decides).
     let text_output =
         method == Some("text") || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
     let out = compiled.run(source, text_output).map_err(Error::Endpoint)?;
     Ok((media, out))
+}
+
+/// An error as the plain-string API spells it: an `Endpoint` error is its message alone (as
+/// it was before compiling learned typed refusals), anything else its whole display.
+fn plain(e: Error) -> String {
+    match e {
+        Error::Endpoint(message) => message,
+        other => other.to_string(),
+    }
 }
 
 /// Parse an XML string into an `xrust` document tree.
