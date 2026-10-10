@@ -54,6 +54,57 @@ does not, so the engine's fetcher refuses every URL. A stylesheet that calls it 
 a typed `Endpoint` error naming the function, and the referenced resource is never
 resolved — there is no read for a capability to gate.
 
+## The XSLT subset: what xrust runs, refuses, and gets wrong silently
+
+xrust implements a **subset** of XSLT 1.0, and the dangerous part of it is not what it
+refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's author cannot
+discover those from errors, so they are listed here. Every row below was measured on
+**xrust 2.2.0** (2026-10-10, ledger #193) by `tests/xrust_subset.rs`, and each silent row is
+also reproduced against stock xrust, without this crate in the way, in
+[`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin today's wrong answers,
+so the day xrust fixes one, a test fails and says so: that is the signal to update this
+table.
+
+**Works**: `xsl:if`, `xsl:choose`, `xsl:attribute` (prefixed names included),
+`call-template`, modes, `apply-templates` with `xsl:sort`, `count()`, a `[@attr = '…']` or
+`[position() = n]` filter on a `select` path, attribute value templates over **unprefixed**
+names (`{@id}`, `x-{@id}`, `{concat(name(), @k)}`, `{../@title}`, `{/doc/@title}`), an
+absolute `/doc/…` path from inside a nested template, a top-level `xsl:variable`, `xsl:key`
+over unprefixed names, and `xsl:comment`.
+
+**Refused with an error** (the safe failure):
+
+| construct | error |
+| --- | --- |
+| `xsl:variable` inside a template (top-level works) | `unsupported XSL element "variable"` |
+| `xsl:sort` inside `xsl:for-each` (inside `apply-templates` works) | `unsupported XSL element "sort"` |
+| `string-length()` | `unknown callable "string-length"` |
+| `xsl:key` over prefixed names (`match="l:Item"`) | `MissingNameSpace` |
+| a stylesheet whose first node is a comment | `not an XSLT stylesheet` |
+
+⚠ **Silently wrong: an answer, no error.**
+
+| construct | XSLT 1.0 answer | xrust 2.2.0 answer | instead, write |
+| --- | --- | --- | --- |
+| a **prefixed** name in an attribute value template: `href="{@rdf:about}"` | the attribute's value | **empty** (`{concat('x', @rdf:about)}` is `x`) | `<xsl:attribute name="href"><xsl:value-of select="@rdf:about"/></xsl:attribute>` |
+| a predicate in a **match pattern**: `match="item[@k='2']"` | the items whose `k` is 2 | **every** `item` | `match="item"` and an `xsl:if` / `xsl:choose` inside it |
+| two templates for one name, one with a predicate | the predicate's (priority 0.5 beats 0) | the **first declared**, for every node | one template, branching inside |
+| a numeric path predicate: `item[1]`, `item[last()]` | one node | **every** `item` | `item[position() = 1]` |
+| `position()`, `last()` inside `for-each` or `apply-templates` | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data |
+| a leading `//name` inside a nested template | from the document root | from the **context node**, so usually nothing | `/doc//name` |
+| `xsl:value-of` over several nodes | the **first** node's string value | **all** of them concatenated, no separator | `select="item[position() = 1]"` |
+
+⚠ **And `method="html"` is serialized as XML.** Every empty element comes out self-closed
+(`<script src='a.js'/>`, `<textarea/>`), and a browser reads `<script …/>` as an **open**
+script element that swallows the rest of the page (`<textarea/>` does the same to
+everything after it). The result is labeled `text/html` all the same. A host that serves
+the result to a browser rewrites self-closed non-void elements as open/close pairs; gonk
+does exactly that (`ikigai-gonk/src/render.rs`).
+
+What the gaps cost a real stylesheet, and how one is written around them, is measured in
+gonk's renderer: everything a template would compute arrives as data on the node it
+describes instead.
+
 ## Caching
 
 Both `src` and `stylesheet`, when they are IRIs, are fetched with the kernel's own
@@ -213,7 +264,7 @@ kernel, and the `urn:cap:net` gate on a remote stylesheet.
 ## Pure Rust, wasm-ready
 
 The transform is built on [`xrust`](https://crates.io/crates/xrust) (pure-Rust XPath 1.0
-/ XSLT 1.0) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
+/ XSLT 1.0, a subset of it: see [above](#the-xslt-subset-what-xrust-runs-refuses-and-gets-wrong-silently)) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
 and compiles to `wasm32` unchanged; the demo lazy-loads it in the browser as a WASM
 module via the sibling `ikigai-xslt-module`. The public, host-agnostic
 `transform_xml(src, stylesheet, text_output) -> Result<String, String>` entry point —
