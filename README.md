@@ -29,6 +29,11 @@ cards).
 to the first input. An explicit `content=` argument is also accepted. So it slots into a
 pipeline, e.g. `… | urn:rdf:transrept as=application/rdf+xml | urn:xslt:transform stylesheet=<uri>`.
 
+A missing input is refused **typed** (since 0.3.1): no `stylesheet` is a
+`MissingArgument` naming `stylesheet`, and neither `src` nor `content` is a
+`MissingArgument` naming `src`. An input that is present but not inline UTF-8 is an
+`InvalidArgument` naming that input; a bad `src` does not fall through to `content`.
+
 Every input is declared with an XSD class (`xsd:string` for all four: `src` and
 `stylesheet` are each a union of an IRI and a document, which no ArgSpec class states
 more precisely), so the manifold and `urn:kernel:validate` can form and check a call.
@@ -293,7 +298,7 @@ the caller's to provide (`limits::xslt_stack_size()`, or run inside
 no opt-outs on the module's endpoint: `tests/conformance.rs` walks `urn:xslt:transform`
 and runs every check — ArgSpecs, declared = enforced, the RDF faces (none: the output is
 the stylesheet's, not a graph this module authors), the cacheable-twice probe, pipeline
-citizenship, naming, and the space's name (`space()` is declared self-named). The one
+citizenship, required inputs refused typed, naming, and the space's name (`space()` is declared self-named). The one
 waiver is on the test's own stand-in files, which model a watched `ikigai-fs` file and
 are cut by the test rather than by a write through their name. Three
 walks: both inputs inline (declared `pure` and `cacheable`), both by reference under

@@ -111,11 +111,10 @@ impl Endpoint for XsltEndpoint {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
         // The stylesheet — a resolvable resource reference, or the stylesheet itself
         // inline (the same `<` discriminator as `src`: XML starts with `<`, an IRI never).
-        let style_ref = inv.inline_str("stylesheet").map_err(|_| {
-            Error::Endpoint(
-                "urn:xslt:transform needs a `stylesheet=<uri>` resource reference".to_string(),
-            )
-        })?;
+        // Refused TYPED (`MissingArgument`, or `InvalidArgument` for a value that is not
+        // inline UTF-8), so a caller can tell its own omission from a failure here
+        // (conformance REQUIRED).
+        let style_ref = inv.inline_str("stylesheet")?;
         let stylesheet = if is_inline_xml(style_ref) {
             style_ref.to_string()
         } else {
@@ -126,19 +125,20 @@ impl Endpoint for XsltEndpoint {
         // document is piped in (the engine routes a piped value to the first input) — the
         // inline XML itself. XML always starts with `<`, an IRI never does, so that's the
         // discriminator. An explicit `content=` is also accepted.
-        let (source, source_arg) = if let Ok(src) = inv.inline_str("src") {
-            if is_inline_xml(src) {
-                (src.to_string(), "src")
-            } else {
-                (utf8(resolve_ref(inv, src).await?, "src")?, "src")
-            }
-        } else if let Ok(content) = inv.inline_str("content") {
-            (content.to_string(), "content")
-        } else {
-            return Err(Error::Endpoint(
-                "urn:xslt:transform needs a `src=<uri>` resource reference (or a piped document)"
-                    .to_string(),
-            ));
+        // Only an ABSENT `src` falls back to `content`; a `src` that is present but unusable
+        // is refused as itself. With neither, the missing input is the declared-required
+        // one, `src`, refused typed (conformance REQUIRED).
+        let (source, source_arg) = match inv.inline_str("src") {
+            Ok(src) if is_inline_xml(src) => (src.to_string(), "src"),
+            Ok(src) => (utf8(resolve_ref(inv, src).await?, "src")?, "src"),
+            Err(Error::MissingArgument(_)) => match inv.inline_str("content") {
+                Ok(content) => (content.to_string(), "content"),
+                Err(Error::MissingArgument(_)) => {
+                    return Err(Error::MissingArgument("src".to_string()))
+                }
+                Err(e) => return Err(e),
+            },
+            Err(e) => return Err(e),
         };
 
         // Both inputs are caller XML: refuse what would overflow the stack before xrust sees
@@ -887,6 +887,84 @@ mod tests {
         // discovery but NOT auto-invocable: selection skips it because it can't be
         // driven from `content` + `as` alone.
         assert!(description.inputs.iter().any(|i| i.name == "stylesheet"));
+    }
+
+    const PAGE: &str = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:template match="/"><p><xsl:value-of select="//item"/></p></xsl:template>
+</xsl:stylesheet>"#;
+
+    /// Resolve `urn:xslt:transform` over [`space`] with exactly `args`, inline.
+    fn issue_with(args: &[(&str, &[u8])]) -> Result<Representation> {
+        let mut request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap());
+        for &(name, value) in args {
+            request = request.with_arg(name, ArgRef::Inline(value.to_vec()));
+        }
+        let kernel = ikigai_core::Kernel::new(std::sync::Arc::new(space()));
+        futures::executor::block_on(kernel.issue(request, &ikigai_core::Capability::root()))
+    }
+
+    /// A missing `stylesheet` is the caller's omission, refused typed (conformance
+    /// REQUIRED): before, it was an untyped `Endpoint` error.
+    #[test]
+    fn a_missing_stylesheet_is_a_missing_argument() {
+        let err = issue_with(&[("src", b"<doc><item>a</item></doc>")]).unwrap_err();
+        assert!(
+            matches!(&err, Error::MissingArgument(name) if name == "stylesheet"),
+            "{err:?}"
+        );
+    }
+
+    /// With neither `src` nor `content`, the missing input is the declared-required
+    /// `src`, refused typed.
+    #[test]
+    fn a_missing_src_is_a_missing_argument() {
+        let err = issue_with(&[("stylesheet", PAGE.as_bytes())]).unwrap_err();
+        assert!(
+            matches!(&err, Error::MissingArgument(name) if name == "src"),
+            "{err:?}"
+        );
+    }
+
+    /// `content` still stands in for an absent `src` (a pipeline's upstream value).
+    #[test]
+    fn content_stands_in_for_an_absent_src() {
+        let repr = issue_with(&[
+            ("content", b"<doc><item>piped</item></doc>"),
+            ("stylesheet", PAGE.as_bytes()),
+        ])
+        .expect("content is the source when src is absent");
+        assert!(String::from_utf8(repr.bytes).unwrap().contains("piped"));
+    }
+
+    /// An input that is present but not UTF-8 is refused as ITSELF, typed: a bad `src`
+    /// does not fall through to `content`, and a bad `content` is not reported as a
+    /// missing `src`.
+    #[test]
+    fn a_present_but_unusable_input_is_an_invalid_argument() {
+        for (args, expected) in [
+            (
+                vec![("stylesheet", &b"\xff"[..]), ("src", &b"<doc/>"[..])],
+                "stylesheet",
+            ),
+            (
+                vec![
+                    ("src", &b"\xff"[..]),
+                    ("content", &b"<doc/>"[..]),
+                    ("stylesheet", PAGE.as_bytes()),
+                ],
+                "src",
+            ),
+            (
+                vec![("content", &b"\xff"[..]), ("stylesheet", PAGE.as_bytes())],
+                "content",
+            ),
+        ] {
+            let err = issue_with(&args).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidArgument { name, .. } if name == expected),
+                "{expected}: {err:?}"
+            );
+        }
     }
 }
 
