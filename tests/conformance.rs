@@ -47,6 +47,13 @@
 //! [`conforms`] declares it self-named (SPACE-NAME). The walks below that bind
 //! fixture doors onto it get an anonymous space: binding drops the name.
 //!
+//! ## Required inputs
+//!
+//! `src` and `stylesheet` are declared required, and REQUIRED (conformance 0.8)
+//! drops each from the fixture's call and wants a typed refusal. Both are
+//! `MissingArgument`; `content` stands in for an absent `src`, so with neither the
+//! refusal names `src`. The unit tests in `src/lib.rs` pin each case directly.
+//!
 //! No opt-outs on the module's endpoint (the two threaded stand-in files are waived
 //! from CACHEABLE, see `WATCHER_CUT`), no module namespace, and NAMES runs: the id
 //! is kebab-case.
