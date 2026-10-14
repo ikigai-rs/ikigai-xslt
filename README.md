@@ -60,7 +60,8 @@ xrust implements a **subset** of XSLT 1.0, and the dangerous part of it is not w
 refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's author cannot
 discover those from errors, so since 0.3.0 this crate **refuses** every one of them it can
 see, before xrust compiles the stylesheet. Every row below was measured on
-**xrust 2.2.0** (2026-10-10, ledger #193) by `tests/xrust_subset.rs`, and each wrong answer is
+**xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193) by
+`tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
 answers, so the day xrust fixes one, a test fails and says so: that is the signal to drop
@@ -69,23 +70,28 @@ the refusal and update this table. The measured release is a record
 warning in the ecosystem's daily scan, not a red build.
 
 **Works**: `xsl:if`, `xsl:choose`, `xsl:attribute` (prefixed names included),
-`call-template`, modes, `apply-templates` with `xsl:sort`, `count()`, a `[@attr = '…']` or
-`[position() = n]` filter on a `select` path, attribute value templates over **unprefixed**
-names (`{@id}`, `x-{@id}`, `{concat(name(), @k)}`, `{../@title}`, `{/doc/@title}`), an
-absolute `/doc/…` path from inside a nested template, a top-level `xsl:variable`, `xsl:key`
-over unprefixed names, and `xsl:comment`.
+`call-template`, modes, `apply-templates` with `xsl:sort`, `count()`, `string-length()`, a
+`[@attr = '…']`, `[position() = n]` or literal `[n]` filter on a `select` path (`item[2]`,
+`(…)[2]`, `item[@k='1'][2]`), attribute value templates, prefixed names included (`{@id}`,
+`x-{@id}`, `{concat(name(), @k)}`, `{../@title}`, `{/doc/@title}`, `{@rdf:about}`), an
+absolute `/doc/…` path from inside a nested template, `xsl:variable` at the top level and
+inside a template, `xsl:key` over unprefixed and prefixed names, `xsl:comment`, and a
+stylesheet document that begins with a comment.
+
+**Changed in 0.3.1, with xrust 2.3.0** (ledger #1492): a literal `[n]` predicate, a prefixed
+name in an attribute value template, `xsl:variable` inside a template, `string-length()`,
+`xsl:key` over prefixed names and a stylesheet that begins with a comment all give the XSLT 1.0
+answer now, so the first two are no longer refused and the last four moved here from the table
+below. `xsl:sort` inside
+`xsl:for-each-group` is newly refused by xrust when it compiles the stylesheet.
 
 **Refused with an error** (the safe failure):
 
 | construct | error |
 | --- | --- |
-| `xsl:variable` inside a template (top-level works) | `unsupported XSL element "variable"` |
-| `xsl:sort` inside `xsl:for-each` (inside `apply-templates` works) | `unsupported XSL element "sort"` |
-| `string-length()` | `unknown callable "string-length"` |
-| `xsl:key` over prefixed names (`match="l:Item"`) | `MissingNameSpace` |
-| a stylesheet whose first node is a comment | `not an XSLT stylesheet` |
+| `xsl:sort` inside `xsl:for-each` or `xsl:for-each-group` (inside `apply-templates` works) | `unsupported XSL element "sort"` |
 
-**Refused before it compiles** (since 0.3.0): xrust 2.2.0 answers these wrongly, with no
+**Refused before it compiles** (since 0.3.0): xrust 2.3.0 answers these wrongly, with no
 error, so this crate refuses a stylesheet holding one, as an `InvalidArgument` naming
 `stylesheet` that quotes the attribute, its element and the row below
 (`invalid argument `stylesheet`: refused: match="item[@k='2']" on <xsl:template> holds "a
@@ -93,27 +99,26 @@ predicate in a match pattern", …`). `ikigai_xslt::subset::silent_constructs(st
 lists every one at once, and `cargo run --example subset-scan -- file.xsl` does the same from
 a shell.
 
-| construct | XSLT 1.0 answer | xrust 2.2.0 answer | instead, write |
+| construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
 | a predicate in a match pattern: `match="item[@k='2']"`, in `xsl:template` or `xsl:key` | the items whose `k` is 2 | **every** `item`; and with two templates for one name, the **first declared** wins whatever its priority | `match="item"` and an `xsl:if` / `xsl:choose` inside it |
-| a numeric predicate: [1], [last()] — `item[1]`, `(…)[2]`, `item[@k='1'][1]`, `{count(item[1])}` | one node | **every** `item` | `item[position() = 1]` |
+| a [last()] predicate — `item[last()]`, `(…)[last()]`, `{item[last()]/@id}` | the last node | the **first** node, since `last()` is 1 | `item[count(../item)]` |
 | position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
 | a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
-| a prefixed name in an attribute value template: `href="{@rdf:about}"` on a literal result element | the attribute's value | **empty** (`{concat('x', @rdf:about)}` is `x`) | `<xsl:attribute name="href"><xsl:value-of select="@rdf:about"/></xsl:attribute>` |
 
 "Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
 `xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
 root, xrust's answer is right, and nothing is refused. The scan is lexical and
 conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
-`/doc//b` are not a leading `//`, and `[position() = 1]` is not a numeric predicate.
+`/doc//b` are not a leading `//`, and `[1]` or `[position() = 1]` is not a `[last()]` predicate.
 
 ⚠ **Still silently wrong: an answer, no error.** One case no lexical scan can see, because
 whether a path selects one node or several is a property of the data, not of the
 stylesheet (`ik:title` is usually one node; `../@title` always is; `item` often is not):
 
-| construct | XSLT 1.0 answer | xrust 2.2.0 answer | instead, write |
+| construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
-| `xsl:value-of` over several nodes | the **first** node's string value | **all** of them concatenated, no separator | `select="item[position() = 1]"` |
+| `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
 
 ### `method="html"` is serialized as HTML
 
@@ -236,9 +241,10 @@ transient `Unavailable`, until one ends — `limits::overdue_transforms()` says 
 are. That trades XSLT availability for the host's other work, as `ikigai-store` does for
 SPARQL. On wasm there is no thread, so there is no deadline either.
 
-**A panic inside xrust is an error, not a panic.** xrust 2.2.0 panics on some input a caller
+**A panic inside xrust is an error, not a panic.** xrust panics on some input a caller
 controls — `<xsl:copy-of select="/"/>`, an attribute or the document node at the top of the
-result, an `xsl:sort` key that fails to evaluate — and through 0.2.0 that panic reached the
+result, an `xsl:sort` key under `apply-templates` that fails to evaluate (2.3.0 still does all
+of these) — and through 0.2.0 that panic reached the
 caller's thread. It is now caught on the transform thread and answered as an `Endpoint` error
 naming it (`endpoint error:` from `transform_xml`). The default panic hook still prints the
 message to stderr; that hook is the host's.

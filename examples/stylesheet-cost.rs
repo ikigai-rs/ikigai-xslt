@@ -22,7 +22,13 @@ fn parse_xml(s: &str) -> Result<RNode, XsltError> {
     xmlparse(
         doc.clone(),
         s,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|_: &_| {
+            Err(ParseError::MissingNameSpace {
+                prefix: None,
+                nsuri: None,
+                message: None,
+            })
+        }),
     )?;
     Ok(doc)
 }

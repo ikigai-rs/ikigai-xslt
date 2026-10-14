@@ -4,13 +4,14 @@ Drafts for upstream reports to [xrust](https://github.com/ballsteve/xrust). **No
 has been filed**: filing is an outward-facing action and is Brian's call (ledger #193, part 4).
 
 Each case below is a stylesheet and an input that xrust evaluates **without an error** to an
-answer XSLT 1.0 does not give. Since ikigai-xslt 0.3.0 the crate refuses cases 1 to 6
-before xrust compiles them (`src/subset.rs`), so these drafts reproduce through stock xrust
-only; case 7 is still answered. All were measured on **xrust 2.2.0** (the newest release on
-crates.io, 2026-07-07) on 2026-10-10, through stock xrust (`trees::smite::RNode`, driven
-exactly as the `xrust::xslt` module documentation drives it) and not through ikigai-xslt's
-node wrapper. `tests/xrust_subset.rs` runs every case both ways and pins the answers, so if
-any of them changes, a test fails and this file is due an update.
+answer XSLT 1.0 does not give. ikigai-xslt refuses cases 2 to 6 before xrust compiles them
+(`src/subset.rs`), so these drafts reproduce through stock xrust only; case 7 is still
+answered. Case 1, and the literal `[n]` half of case 4, were first measured wrong on xrust 2.2.0
+(2026-10-10) and are **fixed in 2.3.0**. Everything here was re-measured on **xrust 2.3.0**
+(the newest release on crates.io, 2026-10-13) on 2026-10-14, through stock xrust
+(`trees::smite::RNode`, driven exactly as the `xrust::xslt` module documentation drives it)
+and not through ikigai-xslt's node wrapper. `tests/xrust_subset.rs` runs every case both ways
+and pins the answers, so if any of them changes, a test fails and this file is due an update.
 
 ## The harness
 
@@ -28,7 +29,11 @@ use xrust::xslt::from_document;
 
 fn doc(s: &str) -> Result<RNode, Error> {
     let d = RNode::new_document();
-    parse(d.clone(), s, Some(|_: &_| Err(ParseError::MissingNameSpace)))?;
+    parse(
+        d.clone(),
+        s,
+        Some(|_: &_| Err(ParseError::MissingNameSpace { prefix: None, nsuri: None, message: None })),
+    )?;
     Ok(d)
 }
 
@@ -42,7 +47,8 @@ fn transform(src: &str, style: &str) -> String {
     let mut ctxt = from_document(doc(style).unwrap(), None, doc, |_| Ok(String::new())).unwrap();
     ctxt.context(vec![Item::Node(src.clone())], 0);
     ctxt.result_document(RNode::new_document());
-    ctxt.populate_key_values(&mut stctxt, src).unwrap();
+    // xrust 2.2.0 needed `ctxt.populate_key_values(&mut stctxt, src)` here; since 2.3.0
+    // `key()` indexes each document the first time it is asked.
     ctxt.evaluate(&mut stctxt).unwrap().to_xml()
 }
 ```
@@ -67,7 +73,11 @@ Two inputs:
 <page xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:l="urn:l#"><l:Item rdf:about="urn:i:1">one</l:Item><l:Item rdf:about="urn:i:2">two</l:Item></page>
 ```
 
-## 1. A prefixed name in an attribute value template is empty
+## 1. A prefixed name in an attribute value template is empty (FIXED in xrust 2.3.0)
+
+Kept as the record of what 2.2.0 did; xrust 2.3.0 answers the Expected line below, in every
+context measured (a `for-each` body, a matched template, the root, `{count(l:Item)}`,
+`{count(l:*)}`), and ikigai-xslt stopped refusing it in 0.3.1. Nothing to file.
 
 Input: NAMESPACED.
 
@@ -116,21 +126,25 @@ Input: PLAIN.
   order every item gets `<one/>`, so neither the predicate nor the priority is consulted.
   Probably the same defect as case 2, seen from conflict resolution.
 
-## 4. A numeric path predicate is ignored
+## 4. `[last()]` selects the first node
 
 Input: PLAIN.
 
 ```xml
 <xsl:template match="/">
-  <out><xsl:value-of select="count(doc/item[1])"/>,<xsl:value-of select="count(doc/item[last()])"/></out>
+  <out><xsl:value-of select="doc/item[last()]"/></out>
 </xsl:template>
 ```
 
-- **Expected** (XPath 1.0 §2.4: a number predicate means `position() = n`): `<out>1,1</out>`
-- **Actual**: `<out>3,3</out>`
+- **Expected** (XPath 1.0 §2.4: a number predicate means `position() = n`, and `last()` is the
+  context size, 3): `<out>three</out>`
+- **Actual** (xrust 2.3.0): `<out>one</out>`
 
-`doc/item[position() = 1]` gives the right answer (`count` is 1), so only the abbreviated
-numeric form is affected.
+Probably case 5 seen from a predicate: `last()` is 1 there. A literal number works since
+2.3.0 (`doc/item[2]` is `two`, `(doc/item)[2]` is `two`, `doc/item[@k='1'][2]` is `three`), and
+so does a computed one (`doc/item[count(../item)]` is `three`). xrust 2.2.0 ignored every
+numeric predicate (`count(doc/item[1])` was 3); that half is fixed. ⚠ A `count()` over the
+result cannot show this defect, since one node is selected either way: compare values.
 
 ## 5. position() and last() are always 1 inside for-each and apply-templates
 
@@ -182,6 +196,9 @@ Input: PLAIN.
 - **Actual**: `<out>onetwothree</out>`. That is neither the 1.0 answer nor the 3.0 one
   (`one two three`, separated by a space).
 
+The same conversion happens wherever several nodes become a string: `string-length(doc/item)`
+is 11 (`onetwothree`), where XSLT 1.0 gives 3 (`one`).
+
 ## 8. Not a defect, a missing feature: xsl:output method="html"
 
 ```xml
@@ -195,7 +212,7 @@ Input: PLAIN.
   `<textarea></textarea>`, `<br>`
 - **Actual**: `<html><head><script src='a.js'/></head><body><textarea/><br/></body></html>`
 
-xrust 2.2.0 has only an XML serializer (`to_xml`, `to_xml_with_options`), and its
+xrust 2.3.0 has only an XML serializer (`to_xml`, `to_xml_with_options`), and its
 `OutputDefinition` carries a name and an indent flag, no method. So this is a feature
 request rather than a bug report. It is listed because the consequence is severe and
 silent: a browser reads `<script …/>` as an open script element and the rest of the page
@@ -208,7 +225,7 @@ style content is still escaped.
 
 ## Not reported: the refused cases
 
-`xsl:variable` inside a template, `xsl:sort` inside `for-each`, `string-length()`, `xsl:key`
-over prefixed names (`MissingNameSpace`), and a stylesheet whose first node is a comment are
-all **refused with an error**. Those are gaps a stylesheet's author can see, so they are
-feature requests at most, and are not drafted here.
+`xsl:sort` inside `for-each` or `for-each-group` is **refused with an error**. That is a gap a
+stylesheet's author can see, so it is a feature request at most, and is not drafted here.
+(`xsl:variable` inside a template, `string-length()`, `xsl:key` over prefixed names and a
+stylesheet whose first node is a comment were refused by 2.2.0 and work in 2.3.0.)
