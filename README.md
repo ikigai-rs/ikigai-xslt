@@ -271,6 +271,11 @@ module via the sibling `ikigai-xslt-module`. The public, host-agnostic
 and `CompiledStylesheet`, which has the same plain-string errors — carry no ikigai-core
 types, so they can be wrapped directly.
 
+**The 0.2 line stays on xrust 2.1/2.2.** xrust 2.3.0 changed its node and error API and
+moved to qualname 0.0.2, so 0.2.1, which took xrust with a caret, stopped compiling on any
+fresh resolve. 0.2.2 (ledger #1492) changes nothing but the pin: `xrust = ">=2.1.0, <2.3"`.
+For xrust 2.3 and later, use 0.3.x.
+
 ## Usage
 
 From the ikigai shell:
