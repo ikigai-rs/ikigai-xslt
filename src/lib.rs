@@ -232,6 +232,10 @@ impl Endpoint for XsltEndpoint {
                 ["application/xml", "text/xml", "application/rdf+xml"],
                 ["text/html", "application/xml", "text/plain"],
             )
+            // LOSSY (ledger #538): an arbitrary stylesheet is a projection unless it happens to
+            // be identity-shaped, and the endpoint cannot know which, so it does not claim to
+            // be injective. ikigai-web-demo's mirror of this card says the same.
+            .lossy()
     }
 }
 
@@ -470,8 +474,9 @@ impl CompiledStylesheet {
         let mut ctxt = self.ctxt.clone();
         ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
         ctxt.result_document(IdNode::new_document());
-        ctxt.populate_key_values(&mut stctxt, srcdoc.clone())
-            .map_err(|e| format!("xsl:key error: {}", e.message))?;
+        // No `xsl:key` step: since xrust 2.3 `key()` indexes a (key, document) pair the first
+        // time it is called and keeps the index on `stctxt`, which is built fresh above, so a
+        // run never sees another run's keys. A broken key surfaces as a transform error.
         let seq = ctxt
             .evaluate(&mut stctxt)
             .map_err(|e| format!("transform error: {}", e.message))?;
@@ -651,7 +656,13 @@ fn parse_xml(s: &str) -> std::result::Result<IdNode, XsltError> {
     xmlparse(
         doc.clone(),
         s,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|_: &_| {
+            Err(ParseError::MissingNameSpace {
+                prefix: None,
+                nsuri: None,
+                message: None,
+            })
+        }),
     )?;
     Ok(doc)
 }
@@ -869,6 +880,9 @@ mod tests {
             .expect("xslt-transform is an ik:Transreptor");
         assert!(t.from.contains(&"application/rdf+xml".to_string()));
         assert!(t.to.contains(&"text/html".to_string()));
+        // An arbitrary stylesheet is a projection, so it must not claim to be injective
+        // (ledger #538).
+        assert!(!t.lossless, "urn:xslt:transform declares itself lossy");
         // It needs a `stylesheet` input — that's what makes it a transreptor for
         // discovery but NOT auto-invocable: selection skips it because it can't be
         // driven from `content` + `as` alone.

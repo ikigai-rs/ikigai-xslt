@@ -13,6 +13,11 @@
 //! - **an `xsl:sort` key that fails to evaluate** (`transform/mod.rs`, `controlflow.rs`) —
 //!   an unknown variable or function — under `for-each`, `apply-templates` and
 //!   `for-each-group`.
+//!
+//! Re-measured on xrust 2.3.0 (ledger #1492): every attach case still panics, and so does a
+//! failing sort key under `apply-templates`; under `for-each` and `for-each-group` xrust 2.3.0
+//! refuses ANY `xsl:sort` when it compiles the stylesheet, so those no longer reach the panic
+//! and are answered as a compile error instead (`REFUSED_AT_COMPILE`).
 
 use futures::executor::block_on;
 use ikigai_core::{ArgRef, Capability, Error, Iri, Kernel, Request, Verb};
@@ -29,29 +34,29 @@ fn style(body: &str) -> String {
 
 const SRC: &str = r#"<doc a="1"><x k="3">t</x><x k="1">u</x></doc>"#;
 
-/// Every body xrust 2.2.0 panicked on, with a word its message carries.
-const PANICS: [(&str, &str); 9] = [
+/// Every body xrust 2.3.0 panics on, with a word its message carries.
+const PANICS: [(&str, &str); 7] = [
     (r#"<xsl:copy-of select="/"/>"#, "attach"),
     (r#"<xsl:copy-of select="//@*"/>"#, "attach"),
     (r#"<xsl:sequence select="/"/>"#, "attach"),
     (r#"<xsl:copy/>"#, "attach"),
     (r#"<xsl:attribute name="a">1</xsl:attribute>"#, "attach"),
     (
-        r#"<xsl:for-each select="//x"><xsl:sort select="$nope"/><xsl:value-of select="."/></xsl:for-each>"#,
-        "key value",
-    ),
-    (
-        r#"<xsl:for-each select="//x"><xsl:sort select="nosuch(.)"/><xsl:value-of select="."/></xsl:for-each>"#,
-        "key value",
-    ),
-    (
         r#"<xsl:apply-templates select="//x"><xsl:sort select="$nope"/></xsl:apply-templates>"#,
         "key value",
     ),
     (
-        r#"<xsl:for-each-group select="//x" group-by="@k"><xsl:sort select="$nope"/><xsl:value-of select="."/></xsl:for-each-group>"#,
+        r#"<xsl:apply-templates select="//x"><xsl:sort select="nosuch(.)"/></xsl:apply-templates>"#,
         "key value",
     ),
+];
+
+/// Bodies xrust 2.2.0 panicked on and 2.3.0 refuses when it compiles the stylesheet: it no
+/// longer accepts `xsl:sort` under `for-each` or `for-each-group` at all.
+const REFUSED_AT_COMPILE: [&str; 3] = [
+    r#"<xsl:for-each select="//x"><xsl:sort select="$nope"/><xsl:value-of select="."/></xsl:for-each>"#,
+    r#"<xsl:for-each select="//x"><xsl:sort select="nosuch(.)"/><xsl:value-of select="."/></xsl:for-each>"#,
+    r#"<xsl:for-each-group select="//x" group-by="@k"><xsl:sort select="$nope"/><xsl:value-of select="."/></xsl:for-each-group>"#,
 ];
 
 fn transform(src: &str, style: &str) -> Result<String, Error> {
@@ -110,5 +115,22 @@ fn a_transform_after_a_panic_still_answers() {
         assert!(transform(SRC, &style(PANICS[0].0)).is_err());
         let ok = transform(SRC, &style(r#"<r><xsl:value-of select="count(//x)"/></r>"#)).unwrap();
         assert_eq!(ok, "<r>2</r>");
+    }
+}
+
+#[test]
+fn a_sort_xrust_now_refuses_at_compile_is_an_endpoint_error() {
+    for body in REFUSED_AT_COMPILE {
+        let caught = std::panic::catch_unwind(|| transform(SRC, &style(body)));
+        let err = caught
+            .unwrap_or_else(|_| panic!("{body}: panicked on the caller's thread"))
+            .expect_err(body);
+        assert!(matches!(&err, Error::Endpoint(_)), "{body}: {err:?}");
+        let text = err.to_string();
+        assert!(
+            text.contains("stylesheet compile error")
+                && text.contains(r#"unsupported XSL element "sort""#),
+            "{body}: {text}"
+        );
     }
 }

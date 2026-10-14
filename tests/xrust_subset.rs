@@ -39,7 +39,7 @@ use xrust::xslt::from_document;
 /// ⚠ Keep this line's exact shape: ikigai-devtools' daily scan (`xrust-drift.py`) reads it as
 /// THE record and warns when crates.io has a newer xrust. `subset::XRUST_MEASURED_ON` is the
 /// crate's own copy, and the test below holds the two equal.
-const MEASURED_ON: &str = "2.2.0";
+const MEASURED_ON: &str = "2.3.0";
 
 /// A plain, namespace-free source.
 const SRC: &str = r#"<doc title="T"><item id="a" k="1">one</item><item id="b" k="2">two</item><item id="c" k="1">three</item></doc>"#;
@@ -71,7 +71,13 @@ fn stock(src: &str, templates: &str) -> Result<String, String> {
         parse(
             d.clone(),
             s,
-            Some(|_: &_| Err(ParseError::MissingNameSpace)),
+            Some(|_: &_| {
+                Err(ParseError::MissingNameSpace {
+                    prefix: None,
+                    nsuri: None,
+                    message: None,
+                })
+            }),
         )?;
         Ok(d)
     }
@@ -86,8 +92,7 @@ fn stock(src: &str, templates: &str) -> Result<String, String> {
         .map_err(|e| format!("compile: {}", e.message))?;
     ctxt.context(vec![Item::Node(src.clone())], 0);
     ctxt.result_document(RNode::new_document());
-    ctxt.populate_key_values(&mut stctxt, src)
-        .map_err(|e| format!("keys: {}", e.message))?;
+    // No key step: since xrust 2.3, `key()` indexes its document lazily on `stctxt`.
     ctxt.evaluate(&mut stctxt)
         .map(|seq| seq.to_xml())
         .map_err(|e| format!("transform: {}", e.message))
@@ -243,7 +248,7 @@ fn the_supported_subset_gives_the_xslt_answer() {
             "<out><p>one</p><p>three</p></out>",
         ),
         (
-            "a [position() = n] filter (where [n] is ignored)",
+            "a [position() = n] filter",
             SRC,
             r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[position() = 1])"/></out></xsl:template>"#,
             "<out>1</out>",
@@ -253,6 +258,48 @@ fn the_supported_subset_gives_the_xslt_answer() {
             SRC,
             r#"<xsl:template match="/"><out><xsl:value-of select="doc/item[position() = 1]"/></out></xsl:template>"#,
             "<out>one</out>",
+        ),
+        (
+            "a literal [n] predicate (ignored by xrust 2.2.0, right since 2.3.0)",
+            SRC,
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/item[2]"/>,<xsl:value-of select="(doc/item)[2]"/>,<xsl:value-of select="doc/item[@k='1'][2]"/>,<xsl:value-of select="count(doc/item[1])"/></out></xsl:template>"#,
+            "<out>two,two,three,1</out>",
+        ),
+        (
+            "a literal [n] predicate away from the root, and in an attribute value template",
+            SRC,
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc"/></out></xsl:template><xsl:template match="doc"><p n="{item[2]}"><xsl:value-of select="item[3]"/></p></xsl:template>"#,
+            "<out><p n='two'>three</p></out>",
+        ),
+        (
+            "a computed numeric predicate: [count(../item)] is the last node",
+            SRC,
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc"/></out></xsl:template><xsl:template match="doc"><xsl:value-of select="item[count(../item)]"/></xsl:template>"#,
+            "<out>three</out>",
+        ),
+        (
+            "attribute value templates over PREFIXED names (empty in xrust 2.2.0, right since 2.3.0)",
+            NS_SRC,
+            r#"<xsl:template match="/"><out><xsl:for-each select="page/l:Item"><a href="{@rdf:about}" t="{concat('x', @rdf:about)}"/></xsl:for-each><xsl:apply-templates select="page"/></out></xsl:template><xsl:template match="page"><b n="{count(l:Item)}" s="{count(l:*)}"/></xsl:template>"#,
+            "<out><a href='urn:i:1' t='xurn:i:1'/><a href='urn:i:2' t='xurn:i:2'/><b n='2' s='2'/></out>",
+        ),
+        (
+            "xsl:variable inside a template (refused by xrust 2.2.0)",
+            SRC,
+            r#"<xsl:template match="/"><xsl:variable name="v" select="doc/@title"/><out><xsl:value-of select="$v"/></out></xsl:template>"#,
+            "<out>T</out>",
+        ),
+        (
+            "string-length() (refused by xrust 2.2.0)",
+            SRC,
+            r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/@title)"/>,<xsl:value-of select="string-length('four')"/></out></xsl:template>"#,
+            "<out>1,4</out>",
+        ),
+        (
+            "xsl:key over prefixed names (refused by xrust 2.2.0)",
+            NS_SRC,
+            r#"<xsl:key name="k" match="l:Item" use="@rdf:about"/><xsl:template match="/"><out><xsl:value-of select="count(key('k','urn:i:2'))"/></out></xsl:template>"#,
+            "<out>1</out>",
         ),
         (
             "attribute value templates over UNPREFIXED names: functions, literals, parents, absolute paths",
@@ -296,64 +343,53 @@ fn the_supported_subset_gives_the_xslt_answer() {
 fn unsupported_constructs_are_refused_by_name() {
     let cases: &[(&str, &str, &str, &str)] = &[
         (
-            "xsl:variable inside a template",
-            SRC,
-            r#"<xsl:template match="/"><xsl:variable name="v" select="doc/@title"/><out><xsl:value-of select="$v"/></out></xsl:template>"#,
-            r#"unsupported XSL element "variable""#,
-        ),
-        (
             "xsl:sort inside for-each",
             SRC,
             r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:sort select="@id"/><p/></xsl:for-each></out></xsl:template>"#,
             r#"unsupported XSL element "sort""#,
         ),
         (
-            "string-length()",
+            "xsl:sort inside for-each-group (newly refused by xrust 2.3.0)",
             SRC,
-            r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/@title)"/></out></xsl:template>"#,
-            r#"unknown callable "string-length""#,
-        ),
-        (
-            "xsl:key over prefixed names",
-            NS_SRC,
-            r#"<xsl:key name="k" match="l:Item" use="@rdf:about"/><xsl:template match="/"><out><xsl:value-of select="count(key('k','urn:i:2'))"/></out></xsl:template>"#,
-            "MissingNameSpace",
+            r#"<xsl:template match="/"><out><xsl:for-each-group select="doc/item" group-by="@k"><xsl:sort select="@k"/><p/></xsl:for-each-group></out></xsl:template>"#,
+            r#"unsupported XSL element "sort""#,
         ),
     ];
     for (what, src, templates, refusal) in cases {
         let err = ours(src, templates).expect_err(what);
         assert!(err.contains(refusal), "{what}: {err}");
     }
+}
 
-    // A stylesheet whose first node is a comment, not the xsl:stylesheet element.
-    let err = transform_xml(
+/// A stylesheet whose first node is a comment, not the `xsl:stylesheet` element: xrust 2.2.0
+/// refused it (`not an XSLT stylesheet`), and 2.3.0 compiles it, as XSLT says it should.
+#[test]
+fn a_leading_comment_before_the_stylesheet_is_admitted() {
+    let answer = transform_xml(
         SRC,
         &format!(
             "<!-- a comment -->{}",
             style(r#"<xsl:template match="/"><out/></xsl:template>"#)
         ),
         false,
-    )
-    .expect_err("a leading comment");
-    assert!(err.contains("not an XSLT stylesheet"), "{err}");
+    );
+    assert_eq!(answer.as_deref(), Ok("<out/>"));
+}
+
+/// The node-set-to-string defect behind `silent_value_of_a_node_set_concatenates_every_node`
+/// is not `xsl:value-of`'s alone: `string-length()` of several nodes measures them all
+/// concatenated (`onetwothree`, 11), where XSLT 1.0 measures the first (`one`, 3).
+#[test]
+fn silent_string_of_a_node_set_concatenates_every_node() {
+    pin_silent(
+        SRC,
+        r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/item)"/></out></xsl:template>"#,
+        "<out>11</out>",
+        "<out>3</out>",
+    );
 }
 
 // --------------------------------------------------------------------- refused here
-
-/// An attribute value template that names a PREFIXED node is empty: `{@rdf:about}`,
-/// `{l:child}`, and the prefixed name inside a function (`{concat('x', @rdf:about)}` is
-/// `x`). Unprefixed names work, functions and absolute paths included (see the works
-/// table); `xsl:attribute` with `xsl:value-of` is the workaround.
-#[test]
-fn refused_a_prefixed_name_in_an_attribute_value_template() {
-    pin_refused(
-        NS_SRC,
-        r#"<xsl:template match="/"><out><xsl:for-each select="page/l:Item"><a href="{@rdf:about}" t="{concat('x', @rdf:about)}"/></xsl:for-each></out></xsl:template>"#,
-        "<out><a href='' t='x'/><a href='' t='x'/></out>",
-        "<out><a href='urn:i:1' t='xurn:i:1'/><a href='urn:i:2' t='xurn:i:2'/></out>",
-        "a prefixed name in an attribute value template",
-    );
-}
 
 /// A predicate in a MATCH pattern is ignored: `item[@k='2']` matches every `item`.
 #[test]
@@ -393,29 +429,35 @@ fn refused_a_predicate_in_a_key_pattern() {
     );
 }
 
-/// A numeric predicate on a path is ignored: `item[1]` and `item[last()]` select every
-/// `item`, after a filter and on a parenthesized expression alike. `[position() = 1]` works
-/// (see the works table).
+/// `[last()]` selects the FIRST node, since `last()` is 1 there: at the root, from a nested
+/// template, on a parenthesized expression and in an attribute value template alike. A literal
+/// `[n]` is right since xrust 2.3.0 (see the works table), and so is `[count(../item)]`, the
+/// workaround. ⚠ `count()` over the result cannot see this (one node either way): compare values.
 #[test]
-fn refused_a_numeric_path_predicate() {
+fn refused_a_last_predicate() {
     for (templates, wrong, correct) in [
         (
-            r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[1])"/>,<xsl:value-of select="count(doc/item[last()])"/></out></xsl:template>"#,
-            "<out>3,3</out>",
-            "<out>1,1</out>",
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/item[last()]"/></out></xsl:template>"#,
+            "<out>one</out>",
+            "<out>three</out>",
         ),
         (
-            r#"<xsl:template match="/"><out><xsl:value-of select="count(doc/item[@k='1'][1])"/>,<xsl:value-of select="count((doc/item)[2])"/></out></xsl:template>"#,
-            "<out>2,3</out>",
-            "<out>1,1</out>",
+            r#"<xsl:template match="/"><out><xsl:value-of select="(doc/item)[last()]"/></out></xsl:template>"#,
+            "<out>one</out>",
+            "<out>three</out>",
         ),
         (
-            r#"<xsl:template match="/"><out n="{count(doc/item[1])}"/></xsl:template>"#,
-            "<out n='3'/>",
-            "<out n='1'/>",
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc"/></out></xsl:template><xsl:template match="doc"><xsl:value-of select="item[last()]"/></xsl:template>"#,
+            "<out>one</out>",
+            "<out>three</out>",
+        ),
+        (
+            r#"<xsl:template match="/"><out m="{doc/item[last()]/@id}"/></xsl:template>"#,
+            "<out m='a'/>",
+            "<out m='c'/>",
         ),
     ] {
-        pin_refused(SRC, templates, wrong, correct, "a numeric predicate");
+        pin_refused(SRC, templates, wrong, correct, "a [last()] predicate");
     }
 }
 
@@ -559,7 +601,13 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
             parse(
                 d.clone(),
                 s,
-                Some(|_: &_| Err(ParseError::MissingNameSpace)),
+                Some(|_: &_| {
+                    Err(ParseError::MissingNameSpace {
+                        prefix: None,
+                        nsuri: None,
+                        message: None,
+                    })
+                }),
             )
             .map(|_| d)
         };
@@ -575,7 +623,6 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
         .unwrap();
         ctxt.context(vec![Item::Node(src.clone())], 0);
         ctxt.result_document(RNode::new_document());
-        ctxt.populate_key_values(&mut stctxt, src).unwrap();
         ctxt.evaluate(&mut stctxt).unwrap().to_xml()
     };
     assert_eq!(

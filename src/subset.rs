@@ -1,15 +1,17 @@
 //! The constructs xrust answers WRONGLY, with no error, refused before it compiles them
 //! (ledger #193).
 //!
-//! xrust 2.2.0 evaluates part of XSLT 1.0 to a wrong answer and says nothing: a predicate in a
-//! match pattern matches everything, `item[1]` selects every `item`, `position()` and `last()`
-//! are 1, a leading `//` starts from the context node, and a prefixed name inside an attribute
-//! value template is empty. `tests/xrust_subset.rs` measures each one, through this crate and
-//! through stock xrust. A stylesheet's author cannot discover them from errors, and a bound
-//! must refuse rather than truncate, so compiling reads the parsed stylesheet before xrust
-//! compiles it and refuses every one it can see, as a typed `InvalidArgument` naming the
-//! argument, the construct, the element and attribute it is in, and the README row (the
-//! "XSLT subset" section) that says what to write instead.
+//! xrust 2.3.0 evaluates part of XSLT 1.0 to a wrong answer and says nothing: a predicate in a
+//! match pattern matches everything, `position()` and `last()` are 1 (so `item[last()]` selects
+//! the FIRST `item`), and a leading `//` starts from the context node. `tests/xrust_subset.rs`
+//! measures each one, through this crate and through stock xrust. (xrust 2.2.0 also ignored a
+//! literal numeric predicate, `item[2]`, and emptied a prefixed name inside an attribute value
+//! template; 2.3.0 answers both correctly, so since 0.3.1 neither is refused.) A stylesheet's
+//! author cannot discover them from errors, and a bound must refuse rather than truncate, so
+//! compiling reads the parsed stylesheet before xrust compiles it and refuses every one it can
+//! see, as a typed `InvalidArgument` naming the argument, the construct, the element and
+//! attribute it is in, and the README row (the "XSLT subset" section) that says what to write
+//! instead.
 //!
 //! ## What the scan sees, and what it does not
 //!
@@ -21,10 +23,9 @@
 //! | construct | refused where | [`Construct`] |
 //! | --- | --- | --- |
 //! | a predicate (`[`) in a match pattern | `match` of `xsl:template` and `xsl:key` | [`Construct::MatchPredicate`] |
-//! | a numeric predicate, `[1]` or `[last()]` | any expression, attribute value templates included | [`Construct::NumericPredicate`] |
+//! | a `[last()]` predicate | any expression, attribute value templates included | [`Construct::NumericPredicate`] |
 //! | `position()` or `last()` | outside a predicate, where the context node is not the root; and `last()` inside any predicate | [`Construct::PositionOrLast`] |
 //! | a leading `//` | where the context node is not the root, a predicate included | [`Construct::LeadingDoubleSlash`] |
-//! | a prefixed name inside `{…}` | an attribute value template on a literal result element | [`Construct::PrefixedNameInAvt`] |
 //!
 //! "Where the context node is the root" is the one place two of those constructs are right:
 //! the body of `xsl:template match="/"` outside any `xsl:for-each`, and a top-level
@@ -64,7 +65,7 @@ use crate::XSL_NS;
 /// warning in the ecosystem's daily scan, which says this table is due a re-measure (ledger
 /// #193). `tests/xrust_subset.rs` re-measures it on whatever xrust the build resolved, and a
 /// changed answer fails there.
-pub const XRUST_MEASURED_ON: &str = "2.2.0";
+pub const XRUST_MEASURED_ON: &str = "2.3.0";
 
 /// One construct xrust answers wrongly without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +73,9 @@ pub enum Construct {
     /// A predicate in a match pattern: `match="item[@k='2']"` matches every `item`, and so
     /// template priority never prefers it either.
     MatchPredicate,
-    /// A numeric predicate, `[1]` or `[last()]`: ignored, so every node is selected.
+    /// A `[last()]` predicate: `last()` is 1 there, so it selects the FIRST node. Through
+    /// 0.3.0 this was every numeric predicate, because xrust 2.2.0 ignored `[1]` and `[2]` too;
+    /// xrust 2.3.0 answers a literal `[n]` correctly, so since 0.3.1 only `[last()]` is refused.
     NumericPredicate,
     /// `position()` or `last()` where they do not mean what XSLT says: always 1 outside a
     /// predicate when the context is not the root, and `last()` is 1 inside a predicate too.
@@ -80,7 +83,9 @@ pub enum Construct {
     /// A leading `//` where the context is not the root: evaluated from the context node.
     LeadingDoubleSlash,
     /// A prefixed name inside an attribute value template on a literal result element:
-    /// `href="{@rdf:about}"` is empty.
+    /// `href="{@rdf:about}"` was empty in xrust 2.2.0. **Never reported since 0.3.1**: xrust
+    /// 2.3.0 answers it correctly. The variant stays so that code matching on this enum keeps
+    /// compiling across a patch release.
     PrefixedNameInAvt,
 }
 
@@ -90,7 +95,7 @@ impl Construct {
     pub fn readme_row(self) -> &'static str {
         match self {
             Construct::MatchPredicate => "a predicate in a match pattern",
-            Construct::NumericPredicate => "a numeric predicate: [1], [last()]",
+            Construct::NumericPredicate => "a [last()] predicate",
             Construct::PositionOrLast => "position() or last() away from the root",
             Construct::LeadingDoubleSlash => "a leading // away from the root",
             Construct::PrefixedNameInAvt => "a prefixed name in an attribute value template",
@@ -103,7 +108,9 @@ impl Construct {
             Construct::MatchPredicate => {
                 "match the name alone and branch inside with xsl:if or xsl:choose"
             }
-            Construct::NumericPredicate => "[position() = 1]",
+            Construct::NumericPredicate => {
+                "[count(../name)], the node count as a numeric predicate"
+            }
             Construct::PositionOrLast => {
                 "compute it outside and hand it in as data, or use position() inside a predicate"
             }
@@ -249,7 +256,7 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
         // A literal result element: every attribute is an attribute value template.
         for (attribute, _, value) in &attrs {
             for expr in avt_expressions(value) {
-                for construct in expression(&expr, at_root, true) {
+                for construct in expression(&expr, at_root) {
                     report(construct, attribute, value);
                 }
             }
@@ -283,14 +290,14 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
                 }
             }
             (_, "select" | "test" | "use" | "value") => {
-                for construct in expression(value, own_at_root, false) {
+                for construct in expression(value, own_at_root) {
                     report(construct, attribute, value);
                 }
             }
             // The attribute value templates an XSL element takes.
             ("attribute" | "element", "name" | "namespace") => {
                 for expr in avt_expressions(value) {
-                    for construct in expression(&expr, own_at_root, false) {
+                    for construct in expression(&expr, own_at_root) {
                         report(construct, attribute, value);
                     }
                 }
@@ -493,8 +500,7 @@ fn ends_operand(prev_ends: bool, tok: &Tok) -> bool {
 }
 
 /// The constructs one expression holds. `at_root`: the context node is the document root.
-/// `avt`: it sits inside a literal result element's attribute value template.
-fn expression(expr: &str, at_root: bool, avt: bool) -> Vec<Construct> {
+fn expression(expr: &str, at_root: bool) -> Vec<Construct> {
     let toks = tokens(expr);
     let mut found = Vec::new();
     let mut add = |c: Construct| {
@@ -510,14 +516,14 @@ fn expression(expr: &str, at_root: bool, avt: bool) -> Vec<Construct> {
         let in_predicate = open.contains(&'[');
         match tok {
             Tok::Open('[') => {
-                let numeric = match (toks.get(i + 1), toks.get(i + 2), toks.get(i + 3)) {
-                    (Some(Tok::Number), Some(Tok::Close(']')), _) => true,
+                // `[last()]`, and only that: a literal `[n]` is answered right since xrust 2.3.0.
+                let last = match (toks.get(i + 1), toks.get(i + 2), toks.get(i + 3)) {
                     (Some(Tok::Name(n)), Some(Tok::Open('(')), Some(Tok::Close(')'))) => {
                         n == "last" && toks.get(i + 4) == Some(&Tok::Close(']'))
                     }
                     _ => false,
                 };
-                if numeric {
+                if last {
                     add(Construct::NumericPredicate);
                 }
             }
@@ -527,21 +533,13 @@ fn expression(expr: &str, at_root: bool, avt: bool) -> Vec<Construct> {
                     && toks.get(i - 1) == Some(&Tok::Open('['))
                     && toks.get(i + 3) == Some(&Tok::Close(']'));
                 match n.as_str() {
-                    // `[last()]` is reported once, as the numeric predicate it is.
+                    // `[last()]` is reported once, as the `[last()]` predicate it is.
                     "last" if in_predicate && !numeric_last => add(Construct::PositionOrLast),
                     "position" | "last" if !in_predicate && !at_root => {
                         add(Construct::PositionOrLast)
                     }
                     _ => {}
                 }
-            }
-            Tok::Name(n)
-                if avt
-                    && n.contains(':')
-                    && next != Some(&Tok::Axis)
-                    && ends_operand(prev_ends, tok) =>
-            {
-                add(Construct::PrefixedNameInAvt)
             }
             // Inside a predicate the context is the node being tested, never the root.
             Tok::SlashSlash if !prev_ends && (!at_root || in_predicate) => {
@@ -567,16 +565,26 @@ mod tests {
     use Construct::*;
 
     fn at(expr: &str) -> Vec<Construct> {
-        expression(expr, false, false)
+        expression(expr, false)
     }
 
     #[test]
-    fn a_numeric_predicate_is_seen_and_a_positional_test_is_not() {
-        assert_eq!(at("doc/item[1]"), vec![NumericPredicate]);
-        assert_eq!(at("count(doc/item[ 2 ])"), vec![NumericPredicate]);
-        assert_eq!(at("(doc/item)[1]"), vec![NumericPredicate]);
-        assert_eq!(at("doc/item[@k='1'][1]"), vec![NumericPredicate]);
+    fn a_last_predicate_is_seen_and_a_literal_or_positional_test_is_not() {
         assert_eq!(at("doc/item[last()]"), vec![NumericPredicate]);
+        assert_eq!(at("count(doc/item[ last( ) ])"), vec![NumericPredicate]);
+        assert_eq!(at("(doc/item)[last()]"), vec![NumericPredicate]);
+        assert_eq!(at("doc/item[@k='1'][last()]"), vec![NumericPredicate]);
+        assert_eq!(
+            expression("doc/item[last()]", true),
+            vec![NumericPredicate],
+            "wrong at the root too: last() is 1 there"
+        );
+        // A literal `[n]` is answered right since xrust 2.3.0, so it is not refused.
+        assert_eq!(at("doc/item[1]"), vec![]);
+        assert_eq!(at("count(doc/item[ 2 ])"), vec![]);
+        assert_eq!(at("(doc/item)[1]"), vec![]);
+        assert_eq!(at("doc/item[@k='1'][1]"), vec![]);
+        assert_eq!(at("doc/item[count(../item)]"), vec![]);
         assert_eq!(at("doc/item[position() = 1]"), vec![]);
         assert_eq!(at("doc/item[@k = 1]"), vec![]);
         assert_eq!(at("doc/item['1']"), vec![]);
@@ -593,11 +601,11 @@ mod tests {
         assert_eq!(at("item[position() = 2]"), vec![]);
         assert_eq!(at("item[count(x[position() = 1]) = 1]"), vec![]);
         // At the root the context position and size really are 1.
-        assert_eq!(expression("position()", true, false), vec![]);
-        assert_eq!(expression("last()", true, false), vec![]);
+        assert_eq!(expression("position()", true), vec![]);
+        assert_eq!(expression("last()", true), vec![]);
         // `last()` inside a predicate is wrong at the root too.
         assert_eq!(
-            expression("item[position() < last()]", true, false),
+            expression("item[position() < last()]", true),
             vec![PositionOrLast]
         );
         // A name that only contains the word, and a string, are neither.
@@ -621,28 +629,24 @@ mod tests {
         assert_eq!(at("a[1 = 1]//b"), vec![]);
         assert_eq!(at("'//item'"), vec![]);
         assert_eq!(at("concat(\"//\", '//')"), vec![]);
-        assert_eq!(expression("//item", true, false), vec![]);
+        assert_eq!(expression("//item", true), vec![]);
         // Inside a predicate the context is the node being tested, even at the root.
         assert_eq!(
-            expression("doc/item[//item]", true, false),
+            expression("doc/item[//item]", true),
             vec![LeadingDoubleSlash]
         );
     }
 
     #[test]
-    fn a_prefixed_name_counts_only_in_a_literal_attribute_value_template() {
-        let avt = |e: &str| expression(e, false, true);
-        assert_eq!(avt("@rdf:about"), vec![PrefixedNameInAvt]);
-        assert_eq!(avt("concat('x', @rdf:about)"), vec![PrefixedNameInAvt]);
-        assert_eq!(avt("l:child"), vec![PrefixedNameInAvt]);
-        assert_eq!(avt("l:*"), vec![PrefixedNameInAvt]);
-        assert_eq!(avt("@id"), vec![]);
-        assert_eq!(avt("child::item"), vec![]);
-        assert_eq!(avt("'rdf:about'"), vec![]);
-        assert_eq!(avt("$p:v"), vec![]);
-        assert_eq!(avt("ext:fn(@id)"), vec![]);
-        // Not in a literal result element's template, so not this construct.
-        assert_eq!(at("@rdf:about"), vec![]);
+    fn a_prefixed_name_in_an_attribute_value_template_is_no_longer_refused() {
+        // xrust 2.3.0 answers `{@rdf:about}` correctly (`tests/xrust_subset.rs` measures it).
+        for e in ["@rdf:about", "concat('x', @rdf:about)", "l:child", "l:*"] {
+            assert_eq!(at(e), vec![], "{e}");
+        }
+        let style = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <xsl:template match="/"><a href="{@rdf:about}"/></xsl:template>
+</xsl:stylesheet>"#;
+        assert_eq!(silent_constructs(style), Ok(vec![]));
     }
 
     #[test]
