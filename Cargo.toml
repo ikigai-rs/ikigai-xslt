@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-xslt"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -19,12 +19,17 @@ crate-type = ["cdylib", "rlib"]
 # `space()` can name itself last (ledger #987).
 ikigai-core = "0.1.89"
 async-trait = "0.1"
-xrust = "2.1.0"
+# The 0.2 line is CAPPED below xrust 2.3 (ledger #1492). xrust 2.3.0 moved key population,
+# made `MissingNameSpace` a struct variant and requires qualname 0.0.2, so this tree does not
+# compile against it, and 0.2.1's plain caret (`"2.1.0"`, i.e. <3.0.0) let a fresh resolve pick
+# it. 0.3.x is the line that builds on xrust 2.3: use that, and leave this cap in place.
+xrust = ">=2.1.0, <2.3"
 # Only to NAME the types in xrust's `Node` trait, which `src/node_id.rs` implements (ledger
 # #1047): xrust does not re-export them. It must be the qualname xrust itself depends on — 0.0.1
-# for xrust 2.1 and 2.2 — and a `^0.0.1` pin is exactly `=0.0.1`. If a later xrust moves to
-# another qualname, this crate stops COMPILING (two `QName` types), loudly, rather than drifting.
-qualname = "0.0.1"
+# for xrust 2.1 and 2.2 — and is pinned exactly so it cannot float to 0.0.2 (xrust 2.3's). If a
+# later xrust moves to another qualname, this crate stops COMPILING (two `QName` types), loudly,
+# rather than drifting.
+qualname = "=0.0.1"
 
 # The `module` feature turns this library into a standalone dynamically-loadable WASM
 # module via `ikigai_module::wasm_module!` — so a host can lazy-load `ikigai_xslt.wasm` and
