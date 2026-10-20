@@ -204,7 +204,8 @@ fn issue(kernel: &Kernel, request: Request, capability: &Capability) -> Result<S
 }
 
 /// The walk saw the module's endpoint plus `extra` fixture endpoints, one Source
-/// action each (Meta is not an action), and skipped nothing. A second module
+/// action each (Meta is not an action), and skipped nothing but FAILURES (conformance
+/// 0.10.0's check, OFF until a suite opts in with `check_failures()`). A second module
 /// endpoint bound without a line here would be held to a weaker standard.
 fn assert_shape(report: &Report, extra: usize) {
     assert_eq!(report.endpoints, 1 + extra, "{report}");
@@ -215,8 +216,8 @@ fn assert_shape(report: &Report, extra: usize) {
     );
     assert_eq!(
         report.checks.skipped().count(),
-        0,
-        "every check runs: {report}"
+        1,
+        "every check runs but the opt-in FAILURES: {report}"
     );
 }
 
