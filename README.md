@@ -63,9 +63,10 @@ resolved — there is no read for a capability to gate.
 
 xrust implements a **subset** of XSLT 1.0, and the dangerous part of it is not what it
 refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's author cannot
-discover those from errors, so since 0.3.0 this crate **refuses** every one of them it can
-see, before xrust compiles the stylesheet. Every row below was measured on
-**xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193) by
+discover those from errors, so since 0.3.0 this crate **refuses** the constructs in the refusal table
+below, before xrust compiles the stylesheet. Every row below was measured on
+**xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193;
+whitespace-only `xsl:text` added 2026-10-23, ledger #2146) by
 `tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
@@ -117,13 +118,16 @@ root, xrust's answer is right, and nothing is refused. The scan is lexical and
 conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
 `/doc//b` are not a leading `//`, and `[1]` or `[position() = 1]` is not a `[last()]` predicate.
 
-⚠ **Still silently wrong: an answer, no error.** One case no lexical scan can see, because
-whether a path selects one node or several is a property of the data, not of the
-stylesheet (`ik:title` is usually one node; `../@title` always is; `item` often is not):
+⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;
+they are not refused here. Whether a path selects one node or several is a property of
+the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
+`item` often is not). Whitespace-only `xsl:text` is lost during stylesheet compilation,
+including a space written as `&#x20;`:
 
 | construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
 | `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
+| `xsl:text` containing only whitespace: `Meta<xsl:text> </xsl:text>Source` | `Meta Source` | `MetaSource` (the explicit whitespace is dropped) | `<xsl:value-of select="' '"/>`, or append a space with `concat(., ' ')` |
 
 ### `method="html"` is serialized as HTML
 

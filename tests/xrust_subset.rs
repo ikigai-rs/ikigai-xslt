@@ -13,7 +13,7 @@
 //!   `smite::RNode`, not this crate's `IdNode` wrapper) still gives the pinned wrong answer,
 //!   so the defect is xrust's, the refusal is still earning its keep, and the reproduction in
 //!   `docs/upstream-xrust.md` is honest;
-//! - **silent**: wrong answers with no error that no lexical scan can see (one is left), pinned
+//! - **silent**: wrong answers still returned without an error, pinned
 //!   the same way through both paths.
 //!
 //! ★ **A failing `refused_*` or `silent_*` test is GOOD NEWS, on purpose.** It means xrust
@@ -632,13 +632,37 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
     );
 }
 
+/// Ledger #2146: stylesheet whitespace stripping also removes xsl:text's explicit space.
+/// Keep this measured limitation visible until xrust preserves it; the workaround below
+/// pins a useful alternative without changing the caller's stylesheet here.
 #[test]
-fn whitespace_only_xsl_text_is_preserved() {
-    let templates = r#"<xsl:template match="/"><out>Meta<xsl:text> </xsl:text>Source</out></xsl:template>"#;
-    let expected = "<out>Meta Source</out>";
-    let actual_ours = ours("<doc/>", templates).unwrap();
-    let actual_stock = stock("<doc/>", templates).unwrap();
-    eprintln!("ikigai-xslt: {actual_ours:?}; stock xrust: {actual_stock:?}");
-    assert_eq!(actual_ours, expected, "ikigai-xslt");
-    assert_eq!(actual_stock, expected, "stock xrust");
+fn silent_whitespace_only_xsl_text_is_dropped() {
+    for text in [" ", "  ", "\t\n", "&#x20;"] {
+        let templates = format!(
+            r#"<xsl:template match="/"><out>Meta<xsl:text>{text}</xsl:text>Source</out></xsl:template>"#
+        );
+        let preserved = if text == "&#x20;" { " " } else { text };
+        pin_silent(
+            "<doc/>",
+            &templates,
+            "<out>MetaSource</out>",
+            &format!("<out>Meta{preserved}Source</out>"),
+        );
+    }
+}
+
+#[test]
+fn whitespace_xsl_text_workaround_and_nonblank_text_are_preserved() {
+    for templates in [
+        r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:value-of select="concat(., ' ')"/></xsl:for-each></out></xsl:template>"#,
+        r#"<xsl:template match="/"><out><xsl:text>Meta </xsl:text><xsl:text>Source </xsl:text></out></xsl:template>"#,
+        r#"<xsl:template match="/"><out>Meta<xsl:value-of select="' '"/>Source<xsl:value-of select="' '"/></out></xsl:template>"#,
+    ] {
+        for answer in [
+            ours("<doc><item>Meta</item><item>Source</item></doc>", templates),
+            stock("<doc><item>Meta</item><item>Source</item></doc>", templates),
+        ] {
+            assert_eq!(answer.unwrap(), "<out>Meta Source </out>");
+        }
+    }
 }
