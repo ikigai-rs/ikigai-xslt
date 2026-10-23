@@ -631,3 +631,14 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
          src/html.rs may be redundant; update the README and docs/upstream-xrust.md"
     );
 }
+
+#[test]
+fn whitespace_only_xsl_text_is_preserved() {
+    let templates = r#"<xsl:template match="/"><out>Meta<xsl:text> </xsl:text>Source</out></xsl:template>"#;
+    let expected = "<out>Meta Source</out>";
+    let actual_ours = ours("<doc/>", templates).unwrap();
+    let actual_stock = stock("<doc/>", templates).unwrap();
+    eprintln!("ikigai-xslt: {actual_ours:?}; stock xrust: {actual_stock:?}");
+    assert_eq!(actual_ours, expected, "ikigai-xslt");
+    assert_eq!(actual_stock, expected, "stock xrust");
+}
