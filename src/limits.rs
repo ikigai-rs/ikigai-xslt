@@ -990,7 +990,7 @@ mod tests {
             .map(|i| std::thread::spawn(move || on_xslt_stack(move || i * 2).unwrap()))
             .collect();
         let sum: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
-        assert_eq!(sum, (0..16).map(|i| i * 2).sum());
+        assert_eq!(sum, (0..16).map(|i| i * 2).sum::<usize>());
         release_idle_threads();
         assert_eq!(on_xslt_stack(|| 3).unwrap(), 3);
     }

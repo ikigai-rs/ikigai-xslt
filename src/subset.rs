@@ -8,8 +8,8 @@
 //! literal numeric predicate, `item[2]`, and emptied a prefixed name inside an attribute value
 //! template; 2.3.0 answers both correctly, so since 0.3.1 neither is refused.) A stylesheet's
 //! author cannot discover them from errors, and a bound must refuse rather than truncate, so
-//! compiling reads the parsed stylesheet before xrust compiles it and refuses every one it can
-//! see, as a typed `InvalidArgument` naming the argument, the construct, the element and
+//! compiling reads the parsed stylesheet before xrust compiles it and refuses the constructs
+//! listed below, as a typed `InvalidArgument` naming the argument, the construct, the element and
 //! attribute it is in, and the README row (the "XSLT subset" section) that says what to write
 //! instead.
 //!
@@ -38,6 +38,8 @@
 //! DATA (`ik:title` is usually one node and may be three), so no lexical rule tells the two
 //! apart: refusing a multi-step path would refuse `../@title`, which is always one node, and
 //! still admit `item`, which is often several. It stays a README row with its workaround.
+//! Whitespace-only `xsl:text` is also a recorded limitation (ledger #2146), outside this
+//! XPath/pattern scan: it is not refused, and the README lists tested workarounds.
 //!
 //! ```
 //! let style = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
