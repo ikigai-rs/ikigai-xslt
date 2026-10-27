@@ -204,9 +204,11 @@ fn issue(kernel: &Kernel, request: Request, capability: &Capability) -> Result<S
 }
 
 /// The walk saw the module's endpoint plus `extra` fixture endpoints, one Source
-/// action each (Meta is not an action), and skipped nothing but FAILURES (conformance
-/// 0.10.0's check, OFF until a suite opts in with `check_failures()`). A second module
-/// endpoint bound without a line here would be held to a weaker standard.
+/// action each (Meta is not an action), and skipped no check: conformance 0.11.0 runs
+/// FAILURES and DATATYPES by default (0.10.0 skipped FAILURES unless a suite opted in).
+/// FAILURES compares nothing here — no action states failure classes — and DATATYPES
+/// has no RDF face of the module's to read. A second module endpoint bound without a
+/// line here would be held to a weaker standard.
 fn assert_shape(report: &Report, extra: usize) {
     assert_eq!(report.endpoints, 1 + extra, "{report}");
     assert_eq!(
@@ -216,8 +218,8 @@ fn assert_shape(report: &Report, extra: usize) {
     );
     assert_eq!(
         report.checks.skipped().count(),
-        1,
-        "every check runs but the opt-in FAILURES: {report}"
+        0,
+        "every check runs: {report}"
     );
 }
 
