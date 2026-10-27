@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-xslt"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -15,9 +15,11 @@ keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.1.89 is the floor: it added `space_iri` and made `bind` drop a space's name, so
-# `space()` can name itself last (ledger #987).
-ikigai-core = "0.1.89"
+# 0.2.0 is the streams release (ledger #2261). The old `0.1.89` pin meant <0.2.0 under 0.x
+# rules, so this is a breaking move: core's types are in this crate's API (hence 0.4.0).
+# (0.1.89 had been the floor: it added `space_iri` and made `bind` drop a space's name, so
+# `space()` can name itself last, ledger #987.)
+ikigai-core = "0.2.0"
 async-trait = "0.1"
 # 2.3.0 is the floor, and it is an API break INSIDE the caret (ledger #1492): xrust 2.3.0
 # removed `Context::populate_key_values` (`key()` now indexes lazily), made
@@ -38,11 +40,9 @@ qualname = "0.0.2"
 # resolve `urn:xslt:transform` against it. These deps are optional and behind the feature,
 # so a normal (native/linked) consumer of the library never pulls wasm-bindgen et al.
 [dependencies.ikigai-module]
-# 0.3.1 is the floor that builds against ikigai-core >= 0.1.78 (`Resolved` gained a
-# private field, so it can only be built through `Resolved::new`): 0.1.10, 0.2.0 and
-# 0.3.0 all build it by struct literal, and a fresh resolve (newest core under the
-# caret above) fails to compile them. ⚠ A `^0.3.1` pin is also a CEILING (<0.4.0).
-version = "0.3.1"
+# 0.5.1 is the newest release; the 0.5 line is ikigai-module's first on ikigai-core 0.2
+# (`ikigai-core ^0.2.0`), and 0.4.0 and older link a 0.1 core beside this crate's 0.2 one. ⚠ A `^0.5.1` pin is also a CEILING (<0.6.0).
+version = "0.5.1"
 optional = true
 [dependencies.wasm-bindgen]
 # EXACT on purpose (ledger #1342, after ikigai-jsonld's #1193), unlike every other pin here.
@@ -88,11 +88,12 @@ module = [
 futures = "0.3"
 # For the `uds-server` / `uds-client` examples: run this XSLT space as a standalone
 # out-of-process module behind a Unix socket. A dev-dependency, so it never enters the
-# published library's dependency graph. Same floor as the optional dependency above.
-ikigai-module = "0.3.1"
+# published library's dependency graph. Same pin as the optional dependency above.
+ikigai-module = "0.5.1"
 # The module recipe as one test (`tests/conformance.rs`): walks `space()` and reports
 # every violation at once. 0.9.0 adds core 0.1.105's contract-shape checks (REQUIRED probes
 # input groups, OUTPUTS honors output_from, PIPELINE's named-only line, VALIDATE refuses a
-# default on a binding) and RECOMPUTE; 0.10.0 adds FAILURES, OFF unless a suite opts in. The
-# caret reads as a range, >=0.10.0 <0.11.0.
-ikigai-conformance = "0.10.0"
+# default on a binding) and RECOMPUTE; 0.10.0 adds FAILURES; 0.11.0 moves onto ikigai-core
+# 0.2.0 and turns FAILURES and DATATYPES on by default. The caret reads as a range,
+# >=0.11.0 <0.12.0.
+ikigai-conformance = "0.11.0"
