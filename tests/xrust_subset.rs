@@ -666,3 +666,35 @@ fn whitespace_xsl_text_workaround_and_nonblank_text_are_preserved() {
         }
     }
 }
+
+/// A PREFIXED attribute's value is lowercased by xrust's XML parser (ledger #2519):
+/// `parser/xml/attribute.rs` stores `value.to_lowercase()` in its prefixed arm. So an RDF/XML
+/// `rdf:about="urn:I:One"` reads back as `urn:i:one`, and any IRI with capitals in its path is
+/// silently a different IRI. An unprefixed attribute holding the same text keeps its case,
+/// which pins the defect to the prefix, not to attribute values in general.
+#[test]
+fn silent_a_prefixed_attribute_value_is_lowercased() {
+    let src = r#"<page xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:l="urn:l#"><l:Item rdf:about="urn:I:One" plain="urn:I:One">x</l:Item></page>"#;
+    pin_silent(
+        src,
+        r#"<xsl:template match="/"><out><xsl:value-of select="page/l:Item/@rdf:about"/></out></xsl:template>"#,
+        "<out>urn:i:one</out>",
+        "<out>urn:I:One</out>",
+    );
+    for answer in [
+        ours(
+            src,
+            r#"<xsl:template match="/"><out><xsl:value-of select="page/l:Item/@plain"/></out></xsl:template>"#,
+        ),
+        stock(
+            src,
+            r#"<xsl:template match="/"><out><xsl:value-of select="page/l:Item/@plain"/></out></xsl:template>"#,
+        ),
+    ] {
+        assert_eq!(
+            answer.unwrap(),
+            "<out>urn:I:One</out>",
+            "an unprefixed attribute keeps its case"
+        );
+    }
+}
