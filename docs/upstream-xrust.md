@@ -251,6 +251,40 @@ before the instruction compiles. The upstream fix should assign preserve scores 
 and test that stylesheet indentation still strips while `xsl:text` whitespace survives.
 This is an upstream report draft; nothing has been filed.
 
+## 10. A prefixed attribute's value is lowercased by the XML parser
+
+Input: an RDF/XML-shaped source whose IRI has capitals in it.
+
+```xml
+<page xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:l="urn:l#"><l:Item rdf:about="urn:I:One" plain="urn:I:One">x</l:Item></page>
+```
+
+```xml
+<xsl:template match="/"><out><xsl:value-of select="page/l:Item/@rdf:about"/></out></xsl:template>
+```
+
+- **Expected** (XML 1.0 §3.3.3 normalizes an attribute value's whitespace, never its case;
+  Namespaces in XML does not touch values): `<out>urn:I:One</out>`
+- **Actual**: `<out>urn:i:one</out>`, without an error, through both stock xrust 2.3.0 and
+  ikigai-xslt. The unprefixed `plain` attribute, with the same text, keeps its case:
+  `<out>urn:I:One</out>`. So the defect is in the prefixed path, not in attribute values in
+  general.
+
+This is the most damaging of the silent cases for RDF: `rdf:about`, `rdf:resource` and
+`rdf:datatype` are all prefixed, so any IRI with a capital letter in it becomes a different
+IRI. The same happens to a prefixed attribute written literally in a stylesheet, and to
+`xml:id`.
+
+Cause, from reading xrust 2.3.0's `src/parser/xml/attribute.rs`: the loop over the parsed
+attributes matches on `(prefix, local_part, value.to_lowercase())` so that `xml:space` can
+be recognized case-insensitively as `default` or `preserve`. But every arm binds that
+lowercased value, and the generic prefixed arm `(Some(p), lp, v)` stores `v` as the
+attribute's value (the `xml:id` arm does the same). The fix is to lowercase only where
+`xml:space` is compared, and to store the value as parsed in every arm, with a test that
+`rdf:about="urn:I:One"` reads back unchanged. (A data-driven value, one computed in the
+stylesheet rather than read from a prefixed attribute, keeps its case, which is the
+workaround ikigai-xslt's callers use today.)
+
 ## Not reported: the refused cases
 
 `xsl:sort` inside `for-each` or `for-each-group` is **refused with an error**. That is a gap a

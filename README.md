@@ -162,6 +162,7 @@ including a space written as `&#x20;`:
 | --- | --- | --- | --- |
 | `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
 | `xsl:text` containing only whitespace: `Meta<xsl:text> </xsl:text>Source` | `Meta Source` | `MetaSource` (the explicit whitespace is dropped) | `<xsl:value-of select="' '"/>`, or append a space with `concat(., ' ')` |
+| a **prefixed** attribute's value in the source or the stylesheet (`rdf:about="urn:I:One"`, `rdf:resource`, `rdf:datatype`, `xml:id`) | the value as written | the value **lowercased** (`urn:i:one`): an IRI with a capital in it becomes another IRI (ledger #2519). An unprefixed attribute keeps its case | compute the value in the stylesheet, or carry it in an unprefixed attribute or element text; there is no fix on this side of xrust's parser |
 
 ### `method="html"` is serialized as HTML
 
