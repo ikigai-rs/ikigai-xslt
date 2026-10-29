@@ -1,6 +1,8 @@
 [package]
 name = "ikigai-xslt"
-version = "0.4.0"
+# 0.4.1: request arguments reach declared top-level xsl:param values (ledger #2521); the core
+# floor rises to 0.2.5, where a reference argument is settled by the kernel (ledger #2511).
+version = "0.4.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
