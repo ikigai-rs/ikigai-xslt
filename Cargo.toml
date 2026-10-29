@@ -15,11 +15,13 @@ keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.2.0 is the streams release (ledger #2261). The old `0.1.89` pin meant <0.2.0 under 0.x
+# 0.2.5: the kernel settles a by-reference argument by the target's contract (ledger #2511), so a
+# stylesheet parameter (an open argument) passed as a reference receives the referent's text; the
+# parameters test pins that BEHAVIOR floor. Beneath it, 0.2.0 is the streams release (ledger #2261). The old `0.1.89` pin meant <0.2.0 under 0.x
 # rules, so this is a breaking move: core's types are in this crate's API (hence 0.4.0).
 # (0.1.89 had been the floor: it added `space_iri` and made `bind` drop a space's name, so
 # `space()` can name itself last, ledger #987.)
-ikigai-core = "0.2.0"
+ikigai-core = "0.2.5"
 async-trait = "0.1"
 # 2.3.0 is the floor, and it is an API break INSIDE the caret (ledger #1492): xrust 2.3.0
 # removed `Context::populate_key_values` (`key()` now indexes lazily), made

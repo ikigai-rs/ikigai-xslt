@@ -166,16 +166,42 @@ fn contract_admits_named_parameters() {
 #[test]
 fn parameter_values_must_be_inline_utf8() {
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
-    for value in [
-        ArgRef::Inline(vec![0xff]),
-        ArgRef::Reference(Iri::parse("urn:test:value").unwrap()),
-    ] {
-        let req = request(STYLE, &[]).with_arg("feed", value);
-        match futures::executor::block_on(kernel.issue(req, &Capability::root())) {
-            Err(Error::InvalidArgument { name, .. }) => assert_eq!(name, "feed"),
-            other => panic!("expected InvalidArgument, got {other:?}"),
-        }
+    let req = request(STYLE, &[]).with_arg("feed", ArgRef::Inline(vec![0xff]));
+    match futures::executor::block_on(kernel.issue(req, &Capability::root())) {
+        Err(Error::InvalidArgument { name, .. }) => assert_eq!(name, "feed"),
+        other => panic!("expected InvalidArgument, got {other:?}"),
     }
+}
+
+/// Since ikigai-core 0.2.5 (ledger #2511) the kernel settles a by-reference argument by the
+/// target's contract before the endpoint runs: an argument of an OPEN set, as every
+/// stylesheet parameter is, receives the referent's bytes. So a parameter passed as
+/// `feed=<urn:…>` reaches the stylesheet as the referent's text.
+#[test]
+fn a_parameter_passed_by_reference_receives_the_referents_text() {
+    use ikigai_core::{
+        EndpointSpace, Exact, Fallback, FnEndpoint, Invocation, ReprType, Representation, Space,
+    };
+    let value = FnEndpoint::new("value", |_: &Invocation<'_>| {
+        Ok(Representation::new(
+            ReprType::new("text/plain"),
+            b"https://example.org/ref.xml".to_vec(),
+        ))
+    });
+    let spaces: Vec<Arc<dyn Space>> = vec![
+        Arc::new(ikigai_xslt::space()),
+        Arc::new(EndpointSpace::new().bind(Exact::new("urn:test:value"), value)),
+    ];
+    let kernel = Kernel::new(Arc::new(Fallback::new(spaces)));
+    let req = request(STYLE, &[]).with_arg(
+        "feed",
+        ArgRef::Reference(Iri::parse("urn:test:value").unwrap()),
+    );
+    let answer = futures::executor::block_on(kernel.issue(req, &Capability::root())).unwrap();
+    assert_eq!(
+        String::from_utf8(answer.bytes).unwrap(),
+        "https://example.org/ref.xml|default terms"
+    );
 }
 
 #[test]
