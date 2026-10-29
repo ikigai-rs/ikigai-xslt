@@ -34,9 +34,43 @@ A missing input is refused **typed** (since 0.3.1): no `stylesheet` is a
 `MissingArgument` naming `src`. An input that is present but not inline UTF-8 is an
 `InvalidArgument` naming that input; a bad `src` does not fall through to `content`.
 
-Every input is declared with an XSD class (`xsd:string` for all four: `src` and
+Every fixed input is declared with an XSD class (`xsd:string` for all four: `src` and
 `stylesheet` are each a union of an IRI and a document, which no ArgSpec class states
 more precisely), so the manifold and `urn:kernel:validate` can form and check a call.
+
+## Stylesheet parameters
+
+Every argument other than `src`, `stylesheet`, `content` and `as` supplies a **string**
+value to a declared top-level `xsl:param` with the same name. For example:
+
+```xml
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output method="xml"/>
+  <xsl:param name="feed"/>
+  <xsl:param name="terms" select="'All items'"/>
+  <xsl:template match="/">
+    <rss><channel xmlUrl="{$feed}"><title><xsl:value-of select="$terms"/></title></channel></rss>
+  </xsl:template>
+</xsl:stylesheet>
+```
+
+```shell
+source urn:xslt:transform src=urn:data:feed.xml stylesheet=urn:style:search.xsl feed=https://example.org/feed.xml terms="Rust and XML"
+```
+
+Values must be inline UTF-8, just like the fixed inputs. They are literal strings,
+never XPath expressions or resource references: `terms=1+2` passes the text `1+2`.
+An omitted parameter uses its stylesheet default (`select` or content); an explicit
+empty string overrides that default. Defaults and top-level variables can use the
+selected parameter values. Request arguments already contribute to cache identity;
+compilation is still memoized by stylesheet text, with fresh parameter bindings per run.
+
+The endpoint declares an **open argument set** so named requests can carry these names.
+An undeclared name, a local template parameter or an `xsl:variable` is refused as an
+`InvalidArgument` naming that argument. The four fixed names remain reserved. Parameter
+names must be unprefixed XML names; xrust resolves variable references by local name,
+so namespace-qualified top-level parameter names are refused as an `InvalidArgument`
+naming `stylesheet`, as are missing, invalid or duplicate parameter names.
 
 ## Output media type
 

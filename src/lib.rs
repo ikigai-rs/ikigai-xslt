@@ -73,10 +73,12 @@
 mod html;
 pub mod limits;
 mod node_id;
+mod parameters;
 pub mod subset;
 
 use async_trait::async_trait;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ikigai_core::{
@@ -154,11 +156,17 @@ impl Endpoint for XsltEndpoint {
         // endpoint's future stay `Send`. Cacheable — the result inherits the src +
         // stylesheet threads.
         let as_media = inv.inline_str("as").ok().map(str::to_string);
+        let mut params = BTreeMap::new();
+        for name in inv.request.args.keys() {
+            if !matches!(name.as_str(), "src" | "stylesheet" | "content" | "as") {
+                params.insert(name.clone(), inv.inline_str(name)?.to_string());
+            }
+        }
         // Within [`limits::DEFAULT_TIME_BUDGET`]: past it the caller is answered with a typed
         // `Timeout`, and the work — which xrust cannot be told to stop — is counted until it
         // ends (ledger #1040).
         let (media, out) = limits::on_xslt_stack_within(limits::DEFAULT_TIME_BUDGET, move || {
-            render(&source, &stylesheet, as_media.as_deref())
+            render(&source, &stylesheet, as_media.as_deref(), &params)
         })??;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
@@ -217,6 +225,7 @@ impl Endpoint for XsltEndpoint {
                     .class(XSD_STRING)
                     .optional(),
             )
+            .open_arguments("every other argument is a string value for a declared top-level xsl:param; undeclared names are refused")
             // The three media types `xsl:output method` can imply. `as=` may relabel the
             // markup with any type (`image/svg+xml` for an SVG-emitting stylesheet); the
             // declared list is what the endpoint chooses by itself.
@@ -374,6 +383,7 @@ pub struct CompiledStylesheet {
     /// 56-template stylesheet, five orders of magnitude under the compile it replaces.
     ctxt: Context<IdNode>,
     output_method: Option<String>,
+    parameters: Vec<parameters::Parameter>,
 }
 
 impl CompiledStylesheet {
@@ -400,11 +410,13 @@ impl CompiledStylesheet {
         // `Rc`, so afterwards the document is no longer the one that was parsed.
         let output_method = output_method_of(&styledoc);
         subset::check(&styledoc)?;
+        let parameters = parameters::prepare(&styledoc)?;
         let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
             .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
         Ok(CompiledStylesheet {
             ctxt,
             output_method,
+            parameters,
         })
     }
 
@@ -449,6 +461,15 @@ impl CompiledStylesheet {
 
     /// [`CompiledStylesheet::transform`] without the check, for a caller that has made it.
     fn run(&self, src_xml: &str, text_output: bool) -> std::result::Result<String, String> {
+        self.run_with_parameters(src_xml, text_output, &BTreeMap::new())
+    }
+
+    fn run_with_parameters(
+        &self,
+        src_xml: &str,
+        text_output: bool,
+        params: &BTreeMap<String, String>,
+    ) -> std::result::Result<String, String> {
         let srcdoc = parse_xml(src_xml)
             .map_err(|e| format!("source document parse error: {}", e.message))?;
 
@@ -474,6 +495,7 @@ impl CompiledStylesheet {
         let mut ctxt = self.ctxt.clone();
         ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
         ctxt.result_document(IdNode::new_document());
+        parameters::bind(&self.parameters, params, &ctxt);
         // No `xsl:key` step: since xrust 2.3 `key()` indexes a (key, document) pair the first
         // time it is called and keeps the index on `stctxt`, which is built fresh above, so a
         // run never sees another run's keys. A broken key surfaces as a transform error.
@@ -620,10 +642,16 @@ pub fn transform_xml_within(
 /// transform — the endpoint's whole synchronous half, in one non-`async` function so that
 /// the `!Send` compiled stylesheet can never be live across an `await`. The endpoint checks
 /// both inputs and calls this on [`limits::on_xslt_stack`]; it checks nothing itself.
-fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(String, String)> {
+fn render(
+    source: &str,
+    stylesheet: &str,
+    as_media: Option<&str>,
+    params: &BTreeMap<String, String>,
+) -> Result<(String, String)> {
     // A refused construct stays the typed `InvalidArgument` it is; anything xrust refuses
     // is an `Endpoint` error.
     let compiled = compiled_for(stylesheet)?;
+    parameters::validate(&compiled.parameters, params)?;
     // The output media type: what `as=` names, else what the stylesheet's `xsl:output
     // method` implies (html is the default, as in XSLT itself — the common case here is
     // styling RDF/XML into a page).
@@ -637,7 +665,9 @@ fn render(source: &str, stylesheet: &str, as_media: Option<&str>) -> Result<(Str
     // method, XML otherwise (`CompiledStylesheet::run` decides).
     let text_output =
         method == Some("text") || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
-    let out = compiled.run(source, text_output).map_err(Error::Endpoint)?;
+    let out = compiled
+        .run_with_parameters(source, text_output, params)
+        .map_err(Error::Endpoint)?;
     Ok((media, out))
 }
 
@@ -692,7 +722,7 @@ mod tests {
     fn reports_a_stylesheet_error() {
         // Through `render`, which is the endpoint's half: it is what maps a plain-string
         // failure into an ikigai error, and the only caller that still does.
-        let err = render("<a/>", "not a stylesheet", None).unwrap_err();
+        let err = render("<a/>", "not a stylesheet", None, &BTreeMap::new()).unwrap_err();
         assert!(matches!(err, Error::Endpoint(_)));
     }
 
