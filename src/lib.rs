@@ -76,6 +76,7 @@ mod boolean_values;
 mod html;
 pub mod limits;
 mod node_id;
+mod numeric_values;
 mod parameters;
 pub mod subset;
 
@@ -414,6 +415,7 @@ impl CompiledStylesheet {
         let output_method = output_method_of(&styledoc);
         subset::check(&styledoc)?;
         boolean_values::prepare(&styledoc)?;
+        numeric_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
         let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
             .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
