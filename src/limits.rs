@@ -362,8 +362,14 @@ fn start_tag(
                     }
                     at += 1;
                 }
+                // `xml:lang` is exempt when it is a literal: a language tag is case-insensitive
+                // (BCP 47, section 2.1.1), so xrust's lowercased `en-us` means what `en-US` meant,
+                // and refusing it would turn away ordinary Atom feeds and XHTML. A value template
+                // there still lowercases its variable names, so `{` keeps it under the rule.
+                let case_insensitive = name == b"xml:lang" && !b[value_start..at].contains(&b'{');
                 if name.contains(&b':')
                     && !name.starts_with(b"xmlns:")
+                    && !case_insensitive
                     && changes_case(&b[value_start..at], entities)
                 {
                     return Err(format!(

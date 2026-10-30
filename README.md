@@ -156,11 +156,13 @@ conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//
 **Refused before parsing either input** (ledger #2519): a prefixed attribute whose
 value would change under Unicode lowercasing, in the source **or** stylesheet. This includes
 `rdf:about="https://Example.org/My-Post"`, `rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime"`,
-`xml:id`, `xml:lang`, `xml:base`, and uppercase variable names inside a prefixed attribute's
+`xml:id`, `xml:base`, and uppercase variable names inside a prefixed attribute's
 value template (`f:k="{$camelVar}"`). Stock xrust lowercases these values; this crate returns
 `InvalidArgument` naming `src` or `stylesheet`, the attribute, and the defect. Character
 references and declared entity values are checked too. Namespace declarations (`xmlns:f`)
-are exempt because xrust preserves their values.
+are exempt because xrust preserves their values. A literal `xml:lang` is exempt too: a
+language tag is case-insensitive (BCP 47), so the lowercased `en-us` xrust keeps means what
+`en-US` meant. An `xml:lang` value template is still refused.
 
 | construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |

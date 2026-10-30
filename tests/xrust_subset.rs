@@ -749,12 +749,28 @@ fn refused_encoded_and_unicode_prefixed_values_in_either_input() {
             "stylesheet",
         );
     }
-    for name in ["xml:id", "xml:lang", "xml:base", "xml:space"] {
+    for name in ["xml:id", "xml:base", "xml:space"] {
         let src = format!(r#"<doc {name}="Upper"/>"#);
         let error = ours(&src, templates).unwrap_err();
         assert_case_refusal(&error, "src");
         assert!(error.contains(name), "{error}");
     }
+}
+
+/// `xml:lang` is case-insensitive (BCP 47), so a literal one is admitted in both inputs even
+/// though xrust lowercases it: `en-us` means what `en-US` meant. A value template there is still
+/// refused, because xrust would lowercase the variable names inside it.
+#[test]
+fn a_literal_xml_lang_is_admitted_and_reads_back_lowercased() {
+    let read = r#"<xsl:template match="/"><out><xsl:value-of select="doc/@xml:lang"/></out></xsl:template>"#;
+    assert_eq!(
+        ours(r#"<doc xml:lang="en-US"/>"#, read).unwrap(),
+        "<out>en-us</out>"
+    );
+    let literal = style(r#"<xsl:template match="/"><out xml:lang="en-US"/></xsl:template>"#);
+    assert!(transform_xml("<doc/>", &literal, false).is_ok());
+    let avt = r#"<xsl:template match="/"><xsl:variable name="Lang" select="'en'"/><out xml:lang="{$Lang}"/></xsl:template>"#;
+    assert_case_refusal(&ours("<doc/>", avt).unwrap_err(), "stylesheet");
 }
 
 #[test]
