@@ -100,7 +100,8 @@ refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's auth
 discover those from errors, so since 0.3.0 this crate **refuses** the constructs in the refusal table
 below, before xrust compiles the stylesheet. Every row below was measured on
 **xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193;
-whitespace-only `xsl:text` added 2026-10-23, ledger #2146) by
+whitespace-only `xsl:text` added 2026-10-23, ledger #2146; attribute whitespace references,
+boolean conversion and literal attribute namespaces added 2026-10-30, ledger #2520) by
 `tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
@@ -132,12 +133,12 @@ below. `xsl:sort` inside
 | --- | --- |
 | `xsl:sort` inside `xsl:for-each` or `xsl:for-each-group` (inside `apply-templates` works) | `unsupported XSL element "sort"` |
 
-**Refused before it compiles** (since 0.3.0): xrust 2.3.0 answers these wrongly, with no
-error, so this crate refuses a stylesheet holding one, as an `InvalidArgument` naming
+**Refused before it compiles** (since 0.3.0): xrust 2.3.0 answers these wrongly or panics,
+so this crate refuses a stylesheet holding one, as an `InvalidArgument` naming
 `stylesheet` that quotes the attribute, its element and the row below
 (`invalid argument `stylesheet`: refused: match="item[@k='2']" on <xsl:template> holds "a
 predicate in a match pattern", …`). `ikigai_xslt::subset::silent_constructs(stylesheet)`
-lists every one at once, and `cargo run --example subset-scan -- file.xsl` does the same from
+lists these constructs at once, and `cargo run --example subset-scan -- file.xsl` does the same from
 a shell.
 
 | construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
@@ -146,6 +147,7 @@ a shell.
 | a [last()] predicate — `item[last()]`, `(…)[last()]`, `{item[last()]/@id}` | the last node | the **first** node, since `last()` is 1 | `item[count(../item)]` |
 | position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
 | a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
+| a literal attribute without a result namespace declaration: `<out><b rdf:datatype="x">1</b></out>`, with `rdf` declared on the stylesheet | a namespaced attribute | serialization panics: `unable to find namespace`; xrust only emits namespace declarations for element names | put the element or an enclosing literal result element in that namespace, e.g. `<rdf:RDF>` |
 
 "Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
 `xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
@@ -167,9 +169,33 @@ language tag is case-insensitive (BCP 47), so the lowercased `en-us` xrust keeps
 | construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
 | a prefixed attribute with uppercase letters in its parsed value, in either input | preserve case | lowercase the value, silently changing IRIs and AVT variable names | carry the value in an unprefixed attribute, element text, or a parameter; compute the output with `xsl:attribute` or `rdf:about="{$iri}"` using a lowercase variable name |
+| a tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`, `&#13;`, including hexadecimal and leading-zero forms) | retain the referenced character | replaces it with a space | for the RSS newline, declare `<xsl:variable name="lf-holder">.` followed by a literal newline and `.</xsl:variable>`, then use `substring($lf-holder, 2, 1)` |
 
-Lowercase prefixed values remain admitted. Unprefixed values and values computed from data
-keep their case. This guard also applies to `CompiledStylesheet::compile` and `transform`.
+The whitespace-reference refusal (#2520) also applies to **unprefixed** attributes in either
+input, before parsing, and names the argument and attribute. There is no exact repair after
+parsing: a reference and a literal space have already become indistinguishable. Text-node
+references, escaped `&amp;#10;`, comments, CDATA and processing instructions are unaffected.
+The RSS workaround above produces one line per item with `method="text"` (tested).
+
+Lowercase prefixed values pass the case guard; the literal result namespace guard still
+applies. Unprefixed values and values computed from data keep their case. This guard also applies to `CompiledStylesheet::compile` and `transform`.
+
+**Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
+`true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
+once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
+not trigger this adaptation. Boolean variables are followed through their lexical declarations.
+
+| construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
+| --- | --- | --- | --- |
+| `<xsl:value-of select="1 &gt; 0"/>` (also `false()`, comparisons and boolean functions) | `true` (or `false`) | empty string for either boolean | adapted before compilation |
+| `xsl:value-of` of a boolean-default parameter or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
+
+Only the direct boolean result of `value-of` is adapted; xrust's general boolean-to-string
+conversion (for example `string(false())`) remains defective. A literal attribute namespace
+must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
+is written on that element: xrust does not copy that declaration by itself. The guard is
+conservative across dynamic element construction and template calls. A variable/parameter
+fragment can be emitted elsewhere, so the guard does not count its outer literal ancestors.
 
 ⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;
 they are not refused here. Whether a path selects one node or several is a property of
@@ -306,7 +332,8 @@ SPARQL. On wasm there is no thread, so there is no deadline either.
 **A panic inside xrust is an error, not a panic.** xrust panics on some input a caller
 controls — `<xsl:copy-of select="/"/>`, an attribute or the document node at the top of the
 result, an `xsl:sort` key under `apply-templates` that fails to evaluate (2.3.0 still does all
-of these) — and through 0.2.0 that panic reached the
+of these). The literal prefixed attribute case described in the subset table is now refused
+before compilation as `InvalidArgument`, before the serializer can panic. Through 0.2.0 that panic reached the
 caller's thread. It is now caught on the transform thread and answered as an `Endpoint` error
 naming it (`endpoint error:` from `transform_xml`). The default panic hook still prints the
 message to stderr; that hook is the host's.

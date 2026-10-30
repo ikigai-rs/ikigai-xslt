@@ -3,8 +3,8 @@
 Drafts for upstream reports to [xrust](https://github.com/ballsteve/xrust). **Nothing here
 has been filed**: filing is an outward-facing action and is Brian's call (ledger #193, part 4).
 
-Each case below is a stylesheet and an input that xrust evaluates **without an error** to an
-answer XSLT 1.0 does not give. ikigai-xslt refuses cases 2 to 6 before xrust compiles them
+Each case below is a stylesheet and an input that xrust evaluates to a wrong answer
+**without an error**, or panics on instead of producing the XSLT 1.0 result. ikigai-xslt refuses cases 2 to 6 before xrust compiles them
 (`src/subset.rs`), so these drafts reproduce through stock xrust only; cases 7 and 9 are still
 answered. Case 10 is refused before either input is parsed (`src/limits.rs`, ledger #2519).
 Case 1, and the literal `[n]` half of case 4, were first measured wrong on xrust 2.2.0
@@ -14,6 +14,8 @@ Case 1, and the literal `[n]` half of case 4, were first measured wrong on xrust
 and not through ikigai-xslt's node wrapper. `tests/xrust_subset.rs` runs every case both ways
 and pins the answers, so if any of them changes, a test fails and this file is due an update.
 Case 9 was added on 2026-10-23 (ledger #2146), also measured on xrust 2.3.0.
+Cases 11–13 were added on 2026-10-30 (#2520): a pre-parse refusal, boolean value-of
+adaptation (or typed refusal), and a typed refusal before a serialization panic, respectively.
 
 ## The harness
 
@@ -315,3 +317,87 @@ crate's refusals, plus the computed-value workaround. This draft is not filed up
 stylesheet's author can see, so it is a feature request at most, and is not drafted here.
 (`xsl:variable` inside a template, `string-length()`, `xsl:key` over prefixed names and a
 stylesheet whose first node is a comment were refused by 2.2.0 and work in 2.3.0.)
+
+## 11. Attribute whitespace character references normalize to spaces (#2520)
+
+Measured on xrust 2.3.0, 2026-10-30. Source `<doc/>`; stylesheet body:
+
+```xml
+<xsl:template match="/">
+  <out><xsl:value-of select="concat('a', '&#10;')"/></out>
+</xsl:template>
+```
+
+Expected `<out>a\n</out>` (a literal LF); actual `<out>a </out>`. Decimal, hexadecimal,
+and leading-zero forms reproduce it, as do tab and CR references. It also affects source
+attributes: `<doc v="a&#10;b"/>` read with `doc/@v` yields `a b` instead of `a\nb`.
+XML 1.0 §3.3.3 preserves character references; only literal attribute whitespace normalizes.
+
+Cause: `src/parser/xml/attribute.rs:401–448` collects raw text and expanded references into
+one vector, then `rn.concat().replace(...)` normalizes both; `split_whitespace()` also
+collapses and trims CDATA values. Suggested patch: normalize literal text chunks at the
+`take_while` branch (lines 405 and 420), preserve `textreference()` results, then concatenate
+without the final whitespace replacement/collapse for CDATA attributes. Non-CDATA attribute
+normalization must remain a separate step. This needs XML parser conformance tests.
+
+ikigai-xslt refuses these references in **either input before parsing**, naming the attribute
+and argument. An exact repair after parsing cannot distinguish a reference from a literal
+space. RSS workaround (tested with text output): declare a variable containing dot, literal
+newline, dot; obtain the LF with `substring($lf-holder, 2, 1)`.
+
+## 12. Boolean string conversion is empty (#2520)
+
+Source `<doc/>`; stylesheet body:
+
+```xml
+<xsl:template match="/">
+  <out><xsl:value-of select="1 &gt; 0"/></out>
+</xsl:template>
+```
+
+Expected `<out>true</out>`; actual `<out></out>`. `1 &lt; 0`, `true()`, `false()`,
+`boolean(...)`, `not(...)`, comparisons and boolean string functions reproduce it.
+`xsl:if` works because effective boolean value is implemented. `string(true())` is empty too.
+
+Cause: `src/value.rs:219–268`, `impl Display for ValueData`, has no `Boolean` arm and falls
+through to `_ => ""`. `src/transform/construct.rs:150` uses the sequence's string value for
+`xsl:value-of`; `src/transform/strings.rs:203–205` uses the same conversion for `string()`.
+The obvious upstream patch, before the fallback in `ValueData::fmt`, is:
+
+```rust
+ValueData::Boolean(b) => b.to_string(),
+```
+
+ikigai-xslt adapts known boolean `value-of` results to `xsl:choose` with literal `true` and
+`false` text. It follows variable declarations; results whose type cannot safely be known,
+including boolean-default parameters that may be overridden by a string, are typed refusals.
+The general upstream string conversion defect remains outside this direct-result adaptation.
+
+## 13. A literal prefixed attribute can panic in serialization (#2520)
+
+Source `<doc/>`; stylesheet declares `rdf` only on `xsl:stylesheet`:
+
+```xml
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+                xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <xsl:template match="/"><out><b rdf:datatype="x">1</b></out></xsl:template>
+</xsl:stylesheet>
+```
+
+Expected an XML result with a namespace declaration for the `rdf:datatype` attribute.
+Actual: serialization panics `unable to find namespace`. Declaring `xmlns:rdf` directly on
+`b` does not help. Changing `out` to `rdf:RDF` works.
+
+Cause: `src/xslt.rs:1453–1469` emits namespace declarations only for a literal element's
+own name, then copies attributes without their required namespace declarations.
+`src/trees/smite.rs:1255–1267` resolves the attribute name against the result's in-scope
+namespaces and panics when no namespace is found. Suggested compiler patch: emit declarations
+for literal attributes' namespaces too (or copy the applicable in-scope namespaces, respecting
+XSLT exclusion rules), rather than only the element namespace. The serializer should also
+return an error for an unresolvable QName instead of panicking; that needs an API change.
+
+ikigai-xslt refuses this before compilation as a typed `InvalidArgument` naming `stylesheet`.
+A literal element's own namespace, or an enclosing literal element in that namespace, satisfies
+the guard. Template calls and dynamically constructed namespace scopes are treated
+conservatively; the guard does not assume that variable/parameter fragments are emitted at their declaration site. The stock panic
+and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.

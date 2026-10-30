@@ -855,3 +855,191 @@ fn prefixed_case_refusals_at_the_endpoint_are_typed() {
         );
     }
 }
+
+// Ledger #2520: preserve the distinction between literal whitespace and references.
+#[test]
+fn refused_attribute_whitespace_character_references() {
+    for reference in ["&#10;", "&#xA;", "&#x0a;", "&#00010;", "&#9;", "&#xD;"] {
+        let templates = format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="concat('a', '{reference}')"/></out></xsl:template>"#
+        );
+        assert_eq!(stock(SRC, &templates).unwrap(), "<out>a </out>");
+        let error = ours(SRC, &templates).unwrap_err();
+        for detail in [
+            "invalid argument `stylesheet`",
+            "character reference",
+            "space",
+            "#2520",
+            "lf-holder",
+            "substring",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        let src = format!(r#"<doc v="a{reference}b"/>"#);
+        let read =
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#;
+        assert_eq!(stock(&src, read).unwrap(), "<out>a b</out>");
+        let error = ours(&src, read).unwrap_err();
+        assert!(
+            error.starts_with("invalid argument `src`: refused: character reference"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn newline_workaround_and_reference_boundaries() {
+    let templates = "<xsl:template match=\"/\"><xsl:variable name=\"lf-holder\">.\n.</xsl:variable><out><xsl:for-each select=\"doc/item\"><xsl:value-of select=\"concat(., substring($lf-holder, 2, 1))\"/></xsl:for-each></out></xsl:template>";
+    assert_eq!(
+        ours(SRC, templates).unwrap(),
+        "<out>one\ntwo\nthree\n</out>"
+    );
+    assert_eq!(
+        stock(SRC, templates).unwrap(),
+        "<out>one\ntwo\nthree\n</out>"
+    );
+    let text = style(templates).replace(r#"method="xml""#, r#"method="text""#);
+    assert_eq!(
+        transform_xml(SRC, &text, true).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    // Numeric references in text are preserved; escaped ampersands aren't references.
+    let src = "<?p v='&#10;'?><doc v='&amp;#10;'><!-- v='&#10;' --><![CDATA[&#10;]]>&#10;</doc>";
+    let t = r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#;
+    assert_eq!(ours(src, t).unwrap(), "<out>&amp;#10;</out>");
+    let src = "<doc v='a\nb'/>";
+    assert_eq!(ours(src, t).unwrap(), "<out>a b</out>");
+}
+
+#[test]
+fn boolean_value_of_is_corrected_here() {
+    for (expr, expected) in [
+        ("1 &gt; 0", "true"),
+        ("1 &lt; 0", "false"),
+        ("true()", "true"),
+        ("false()", "false"),
+        ("boolean(doc/item)", "true"),
+        ("not(doc/item)", "false"),
+        ("contains('abc', 'b')", "true"),
+        ("starts-with('abc', 'z')", "false"),
+        ("(true() and false()) or true()", "true"),
+        ("doc/item = 'two'", "true"),
+    ] {
+        let templates = format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        );
+        assert_eq!(
+            stock(SRC, &templates).unwrap(),
+            "<out></out>",
+            "stock boolean conversion changed: remeasure #2520"
+        );
+        assert_eq!(
+            ours(SRC, &templates).unwrap(),
+            format!("<out>{expected}</out>"),
+            "{expr}"
+        );
+    }
+    let templates = r#"<xsl:variable name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/><xsl:variable name="v" select="true()"/><xsl:value-of select="$v"/></out></xsl:template>"#;
+    assert_eq!(stock(SRC, templates).unwrap(), "<out></out>");
+    assert_eq!(ours(SRC, templates).unwrap(), "<out>falsetrue</out>");
+    let nested = r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:value-of select="@k = '1'"/></xsl:for-each></out></xsl:template>"#;
+    assert_eq!(ours(SRC, nested).unwrap(), "<out>truefalsetrue</out>");
+    // A comparison in a predicate or string is not the value-of result type.
+    let t = r#"<xsl:template match="/"><out><xsl:value-of select="doc/item[@k='2']"/><xsl:value-of select="'1 > 0'"/><xsl:value-of select="count(doc/item)"/></out></xsl:template>"#;
+    assert_eq!(ours(SRC, t).unwrap(), "<out>two1 &gt; 03</out>");
+}
+
+#[test]
+fn boolean_parameter_value_of_is_refused_when_its_type_can_change() {
+    let t = r#"<xsl:param name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/></out></xsl:template>"#;
+    let error = ours(SRC, t).unwrap_err();
+    assert!(
+        error.starts_with("invalid argument `stylesheet`: refused:"),
+        "{error}"
+    );
+    assert!(
+        error.contains("boolean") && error.contains("xsl:choose"),
+        "{error}"
+    );
+}
+
+#[test]
+fn refused_literal_attribute_without_result_namespace() {
+    for templates in [
+        r#"<xsl:template match="/"><out><b rdf:datatype="x">1</b></out></xsl:template>"#,
+        r#"<xsl:template match="/"><out><b xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:datatype="x">1</b></out></xsl:template>"#,
+    ] {
+        let panic = std::panic::catch_unwind(|| stock(SRC, templates))
+            .expect_err("stock xrust must still panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(message.contains("unable to find namespace"), "{message}");
+        let error = ours(SRC, templates).unwrap_err();
+        assert!(
+            error.starts_with("invalid argument `stylesheet`: refused:"),
+            "{error}"
+        );
+        assert!(
+            error.contains("a literal attribute without a result namespace declaration"),
+            "{error}"
+        );
+    }
+    let t =
+        r#"<xsl:template match="/"><rdf:RDF><b rdf:datatype="x">1</b></rdf:RDF></xsl:template>"#;
+    assert_eq!(ours(SRC, t).unwrap(), stock(SRC, t).unwrap());
+}
+
+#[test]
+fn refusals_2520_are_typed_at_the_endpoint() {
+    use futures::executor::block_on;
+    use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
+    use std::sync::Arc;
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    for (arg, src, templates, detail) in [
+        (
+            "src",
+            r#"<doc v="&#10;"/>"#,
+            r#"<xsl:template match="/"><out/></xsl:template>"#,
+            "character reference",
+        ),
+        (
+            "content",
+            r#"<doc v="&#10;"/>"#,
+            r#"<xsl:template match="/"><out/></xsl:template>"#,
+            "character reference",
+        ),
+        (
+            "stylesheet",
+            SRC,
+            r#"<xsl:template match="/"><xsl:value-of select="'&#10;'"/></xsl:template>"#,
+            "character reference",
+        ),
+        (
+            "stylesheet",
+            SRC,
+            r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#,
+            "a literal attribute without a result namespace declaration",
+        ),
+        (
+            "stylesheet",
+            SRC,
+            r#"<xsl:param name="v" select="true()"/><xsl:template match="/"><xsl:value-of select="$v"/></xsl:template>"#,
+            "boolean",
+        ),
+    ] {
+        let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
+            .with_arg(
+                if arg == "content" { "content" } else { "src" },
+                ArgRef::Inline(src.as_bytes().to_vec()),
+            )
+            .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
+        let error = block_on(kernel.issue(request, &Capability::root())).unwrap_err();
+        assert!(
+            matches!(&error, IkError::InvalidArgument { name, detail: d } if name == arg && d.contains(detail)),
+            "{error}"
+        );
+    }
+}
