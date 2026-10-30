@@ -116,7 +116,8 @@ warning in the ecosystem's daily scan, not a red build.
 `x-{@id}`, `{concat(name(), @k)}`, `{../@title}`, `{/doc/@title}`, `{@rdf:about}`), an
 absolute `/doc/…` path from inside a nested template, `xsl:variable` at the top level and
 inside a template, `xsl:key` over unprefixed and prefixed names, `xsl:comment`, and a
-stylesheet document that begins with a comment.
+stylesheet document that begins with a comment. `{@rdf:about}` resolves the prefixed
+**name**; prefixed attribute **values** with uppercase letters are refused as described below.
 
 **Changed in 0.3.1, with xrust 2.3.0** (ledger #1492): a literal `[n]` predicate, a prefixed
 name in an attribute value template, `xsl:variable` inside a template, `string-length()`,
@@ -152,6 +153,22 @@ root, xrust's answer is right, and nothing is refused. The scan is lexical and
 conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
 `/doc//b` are not a leading `//`, and `[1]` or `[position() = 1]` is not a `[last()]` predicate.
 
+**Refused before parsing either input** (ledger #2519): a prefixed attribute whose
+value would change under Unicode lowercasing, in the source **or** stylesheet. This includes
+`rdf:about="https://Example.org/My-Post"`, `rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime"`,
+`xml:id`, `xml:lang`, `xml:base`, and uppercase variable names inside a prefixed attribute's
+value template (`f:k="{$camelVar}"`). Stock xrust lowercases these values; this crate returns
+`InvalidArgument` naming `src` or `stylesheet`, the attribute, and the defect. Character
+references and declared entity values are checked too. Namespace declarations (`xmlns:f`)
+are exempt because xrust preserves their values.
+
+| construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
+| --- | --- | --- | --- |
+| a prefixed attribute with uppercase letters in its parsed value, in either input | preserve case | lowercase the value, silently changing IRIs and AVT variable names | carry the value in an unprefixed attribute, element text, or a parameter; compute the output with `xsl:attribute` or `rdf:about="{$iri}"` using a lowercase variable name |
+
+Lowercase prefixed values remain admitted. Unprefixed values and values computed from data
+keep their case. This guard also applies to `CompiledStylesheet::compile` and `transform`.
+
 ⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;
 they are not refused here. Whether a path selects one node or several is a property of
 the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
@@ -162,7 +179,6 @@ including a space written as `&#x20;`:
 | --- | --- | --- | --- |
 | `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
 | `xsl:text` containing only whitespace: `Meta<xsl:text> </xsl:text>Source` | `Meta Source` | `MetaSource` (the explicit whitespace is dropped) | `<xsl:value-of select="' '"/>`, or append a space with `concat(., ' ')` |
-| a **prefixed** attribute's value in the source or the stylesheet (`rdf:about="urn:I:One"`, `rdf:resource`, `rdf:datatype`, `xml:id`) | the value as written | the value **lowercased** (`urn:i:one`): an IRI with a capital in it becomes another IRI (ledger #2519). An unprefixed attribute keeps its case | compute the value in the stylesheet, or carry it in an unprefixed attribute or element text; there is no fix on this side of xrust's parser |
 
 ### `method="html"` is serialized as HTML
 

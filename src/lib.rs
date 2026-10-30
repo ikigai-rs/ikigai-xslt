@@ -49,7 +49,9 @@
 //! no error. Since 0.3.0 a stylesheet holding one of those constructs is refused before xrust
 //! compiles it, as a typed `InvalidArgument` naming the construct ([`subset`]); and a
 //! `method="html"` result is serialized as HTML, with an end tag on every empty element HTML
-//! does not call void, rather than as XML (ledger #193).
+//! does not call void, rather than as XML (ledger #193). Both inputs are also refused before
+//! parsing if a prefixed attribute value would be lowercased by xrust's XML parser (ledger
+//! #2519); compute that value from data instead (see [`limits`]).
 //!
 //! ## `generate-id()` is a position, not an address
 //!

@@ -48,6 +48,14 @@
 //! ⚠ **On wasm there is no thread**: [`on_xslt_stack`] runs inline there, so only the first
 //! layer applies, on whatever stack the host gave the module.
 //!
+//! ## Prefixed attribute values (ledger #2519)
+//!
+//! xrust 2.3.0 lowercases every prefixed attribute value while parsing XML. Until that is
+//! fixed, the same pre-parse scan refuses a value that would change under Unicode
+//! lowercasing, naming the attribute and the data-driven workaround. This applies to both
+//! inputs and includes numeric references and the internal entities admitted above.
+//! Namespace declarations are exempt: xrust processes their values without lowercasing.
+//!
 //! ## Time (ledger #1040)
 //!
 //! Neither layer bounds TIME, and some shapes inside both are super-linear in xrust: a long
@@ -110,7 +118,8 @@ pub struct Shape {
 }
 
 /// Refuse a source document that nests deeper than [`MAX_XML_DEPTH`] or carries a
-/// declaration [`scan`] refuses, naming the argument `arg`. Never truncates.
+/// declaration [`scan`] refuses, or a prefixed attribute value xrust would lowercase
+/// (ledger #2519), naming the argument `arg`. Never truncates.
 ///
 /// ```
 /// use ikigai_xslt::limits::{check_source, MAX_XML_DEPTH};
@@ -175,13 +184,14 @@ fn refuse(arg: &str, detail: String) -> Error {
 
 /// Read a document's [`Shape`] in one pass, with no recursion and no allocation beyond the
 /// declared entities' summaries — or refuse a declaration that could build what the pass
-/// cannot see (see the module docs). The pass is deliberately not a parser: it may count
+/// cannot see, or a prefixed attribute value xrust would lowercase (see the module docs).
+/// The pass is deliberately not a parser: it may count
 /// MORE nesting than xrust would (a malformed document xrust refuses anyway), never less.
 pub fn scan(text: &str) -> std::result::Result<Shape, String> {
     let b = text.as_bytes();
     let mut shape = Shape::default();
-    // The declared general entities: name, value length, opening brackets in the value.
-    let mut entities: Vec<(&[u8], usize, usize)> = Vec::new();
+    // The declared general entities, summarized without expanding or copying their values.
+    let mut entities: Vec<Entity<'_>> = Vec::new();
     let (mut depth, mut at) = (0usize, 0usize);
     while at < b.len() {
         match b[at] {
@@ -251,12 +261,77 @@ fn tag_end(b: &[u8], from: usize) -> (usize, bool) {
     (b.len(), false)
 }
 
+/// Only summaries are kept: the bounds prohibit entities containing further references.
+struct Entity<'a> {
+    name: &'a [u8],
+    len: usize,
+    opens: usize,
+    changes_case: bool,
+}
+
+/// Read the attribute name preceding an opening quote, allowing spaces around `=`.
+fn attribute_before_quote(b: &[u8], quote: usize) -> &[u8] {
+    let mut end = quote;
+    while end > 0 && b[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == 0 || b[end - 1] != b'=' {
+        return &[];
+    }
+    end -= 1;
+    while end > 0 && b[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && !b[start - 1].is_ascii_whitespace() && b[start - 1] != b'<' {
+        start -= 1;
+    }
+    &b[start..end]
+}
+
+/// Would XML expansion followed by Unicode lowercasing change this value? Entity names
+/// themselves are not values: `&UpperName;` may expand to entirely lowercase text.
+fn changes_case(value: &[u8], entities: &[Entity<'_>]) -> bool {
+    let changes = |s: &[u8]| {
+        let s = String::from_utf8_lossy(s);
+        s.chars().ne(s.chars().flat_map(char::to_lowercase))
+    };
+    let mut rest = value;
+    while let Some(amp) = rest.iter().position(|&b| b == b'&') {
+        if changes(&rest[..amp]) {
+            return true;
+        }
+        rest = &rest[amp + 1..];
+        let Some(semi) = rest.iter().position(|&b| b == b';') else {
+            return changes(rest);
+        };
+        let name = &rest[..semi];
+        if let Some(num) = name.strip_prefix(b"#") {
+            let code = match num.strip_prefix(b"x") {
+                Some(hex) => std::str::from_utf8(hex)
+                    .ok()
+                    .and_then(|s| u32::from_str_radix(s, 16).ok()),
+                None => std::str::from_utf8(num).ok().and_then(|s| s.parse().ok()),
+            };
+            if let Some(c) = code.and_then(char::from_u32) {
+                if std::iter::once(c).ne(c.to_lowercase()) {
+                    return true;
+                }
+            }
+        } else if entities.iter().any(|e| e.name == name && e.changes_case) {
+            return true;
+        }
+        rest = &rest[semi + 1..];
+    }
+    changes(rest)
+}
+
 /// Read a start tag whose body starts at `from`, measuring the bracket nesting of each
 /// attribute value. Returns the index past its `>` and whether it closed itself.
 fn start_tag(
     b: &[u8],
     from: usize,
-    entities: &[(&[u8], usize, usize)],
+    entities: &[Entity<'_>],
     shape: &mut Shape,
 ) -> std::result::Result<(usize, bool), String> {
     let mut at = from;
@@ -264,6 +339,8 @@ fn start_tag(
         match b[at] {
             b'>' => return Ok((at + 1, at > from && b[at - 1] == b'/')),
             q @ (b'"' | b'\'') => {
+                let name = attribute_before_quote(b, at);
+                let value_start = at + 1;
                 let mut level = 0usize;
                 at += 1;
                 while at < b.len() && b[at] != q {
@@ -285,6 +362,15 @@ fn start_tag(
                     }
                     at += 1;
                 }
+                if name.contains(&b':')
+                    && !name.starts_with(b"xmlns:")
+                    && changes_case(&b[value_start..at], entities)
+                {
+                    return Err(format!(
+                        "refused: prefixed attribute `{}` has a value whose case xrust 2.3.0's XML parser would lowercase (ledger #2519); compute the value from data instead (use an unprefixed attribute, element text, or a parameter, and a lowercase variable name in an attribute value template)",
+                        String::from_utf8_lossy(name)
+                    ));
+                }
                 at += 1;
             }
             _ => at += 1,
@@ -300,7 +386,7 @@ fn start_tag(
 fn expand(
     b: &[u8],
     at: usize,
-    entities: &[(&[u8], usize, usize)],
+    entities: &[Entity<'_>],
     shape: &mut Shape,
 ) -> std::result::Result<(usize, usize, usize), String> {
     let Some(semi) = b[at..].iter().take(64).position(|&c| c == b';') else {
@@ -321,15 +407,15 @@ fn expand(
             _ => (end, 0, 0),
         });
     }
-    if let Some(&(_, len, opens)) = entities.iter().find(|(n, _, _)| *n == name) {
-        shape.entity_expansion = shape.entity_expansion.saturating_add(len);
+    if let Some(entity) = entities.iter().find(|e| e.name == name) {
+        shape.entity_expansion = shape.entity_expansion.saturating_add(entity.len);
         if shape.entity_expansion > MAX_ENTITY_EXPANSION {
             return Err(format!(
                 "its entity references expand to more than {MAX_ENTITY_EXPANSION} bytes \
                  (MAX_ENTITY_EXPANSION)"
             ));
         }
-        return Ok((end, opens, 0));
+        return Ok((end, entity.opens, 0));
     }
     Ok((end, 0, 0))
 }
@@ -340,7 +426,7 @@ fn expand(
 fn doctype<'t>(
     b: &'t [u8],
     from: usize,
-    entities: &mut Vec<(&'t [u8], usize, usize)>,
+    entities: &mut Vec<Entity<'t>>,
 ) -> std::result::Result<usize, String> {
     // The name and any external identifier, up to the internal subset or the end.
     let mut at = from;
@@ -387,7 +473,7 @@ fn doctype<'t>(
 fn entity<'t>(
     b: &'t [u8],
     from: usize,
-    entities: &mut Vec<(&'t [u8], usize, usize)>,
+    entities: &mut Vec<Entity<'t>>,
 ) -> std::result::Result<usize, String> {
     let mut at = from;
     let skip_space = |mut at: usize| {
@@ -429,7 +515,12 @@ fn entity<'t>(
                 .iter()
                 .filter(|&&c| matches!(c, b'(' | b'[' | b'{'))
                 .count();
-            entities.push((name, len, opens));
+            entities.push(Entity {
+                name,
+                len,
+                opens,
+                changes_case: changes_case(value, &[]),
+            });
             Ok(tag_end(b, start + len + 1).0)
         }
         _ => Err(format!(
