@@ -348,10 +348,11 @@ caller's thread. It is now caught on the transform thread and answered as an `En
 naming it (`endpoint error:` from `transform_xml`). The default panic hook still prints the
 message to stderr; that hook is the host's.
 
-## Compiling the stylesheet is the cost, and it is reused
+## Compiling the stylesheet is reused; source work is paid each time
 
-Almost all of an XSLT call is parsing and compiling the **stylesheet**, which has nothing
-to do with the document being styled. Measured on gonk's 38 KB, 56-template stylesheet
+For a small source and a substantial stylesheet, parsing and compiling the **stylesheet**
+can dominate. That fixed cost is reusable; parsing the source, evaluating the templates
+and serializing the result are paid on every call. Measured on gonk's 38 KB, 56-template stylesheet
 (`cargo run --release --example stylesheet-cost -- <stylesheet.xsl> [source.xml]`):
 
 | | cost |
@@ -385,6 +386,33 @@ does for you), per connection or per task — never in shared state. And it runs
 caller's thread: `compile` and `transform` enforce the bounds, but the stack they need is
 the caller's to provide (`limits::xslt_stack_size()`, or run inside
 `limits::on_xslt_stack`). `transform_xml` does that for you too.
+
+### Large RSS sources and the 5 s budget
+
+A cached stylesheet does **not** guarantee that a feed fits the default budget. Item count,
+XML shape, text encoding and the stylesheet's work all matter; there is no supported
+maximum feed size in bytes that guarantees completion. A source body the stylesheet never
+selects still has to be parsed. See [the reproducible RSS measurements](docs/rss-cost.md)
+for a roughly 1 MB feed split into source validation, parsing, evaluation and serialization,
+and comparisons with different item counts and body sizes. Re-run them on the host that
+will ingest feeds:
+
+```sh
+cargo run --release --example stylesheet-cost -- --rss 1000 850
+cargo run --release --example stylesheet-cost -- items.xsl feed.xml
+```
+
+The operational bound is a **5 s transform-worker deadline**, not a throughput promise.
+Input resolution and validation precede that timer. Native `transform_xml` and the endpoint
+return `Timeout` without a partial result when worker time exceeds it; the endpoint's
+deadline is fixed. A native host intentionally ingesting larger feeds can
+choose a larger budget with `transform_xml_within`, after measuring its own inputs. Handle
+`Timeout` per feed and transient `Unavailable` while overdue workers occupy the admission
+limit. Timed-out work continues in the background, so immediate retries can add load.
+Splitting a feed into bounded batches before transformation can reduce per-call work when
+the stylesheet's semantics allow it, but fetching and parsing to produce those batches
+also need host limits. On wasm there is no enforced time deadline. Direct
+`CompiledStylesheet::transform` calls have no deadline either.
 
 ## Conformance
 
