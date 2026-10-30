@@ -183,7 +183,8 @@ applies. Unprefixed values and values computed from data keep their case. This g
 **Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
 `true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
 once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
-not trigger this adaptation. Boolean variables are followed through their lexical declarations.
+not trigger this adaptation. Boolean variables are followed through their lexical declarations,
+up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused.
 
 | construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
 | --- | --- | --- | --- |

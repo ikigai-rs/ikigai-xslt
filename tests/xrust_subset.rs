@@ -1043,3 +1043,24 @@ fn refusals_2520_are_typed_at_the_endpoint() {
         );
     }
 }
+
+#[test]
+fn boolean_variable_alias_analysis_is_bounded() {
+    let mut templates = String::from(r#"<xsl:variable name="v0" select="true()"/>"#);
+    for i in 1..=ikigai_xslt::limits::MAX_EXPR_DEPTH {
+        templates.push_str(&format!(
+            r#"<xsl:variable name="v{i}" select="$v{}"/>"#,
+            i - 1
+        ));
+    }
+    templates.push_str(&format!(
+        r#"<xsl:template match="/"><xsl:value-of select="$v{}"/></xsl:template>"#,
+        ikigai_xslt::limits::MAX_EXPR_DEPTH
+    ));
+    let error = ours(SRC, &templates).unwrap_err();
+    assert!(
+        error.starts_with("invalid argument `stylesheet`: refused:"),
+        "{error}"
+    );
+    assert!(error.contains("boolean"), "{error}");
+}

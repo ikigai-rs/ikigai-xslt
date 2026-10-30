@@ -92,7 +92,8 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: 
             let Some(declaration) = binding(node, name) else {
                 return Kind::Unknown;
             };
-            if seen.contains(&declaration) {
+            // Alias chains need a bound even when every individual XPath is shallow.
+            if seen.len() >= crate::limits::MAX_EXPR_DEPTH || seen.contains(&declaration) {
                 return Kind::Unknown;
             }
             seen.push(declaration.clone());
