@@ -180,6 +180,19 @@ The RSS workaround above produces one line per item with `method="text"` (tested
 Lowercase prefixed values pass the case guard; the literal result namespace guard still
 applies. Unprefixed values and values computed from data keep their case. This guard also applies to `CompiledStylesheet::compile` and `transform`.
 
+**Numeric conversion (#2487, since 0.5.0):** `number(/r/v)` and arithmetic on
+selected nodes or `string-length()` results work through this crate, including in chart
+attribute value templates such as `cx="{/r/v + 1}"`. Stock xrust 2.3.0 returns `NaN` for
+these operands. Before compilation, this crate converts each numeric operand through the
+string value of its first item, trimming XML whitespace; empty selections and nonnumeric
+text yield `NaN`. `number()` without an argument uses the context node. XPath 1.0 operator
+precedence, predicates, variable references, names and string literals are preserved.
+Syntax outside this adapter's XPath 1.0 grammar is left to xrust. Generated expressions
+obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the conversion
+adds brackets. The adapter addresses node and unsigned numeric conversion, not xrust's
+separate boolean-to-string defect described below. `tests/numeric_conversion.rs` covers
+the public path; `tests/xrust_subset.rs` pins the unadapted upstream failures.
+
 **Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
 `true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
 once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do

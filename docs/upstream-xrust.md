@@ -407,3 +407,43 @@ a literal result ancestor, following at most `MAX_EXPR_DEPTH` calls. Matched-tem
 dispatch, call cycles, and dynamically constructed namespace scopes remain conservative;
 the guard does not assume variable/parameter fragments are emitted at their declaration site. The stock panic
 and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.
+
+## 14. Numeric conversion rejects nodes and unsigned values (#2487)
+
+Measured on **xrust 2.3.0**. Source `<r><b n="x"><l d="t">12.5</l></b></r>`;
+stylesheet body (with text output):
+
+```xml
+<xsl:template match="/">
+  <xsl:value-of select="concat('[', string(/r/b/l), '][', number(/r/b/l), '][', number(string(/r/b/l)), '][', /r/b/l + 1, ']')"/>
+</xsl:template>
+```
+
+Expected `[12.5][12.5][12.5][13.5]`; actual `[12.5][NaN][12.5][NaN]`.
+`string-length('abc') - 1` likewise returns `NaN` instead of `2`; addition,
+multiplication and division reproduce it too. The explicit `number(string(...))`
+workaround works. These are tested independently through stock xrust in
+`numeric_conversion_is_adapted_over_stock_xrust_nan`.
+
+Cause: `src/item.rs`, `Item::to_double`, returns `NaN` for every node.
+`src/value.rs`, `Value::to_double`, supports signed integers, doubles and strings,
+but falls through to `NaN` for `UnsignedLong`, the result of `string-length()`.
+`transform::numbers::number` tries `to_int` then `to_double` on a singleton;
+`transform::numbers::arithmetic` calls `to_double` on each singleton operand.
+Both also reject a multiple-node or empty sequence instead of the XPath 1.0
+first-node / empty-string conversion. An upstream fix should share numeric
+conversion across these operations, convert nodes using their string value,
+handle unsigned values, and apply the appropriate sequence rules for the XPath
+compatibility mode. Tests should include empty/multiple node selections, attributes,
+whitespace, invalid numeric text and unsigned function results.
+
+ikigai-xslt now adapts XPath 1.0 `number()` arguments and binary arithmetic operands
+before compiling the stylesheet. It selects the first item before converting to a
+string (avoiding xrust's concatenation of multiple nodes), normalizes XML whitespace,
+and uses xrust's working string-to-number conversion. Arithmetic passes the string
+directly to its numeric conversion, preserving floating-point signed zero. The
+adaptation covers expressions, predicates, variables and attribute value templates;
+quoted text and escaped AVT braces remain untouched. Unsupported syntax remains
+xrust's to compile. Added bracket nesting is checked against `MAX_EXPR_DEPTH` before
+compilation, and the adapter's own recursion is bounded even on malformed input.
+The independent public-path regression matrix is `tests/numeric_conversion.rs`.
