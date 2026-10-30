@@ -184,18 +184,27 @@ applies. Unprefixed values and values computed from data keep their case. This g
 `true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
 once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
 not trigger this adaptation. Boolean variables are followed through their lexical declarations,
-up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused.
+up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused. A template-local
+parameter combines its default with every `with-param` from calls to its named template
+and, conservatively, every `apply-templates` passing that parameter name. String-only
+parameters remain accepted; consistently boolean parameters are adapted; mixed or unknown
+types are refused. Global parameters retain the request-argument rule: strings can override
+the default, so a boolean default is refused.
 
 | construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
 | --- | --- | --- | --- |
 | `<xsl:value-of select="1 &gt; 0"/>` (also `false()`, comparisons and boolean functions) | `true` (or `false`) | empty string for either boolean | adapted before compilation |
-| `xsl:value-of` of a boolean-default parameter or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
+| `xsl:value-of` of a template-local parameter whose default and all call-site values are nonboolean | the supplied/default string or node value | correct | accepted; pinned with CMS links, gonk, and RSS stylesheet fixtures |
+| `xsl:value-of` of a template-local parameter whose default and all call-site values are boolean | `true` / `false` | empty string | adapted before compilation |
+| `xsl:value-of` of a global boolean-default parameter, a local parameter with mixed boolean/nonboolean incoming values, or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
 
 Only the direct boolean result of `value-of` is adapted; xrust's general boolean-to-string
 conversion (for example `string(false())`) remains defective. A literal attribute namespace
 must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
 is written on that element: xrust does not copy that declaration by itself. The guard is
-conservative across dynamic element construction and template calls. A variable/parameter
+conservative across dynamic element construction and matched-template dispatch. Named-only
+templates are accepted when every call site supplies the namespace through a literal
+result ancestor (following at most `MAX_EXPR_DEPTH` template calls). A variable/parameter
 fragment can be emitted elsewhere, so the guard does not count its outer literal ancestors.
 
 ⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;

@@ -370,7 +370,11 @@ ValueData::Boolean(b) => b.to_string(),
 
 ikigai-xslt adapts known boolean `value-of` results to `xsl:choose` with literal `true` and
 `false` text. It follows variable declarations; results whose type cannot safely be known,
-including boolean-default parameters that may be overridden by a string, are typed refusals.
+including global boolean-default parameters that may be overridden by a string, are typed refusals.
+Template-local parameters are classified using their default and incoming `with-param`
+expressions at named calls and, conservatively, all `apply-templates` with that parameter
+name. Nonboolean-only inputs are accepted, boolean-only inputs are adapted, and mixed
+or unknown input types are refused.
 The general upstream string conversion defect remains outside this direct-result adaptation.
 
 ## 13. A literal prefixed attribute can panic in serialization (#2520)
@@ -398,6 +402,8 @@ return an error for an unresolvable QName instead of panicking; that needs an AP
 
 ikigai-xslt refuses this before compilation as a typed `InvalidArgument` naming `stylesheet`.
 A literal element's own namespace, or an enclosing literal element in that namespace, satisfies
-the guard. Template calls and dynamically constructed namespace scopes are treated
-conservatively; the guard does not assume that variable/parameter fragments are emitted at their declaration site. The stock panic
+the guard. Named-only templates are accepted when every call site supplies the namespace through
+a literal result ancestor, following at most `MAX_EXPR_DEPTH` calls. Matched-template
+dispatch, call cycles, and dynamically constructed namespace scopes remain conservative;
+the guard does not assume variable/parameter fragments are emitted at their declaration site. The stock panic
 and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.

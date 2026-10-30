@@ -97,22 +97,26 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: 
                 return Kind::Unknown;
             }
             seen.push(declaration.clone());
-            let result = match declaration.get_attribute_node(&QName::try_from("select").unwrap()) {
-                None => Kind::Other, // result tree fragment, or an empty string
-                Some(a) => parse(&a.value().to_string(), Some(declaration.clone()), None)
-                    .map(|t| kind(&t, &declaration, seen))
-                    .unwrap_or(Kind::Unknown),
-            };
-            seen.pop();
-            // Supplied parameters can be strings even when their default is boolean.
-            let global = declaration
-                .parent()
-                .is_some_and(|p| is_xsl(&p, "stylesheet") || is_xsl(&p, "transform"));
-            if is_xsl(&declaration, "param") && (!global || result != Kind::Other) {
-                Kind::Unknown
+            let result = declaration_kind(&declaration, seen);
+            let result = if is_xsl(&declaration, "param") {
+                let global = declaration
+                    .parent()
+                    .is_some_and(|p| is_xsl(&p, "stylesheet") || is_xsl(&p, "transform"));
+                if global {
+                    // Request arguments supply strings, regardless of the default.
+                    if result == Kind::Other {
+                        result
+                    } else {
+                        Kind::Unknown
+                    }
+                } else {
+                    local_parameter_kind(&declaration, seen, result)
+                }
             } else {
                 result
-            }
+            };
+            seen.pop();
+            result
         }
         SequenceItems(items) if items.len() == 1 => kind(&items[0], node, seen),
         SequenceItems(items) => {
@@ -136,6 +140,58 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: 
         Invoke(..) | Call(..) => Kind::Unknown,
         _ => Kind::Other,
     }
+}
+
+// A missing select denotes a result tree fragment or an empty string.
+fn declaration_kind(node: &IdNode, seen: &mut Vec<IdNode>) -> Kind {
+    match node.get_attribute_node(&QName::try_from("select").unwrap()) {
+        None => Kind::Other,
+        Some(a) => parse(&a.value().to_string(), Some(node.clone()), None)
+            .map(|t| kind(&t, node, seen))
+            .unwrap_or(Kind::Unknown),
+    }
+}
+
+fn local_parameter_kind(param: &IdNode, seen: &mut Vec<IdNode>, default: Kind) -> Kind {
+    let Some(template) = param.parent().filter(|p| is_xsl(p, "template")) else {
+        return Kind::Unknown;
+    };
+    let template_name = attr(&template, "name");
+    let param_name = attr(param, "name");
+    let mut root = template;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    // Named calls reach only their named template. Any apply-templates with a
+    // matching with-param is considered a possible caller, regardless of mode or
+    // select: proving which source nodes reach a match rule is not needed here.
+    let mut stack = vec![root];
+    let mut result = default;
+    while let Some(node) = stack.pop() {
+        stack.extend(node.child_iter());
+        if !(is_xsl(&node, "apply-templates")
+            || (is_xsl(&node, "call-template")
+                && !template_name.is_empty()
+                && attr(&node, "name") == template_name))
+        {
+            continue;
+        }
+        for supplied in node
+            .child_iter()
+            .filter(|n| is_xsl(n, "with-param") && attr(n, "name") == param_name)
+        {
+            // Resolve aliases at the call site, not in the callee's scope. Keep
+            // param in `seen` until all incoming values are inspected, so cycles
+            // and long forwarding chains obey the same bound as variable aliases.
+            if declaration_kind(&supplied, seen) != result {
+                result = Kind::Unknown;
+            }
+            if result == Kind::Unknown {
+                return result;
+            }
+        }
+    }
+    result
 }
 
 pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
@@ -196,4 +252,50 @@ fn adapt(node: &mut IdNode, select: &str) -> std::result::Result<(), xrust::xdme
     choose.push(otherwise)?;
     node.insert_before(choose)?;
     node.pop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_stylesheet_value_of_kind_counts() {
+        // These are the unmodified fixture bodies, including the CMS template
+        // library before a consumer adds its caller. Pin every value-of site,
+        // even those not reached by the synthetic integration-test documents.
+        for (name, stylesheet, expected) in [
+            (
+                "cms-links",
+                include_str!("../tests/fixtures/cms-links.xsl"),
+                [0, 5, 0],
+            ),
+            (
+                "gonk",
+                include_str!("../tests/fixtures/gonk.xsl"),
+                [0, 527, 0],
+            ),
+            (
+                "rss-items",
+                include_str!("../tests/fixtures/rss-items.xsl"),
+                [0, 23, 0],
+            ),
+        ] {
+            let doc = crate::parse_xml(stylesheet).unwrap();
+            let mut stack = vec![doc.clone()];
+            let mut counts = [0; 3];
+            while let Some(node) = stack.pop() {
+                stack.extend(node.child_iter());
+                if is_xsl(&node, "value-of") {
+                    let expr = parse(&attr(&node, "select"), Some(node.clone()), None).unwrap();
+                    let index = match kind(&expr, &node, &mut Vec::new()) {
+                        Kind::Boolean => 0,
+                        Kind::Other => 1,
+                        Kind::Unknown => 2,
+                    };
+                    counts[index] += 1;
+                }
+            }
+            assert_eq!(counts, expected, "{name}: Boolean / Other / Unknown");
+        }
+    }
 }

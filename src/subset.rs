@@ -17,8 +17,9 @@
 //!
 //! The XPath scan is **lexical and conservative**: it recognizes measured defects while
 //! avoiding XPath string literals. The literal attribute namespace
-//! guard also conservatively refuses scopes supplied only through dynamic construction or
-//! template calls, which cannot be established from literal ancestors.
+//! guard follows named-only template calls when every call site supplies the namespace.
+//! Dynamic construction, matched-template dispatch, fragment boundaries and call cycles
+//! remain conservative boundaries.
 //! Every XPath it reads is tokenized first, so a `[`, a `//` or a `prefix:name` inside a string
 //! literal (`'a[1]'`, `"//"`) is text, not a construct.
 //!
@@ -279,25 +280,7 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
             {
                 continue;
             }
-            let mut ancestor = Some(element.clone());
-            let mut supplied = false;
-            while let Some(node) = ancestor {
-                if let Some(n) = node.name() {
-                    if n.namespace_uri().is_some_and(|u| u.to_string() == XSL_NS) {
-                        if matches!(
-                            n.local_name().to_string().as_str(),
-                            "template" | "variable" | "param" | "function"
-                        ) {
-                            break;
-                        }
-                    } else if n.namespace_uri() == Some(ns.clone()) {
-                        supplied = true;
-                        break;
-                    }
-                }
-                ancestor = node.parent();
-            }
-            if !supplied {
+            if !result_namespace_supplied(element, &ns.to_string(), &mut Vec::new()) {
                 report(
                     Construct::LiteralAttributeNamespace,
                     &attr.name().unwrap().to_string(),
@@ -358,6 +341,68 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
         }
     }
     children_at_root
+}
+
+// A named-only template inherits its callers' result parents. Prove the namespace
+// at *every* call site before accepting a literal attribute in that template. A
+// matched template can also be entered by dispatch, so its callers cannot prove
+// its scope. Fragment constructors and cycles remain conservative boundaries.
+fn result_namespace_supplied(element: &IdNode, ns: &str, seen: &mut Vec<IdNode>) -> bool {
+    let mut ancestor = Some(element.clone());
+    while let Some(node) = ancestor {
+        if let Some(name) = node.name() {
+            if name
+                .namespace_uri()
+                .is_some_and(|u| u.to_string() == XSL_NS)
+            {
+                match name.local_name().to_string().as_str() {
+                    "template" => {
+                        let name = node
+                            .get_attribute(&qualname::QName::try_from("name").unwrap())
+                            .to_string();
+                        if name.is_empty()
+                            || node
+                                .get_attribute_node(&qualname::QName::try_from("match").unwrap())
+                                .is_some()
+                            || seen.len() >= crate::limits::MAX_EXPR_DEPTH
+                            || seen.contains(&node)
+                        {
+                            return false;
+                        }
+                        seen.push(node.clone());
+                        let mut stack = vec![node.owner_document()];
+                        let mut has_caller = false;
+                        let mut supplied = true;
+                        while let Some(call) = stack.pop() {
+                            stack.extend(call.child_iter());
+                            if call.name().is_some_and(|n| {
+                                n.local_name().to_string() == "call-template"
+                                    && n.namespace_uri().is_some_and(|u| u.to_string() == XSL_NS)
+                            }) && call
+                                .get_attribute(&qualname::QName::try_from("name").unwrap())
+                                .to_string()
+                                == name
+                            {
+                                has_caller = true;
+                                if !result_namespace_supplied(&call, ns, seen) {
+                                    supplied = false;
+                                    break;
+                                }
+                            }
+                        }
+                        seen.pop();
+                        return has_caller && supplied;
+                    }
+                    "variable" | "param" | "with-param" | "function" => return false,
+                    _ => {}
+                }
+            } else if name.namespace_uri().is_some_and(|u| u.to_string() == ns) {
+                return true;
+            }
+        }
+        ancestor = node.parent();
+    }
+    false
 }
 
 /// The expressions inside an attribute value template's `{…}`, with `{{` and `}}` read as

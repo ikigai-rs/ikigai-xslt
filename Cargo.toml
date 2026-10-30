@@ -7,7 +7,8 @@ name = "ikigai-xslt"
 # floor rises to 0.2.5, where a reference argument is settled by the kernel (ledger #2511).
 # Unpublished 0.5.0 also refuses attribute whitespace character references, literal attributes
 # without a result namespace declaration, and value-of whose boolean type cannot be safely
-# adapted (#2520). These are additional refusals of input the earlier 0.5.0 accepted.
+# adapted (#2520). Fragment boundaries include xsl:with-param content. These are additional
+# refusals of input the earlier 0.5.0 accepted; keep 0.5.0 while it remains unpublished.
 version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"

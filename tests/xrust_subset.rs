@@ -67,6 +67,10 @@ fn ours(src: &str, templates: &str) -> Result<String, String> {
 /// Through stock xrust, exactly as its own `xslt` module documentation drives it: the
 /// reproduction an upstream report would carry.
 fn stock(src: &str, templates: &str) -> Result<String, String> {
+    stock_stylesheet(src, &style(templates))
+}
+
+fn stock_stylesheet(src: &str, stylesheet: &str) -> Result<String, String> {
     fn doc(s: &str) -> Result<RNode, Error> {
         let d = RNode::new_document();
         parse(
@@ -83,7 +87,7 @@ fn stock(src: &str, templates: &str) -> Result<String, String> {
         Ok(d)
     }
     let src = doc(src).map_err(|e| e.message)?;
-    let styledoc = doc(&style(templates)).map_err(|e| e.message)?;
+    let styledoc = doc(stylesheet).map_err(|e| e.message)?;
     let mut stctxt = StaticContextBuilder::new()
         .message(|_| Ok(()))
         .fetcher(|_| Err(Error::new(ErrorKind::NotImplemented, "no fetcher")))
@@ -1063,4 +1067,128 @@ fn boolean_variable_alias_analysis_is_bounded() {
         "{error}"
     );
     assert!(error.contains("boolean"), "{error}");
+}
+
+#[test]
+fn template_local_string_parameter_is_not_refused() {
+    let t = r#"<xsl:template match="/"><out><xsl:call-template name="label"><xsl:with-param name="p" select="'hello'"/></xsl:call-template></out></xsl:template><xsl:template name="label"><xsl:param name="p"/><xsl:value-of select="$p"/></xsl:template>"#;
+    assert_eq!(stock(SRC, t).unwrap(), "<out>hello</out>");
+    assert_eq!(ours(SRC, t).unwrap(), "<out>hello</out>");
+}
+
+// The shared CMS file declares templates only, so supply a caller as a consumer does.
+fn cms_fixture_style() -> String {
+    include_str!("fixtures/cms-links.xsl").replace(
+        "</xsl:stylesheet>",
+        r#"<xsl:template match="/"><out><xsl:for-each select="doc/link"><xsl:call-template name="safe-link"><xsl:with-param name="href" select="@href"/><xsl:with-param name="class" select="'card'"/><xsl:with-param name="label" select="."/></xsl:call-template></xsl:for-each></out></xsl:template></xsl:stylesheet>"#,
+    )
+}
+
+#[test]
+fn real_cms_links_stylesheet_accepts_local_string_parameters() {
+    let src = r#"<doc><link href="https://example.org/">Example</link><link href="javascript:alert(1)">Unsafe</link></doc>"#;
+    assert_eq!(
+        transform_xml(src, &cms_fixture_style(), false).unwrap(),
+        r#"<out><a class='card' href='https://example.org/' rel='noopener noreferrer' target='_blank'>Example</a><span class='card'>Unsafe</span></out>"#
+    );
+}
+
+#[test]
+fn real_gonk_stylesheet_accepts_local_string_parameters() {
+    let src = r#"<view:page xmlns:view="urn:iki:gonk:view#" view="ledger" page-url="/l/default" items-url="/items" status="open"/>"#;
+    // The complete production stylesheet costs more than the default 5s to
+    // compile in debug builds; the explicit host budget also covers slow CI.
+    let output = ikigai_xslt::transform_xml_within(
+        src,
+        include_str!("fixtures/gonk.xsl"),
+        false,
+        std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    assert_eq!(
+        output,
+        include_str!("fixtures/gonk.expected.xml").trim_end()
+    );
+}
+
+#[test]
+fn real_rss_stylesheet_accepts_local_string_parameters() {
+    let src = r#"<rss><channel><title>News</title><link>https://example.org/</link><item><title>Story</title><link>https://example.org/story</link><pubDate>Wed, 07 Oct 2026 10:00:00 -0700</pubDate></item></channel></rss>"#;
+    let expected = stock_stylesheet(src, include_str!("fixtures/rss-items.xsl")).unwrap();
+    assert!(expected.contains("2026-10-07T10:00:00-07:00"), "{expected}");
+    let output = transform_xml(src, include_str!("fixtures/rss-items.xsl"), false).unwrap();
+    assert_eq!(output, expected);
+    assert_eq!(
+        output,
+        include_str!("fixtures/rss-items.expected.xml").trim_end()
+    );
+}
+
+#[test]
+fn template_local_parameter_types_follow_defaults_and_call_sites() {
+    // Unrelated named callers must not contaminate string-only parameters.
+    let t = r#"<xsl:template match="/"><out><xsl:call-template name="text"><xsl:with-param name="p" select="'hello'"/></xsl:call-template><xsl:call-template name="bool"><xsl:with-param name="p" select="true()"/></xsl:call-template></out></xsl:template><xsl:template name="text"><xsl:param name="p" select="'default'"/><xsl:value-of select="$p"/></xsl:template><xsl:template name="bool"><xsl:param name="p" select="false()"/><xsl:value-of select="$p"/></xsl:template>"#;
+    assert_eq!(ours(SRC, t).unwrap(), "<out>hellotrue</out>");
+
+    // Follow a with-param expression in its caller's lexical scope, including aliases.
+    let t = r#"<xsl:template match="/"><out><xsl:variable name="v" select="false()"/><xsl:call-template name="first"><xsl:with-param name="p" select="$v"/></xsl:call-template></out></xsl:template><xsl:template name="first"><xsl:param name="p" select="true()"/><xsl:call-template name="second"><xsl:with-param name="q" select="$p"/></xsl:call-template></xsl:template><xsl:template name="second"><xsl:param name="q" select="true()"/><xsl:value-of select="$q"/></xsl:template>"#;
+    assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
+
+    for (default, supplied) in [("'text'", "true()"), ("false()", "'text'")] {
+        let t = format!(
+            r#"<xsl:template match="/"><out><xsl:call-template name="t"><xsl:with-param name="p" select="{supplied}"/></xsl:call-template></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
+        );
+        assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean"));
+    }
+}
+
+#[test]
+fn template_local_parameters_consider_apply_templates_conservatively() {
+    for (default, supplied, expected) in [
+        ("'default'", "'hello'", Some("<out>default</out>")),
+        ("false()", "true()", Some("<out>false</out>")),
+        ("'default'", "true()", None),
+    ] {
+        let t = format!(
+            r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/missing"><xsl:with-param name="p" select="{supplied}"/></xsl:apply-templates><xsl:call-template name="t"/></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
+        );
+        match expected {
+            Some(expected) => assert_eq!(ours(SRC, &t).unwrap(), expected),
+            None => assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean")),
+        }
+    }
+}
+
+#[test]
+fn named_template_namespace_requires_every_call_site_to_supply_it() {
+    let callee = r#"<xsl:template name="typed"><b rdf:datatype="x">1</b></xsl:template>"#;
+    let safe = format!(
+        r#"<xsl:template match="/"><rdf:RDF><xsl:call-template name="typed"/></rdf:RDF></xsl:template>{callee}"#
+    );
+    let expected = stock(SRC, &safe).unwrap();
+    assert!(expected.contains("datatype='x'"), "{expected}");
+    assert_eq!(ours(SRC, &safe).unwrap(), expected);
+
+    // One unsafe caller is enough, even when other callers provide the namespace.
+    let unsafe_call = safe.replace(
+        "</rdf:RDF>",
+        r#"</rdf:RDF><out><xsl:call-template name="typed"/></out>"#,
+    );
+    assert!(ours(SRC, &unsafe_call)
+        .unwrap_err()
+        .contains("without a result namespace"));
+
+    // A fragment is constructed separately from its eventual result parent.
+    let fragment = format!(
+        r#"<xsl:template match="/"><rdf:RDF><xsl:variable name="v"><xsl:call-template name="typed"/></xsl:variable><xsl:copy-of select="$v"/></rdf:RDF></xsl:template>{callee}"#
+    );
+    assert!(ours(SRC, &fragment)
+        .unwrap_err()
+        .contains("without a result namespace"));
+
+    // Named-and-matched templates also have dispatch entry points with unknown scope.
+    let matched = safe.replace(r#"name="typed"><b"#, r#"name="typed" match="doc"><b"#);
+    assert!(ours(SRC, &matched)
+        .unwrap_err()
+        .contains("without a result namespace"));
 }
