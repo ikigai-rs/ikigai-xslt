@@ -49,7 +49,9 @@
 //! no error. Since 0.3.0 a stylesheet holding one of those constructs is refused before xrust
 //! compiles it, as a typed `InvalidArgument` naming the construct ([`subset`]); and a
 //! `method="html"` result is serialized as HTML, with an end tag on every empty element HTML
-//! does not call void, rather than as XML (ledger #193).
+//! does not call void, rather than as XML (ledger #193). Both inputs are also refused before
+//! parsing if a prefixed attribute value would be lowercased by xrust's XML parser (ledger
+//! #2519); compute that value from data instead (see [`limits`]).
 //!
 //! ## `generate-id()` is a position, not an address
 //!
@@ -732,18 +734,20 @@ mod tests {
     /// element RDF/XML plus descendant matching and `for-each`.
     #[test]
     fn renders_endpoint_cards_from_catalog_rdfxml() {
+        // The cards read element content, so use blank-node subjects. Mixed-case named
+        // IRIs in rdf:about are now refused (#2519), pinned in tests/xrust_subset.rs.
         let rdfxml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <Endpoint xmlns="https://ikigai-rs.dev/ns#" rdf:about="urn:ikigai:endpoint:toUpper">
+  <Endpoint xmlns="https://ikigai-rs.dev/ns#" rdf:nodeID="first">
     <id>toUpper</id><title>Upper-case</title>
     <summary>Upper-cases the text.</summary>
     <verb>Source</verb><verb>Meta</verb>
     <output>text/plain;charset=utf-8</output>
   </Endpoint>
-  <rdf:Description rdf:about="urn:ikigai:endpoint:toUpper">
+  <rdf:Description rdf:nodeID="first">
     <input xmlns="https://ikigai-rs.dev/ns#" rdf:nodeID="b0"/>
   </rdf:Description>
-  <Endpoint xmlns="https://ikigai-rs.dev/ns#" rdf:about="urn:ikigai:endpoint:reverseList">
+  <Endpoint xmlns="https://ikigai-rs.dev/ns#" rdf:nodeID="second">
     <id>reverseList</id><title>Reverse list</title>
     <summary>Reverses the items.</summary>
     <verb>Source</verb>
