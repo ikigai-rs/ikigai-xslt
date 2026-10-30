@@ -56,6 +56,13 @@
 //! inputs and includes numeric references and the internal entities admitted above.
 //! Namespace declarations are exempt: xrust processes their values without lowercasing.
 //!
+//! ## Attribute whitespace references (ledger #2520)
+//!
+//! xrust normalizes a referenced tab, LF or CR to a space after XML expansion, losing the
+//! distinction from literal whitespace. The scan refuses numeric references to these
+//! characters in any attribute of either input, including hexadecimal/leading-zero forms.
+//! Text, comments, CDATA and processing instructions are outside this attribute guard.
+//!
 //! ## Time (ledger #1040)
 //!
 //! Neither layer bounds TIME, and some shapes inside both are super-linear in xrust: a long
@@ -326,6 +333,29 @@ fn changes_case(value: &[u8], entities: &[Entity<'_>]) -> bool {
     changes(rest)
 }
 
+// Stop at the first non-digit rather than searching the remaining document for `;`.
+// This keeps malformed inputs with many ampersands linear as well.
+fn whitespace_reference(reference: &[u8]) -> bool {
+    let Some(num) = reference.strip_prefix(b"&#") else {
+        return false;
+    };
+    let (digits, radix) = match num.strip_prefix(b"x") {
+        Some(hex) => (hex, 16),
+        None => (num, 10),
+    };
+    let end = digits
+        .iter()
+        .position(|c| !c.is_ascii_hexdigit())
+        .unwrap_or(digits.len());
+    digits.get(end) == Some(&b';')
+        && matches!(
+            std::str::from_utf8(&digits[..end])
+                .ok()
+                .and_then(|s| u32::from_str_radix(s, radix).ok()),
+            Some(9 | 10 | 13)
+        )
+}
+
 /// Read a start tag whose body starts at `from`, measuring the bracket nesting of each
 /// attribute value. Returns the index past its `>` and whether it closed itself.
 fn start_tag(
@@ -351,6 +381,14 @@ fn start_tag(
                         }
                         b')' | b']' | b'}' => level = level.saturating_sub(1),
                         b'&' => {
+                            // References retain these characters under XML 1.0 §3.3.3;
+                            // xrust instead normalizes them after expansion (#2520).
+                            if whitespace_reference(&b[at..]) {
+                                return Err(format!(
+                                    "refused: character reference in attribute `{}` would be normalized to a space by xrust 2.3.0 instead of preserving the tab, line feed or carriage return (ledger #2520; README, The XSLT subset); for a line feed use the RSS workaround: <xsl:variable name=\"lf-holder\">.\n.</xsl:variable> and substring($lf-holder, 2, 1)",
+                                    String::from_utf8_lossy(name)
+                                ));
+                            }
                             let (end, opens, closes) = expand(b, at, entities, shape)?;
                             level += opens;
                             shape.expr_depth = shape.expr_depth.max(level);

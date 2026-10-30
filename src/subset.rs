@@ -1,4 +1,4 @@
-//! The constructs xrust answers WRONGLY, with no error, refused before it compiles them
+//! The constructs xrust answers wrongly or panics on, refused before it compiles them
 //! (ledger #193).
 //!
 //! xrust 2.3.0 evaluates part of XSLT 1.0 to a wrong answer and says nothing: a predicate in a
@@ -15,8 +15,11 @@
 //!
 //! ## What the scan sees, and what it does not
 //!
-//! The scan is **lexical and conservative**: it refuses only the shapes measured wrong, so it
-//! never refuses a stylesheet xrust would have answered correctly by accident of a lexer.
+//! The XPath scan is **lexical and conservative**: it recognizes measured defects while
+//! avoiding XPath string literals. The literal attribute namespace
+//! guard follows named-only template calls when every call site supplies the namespace.
+//! Dynamic construction, matched-template dispatch, fragment boundaries and call cycles
+//! remain conservative boundaries.
 //! Every XPath it reads is tokenized first, so a `[`, a `//` or a `prefix:name` inside a string
 //! literal (`'a[1]'`, `"//"`) is text, not a construct.
 //!
@@ -26,6 +29,7 @@
 //! | a `[last()]` predicate | any expression, attribute value templates included | [`Construct::NumericPredicate`] |
 //! | `position()` or `last()` | outside a predicate, where the context node is not the root; and `last()` inside any predicate | [`Construct::PositionOrLast`] |
 //! | a leading `//` | where the context node is not the root, a predicate included | [`Construct::LeadingDoubleSlash`] |
+//! | a literal attribute without a result namespace declaration | namespace not supplied by a literal element name in this result scope | [`Construct::LiteralAttributeNamespace`] |
 //!
 //! "Where the context node is the root" is the one place two of those constructs are right:
 //! the body of `xsl:template match="/"` outside any `xsl:for-each`, and a top-level
@@ -69,12 +73,14 @@ use crate::XSL_NS;
 /// changed answer fails there.
 pub const XRUST_MEASURED_ON: &str = "2.3.0";
 
-/// One construct xrust answers wrongly without an error.
+/// One construct xrust answers wrongly or panics on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Construct {
     /// A predicate in a match pattern: `match="item[@k='2']"` matches every `item`, and so
     /// template priority never prefers it either.
     MatchPredicate,
+    /// A literal attribute whose namespace xrust will omit from the result.
+    LiteralAttributeNamespace,
     /// A `[last()]` predicate: `last()` is 1 there, so it selects the FIRST node. Through
     /// 0.3.0 this was every numeric predicate, because xrust 2.2.0 ignored `[1]` and `[2]` too;
     /// xrust 2.3.0 answers a literal `[n]` correctly, so since 0.3.1 only `[last()]` is refused.
@@ -97,6 +103,9 @@ impl Construct {
     pub fn readme_row(self) -> &'static str {
         match self {
             Construct::MatchPredicate => "a predicate in a match pattern",
+            Construct::LiteralAttributeNamespace => {
+                "a literal attribute without a result namespace declaration"
+            }
             Construct::NumericPredicate => "a [last()] predicate",
             Construct::PositionOrLast => "position() or last() away from the root",
             Construct::LeadingDoubleSlash => "a leading // away from the root",
@@ -107,6 +116,7 @@ impl Construct {
     /// What to write instead, as the README says.
     pub fn instead(self) -> &'static str {
         match self {
+            Construct::LiteralAttributeNamespace => "put the literal element or an enclosing literal result element in the attribute namespace (for example <rdf:RDF>)",
             Construct::MatchPredicate => {
                 "match the name alone and branch inside with xsl:if or xsl:choose"
             }
@@ -139,9 +149,14 @@ pub struct Silent {
 impl Silent {
     /// The refusal's detail: the construct, where it is, the README row, and what to write.
     pub fn detail(&self) -> String {
+        let behavior = if self.construct == Construct::LiteralAttributeNamespace {
+            "panics while serializing"
+        } else {
+            "answers wrongly and without an error"
+        };
         format!(
-            "refused: {}=\"{}\" on <{}> holds \"{}\", which xrust {XRUST_MEASURED_ON} answers \
-             wrongly and without an error (README, \"The XSLT subset\"); instead, write {}",
+            "refused: {}=\"{}\" on <{}> holds \"{}\", which xrust {XRUST_MEASURED_ON} {behavior} \
+             (README, \"The XSLT subset\"); instead, write {}",
             self.attribute,
             self.value,
             self.element,
@@ -151,7 +166,7 @@ impl Silent {
     }
 }
 
-/// Every construct in `stylesheet_xml` xrust would answer wrongly without an error, in
+/// Every construct in `stylesheet_xml` xrust would answer wrongly or panic on, in
 /// document order — empty when there is none. For a host or an author that wants the whole
 /// list at once; compiling refuses on the first. Checks [`crate::limits::check_stylesheet`]'s
 /// bounds and parses on [`crate::limits::on_xslt_stack_within`], like
@@ -255,6 +270,24 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
     };
 
     if !in_xsl {
+        // xrust emits namespace declarations only for literal ELEMENT names.
+        // A stylesheet declaration alone does not reach the result; serialization panics.
+        for attr in element.attribute_iter() {
+            let Some(ns) = attr.name().and_then(|n| n.namespace_uri()) else {
+                continue;
+            };
+            if ns.to_string() == XSL_NS || ns.to_string() == "http://www.w3.org/XML/1998/namespace"
+            {
+                continue;
+            }
+            if !result_namespace_supplied(element, &ns.to_string(), &mut Vec::new()) {
+                report(
+                    Construct::LiteralAttributeNamespace,
+                    &attr.name().unwrap().to_string(),
+                    &attr.value().to_string(),
+                );
+            }
+        }
         // A literal result element: every attribute is an attribute value template.
         for (attribute, _, value) in &attrs {
             for expr in avt_expressions(value) {
@@ -308,6 +341,68 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
         }
     }
     children_at_root
+}
+
+// A named-only template inherits its callers' result parents. Prove the namespace
+// at *every* call site before accepting a literal attribute in that template. A
+// matched template can also be entered by dispatch, so its callers cannot prove
+// its scope. Fragment constructors and cycles remain conservative boundaries.
+fn result_namespace_supplied(element: &IdNode, ns: &str, seen: &mut Vec<IdNode>) -> bool {
+    let mut ancestor = Some(element.clone());
+    while let Some(node) = ancestor {
+        if let Some(name) = node.name() {
+            if name
+                .namespace_uri()
+                .is_some_and(|u| u.to_string() == XSL_NS)
+            {
+                match name.local_name().to_string().as_str() {
+                    "template" => {
+                        let name = node
+                            .get_attribute(&qualname::QName::try_from("name").unwrap())
+                            .to_string();
+                        if name.is_empty()
+                            || node
+                                .get_attribute_node(&qualname::QName::try_from("match").unwrap())
+                                .is_some()
+                            || seen.len() >= crate::limits::MAX_EXPR_DEPTH
+                            || seen.contains(&node)
+                        {
+                            return false;
+                        }
+                        seen.push(node.clone());
+                        let mut stack = vec![node.owner_document()];
+                        let mut has_caller = false;
+                        let mut supplied = true;
+                        while let Some(call) = stack.pop() {
+                            stack.extend(call.child_iter());
+                            if call.name().is_some_and(|n| {
+                                n.local_name().to_string() == "call-template"
+                                    && n.namespace_uri().is_some_and(|u| u.to_string() == XSL_NS)
+                            }) && call
+                                .get_attribute(&qualname::QName::try_from("name").unwrap())
+                                .to_string()
+                                == name
+                            {
+                                has_caller = true;
+                                if !result_namespace_supplied(&call, ns, seen) {
+                                    supplied = false;
+                                    break;
+                                }
+                            }
+                        }
+                        seen.pop();
+                        return has_caller && supplied;
+                    }
+                    "variable" | "param" | "with-param" | "function" => return false,
+                    _ => {}
+                }
+            } else if name.namespace_uri().is_some_and(|u| u.to_string() == ns) {
+                return true;
+            }
+        }
+        ancestor = node.parent();
+    }
+    false
 }
 
 /// The expressions inside an attribute value template's `{…}`, with `{{` and `}}` read as

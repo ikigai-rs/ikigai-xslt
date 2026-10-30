@@ -1,0 +1,2553 @@
+<?xml version="1.0"?>
+<xsl:stylesheet version="1.0"
+  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:ledger="https://ikigai-rs.dev/ns/ledger#"
+  xmlns:dcterms="http://purl.org/dc/terms/"
+  xmlns:view="urn:iki:gonk:view#">
+<!-- Fixture source: https://github.com/ikigai-rs/ikigai-gonk/blob/fcaa68987f6db047fb8151f377b8a8f17545a61d/web/gonk.xsl -->
+<!--
+  ⚠ This comment is INSIDE the root element on purpose: xrust refuses a stylesheet whose
+  first node is a comment ("not an XSLT stylesheet").
+
+  gonk's HTML face: ONE stylesheet, dispatching on rdf:type.
+
+  The input is a <view:page> envelope around a resource's graph face as RDF/XML
+  (src/render.rs). Each subject's primary type is written as its element name, so
+  `match="ledger:Item"` and `match="ledger:Comment"` ARE the type dispatch.
+
+  ⚠ Authored to xrust's SUBSET of XSLT 1.0, measured (src/render.rs has the table):
+  no xsl:variable, no xsl:key, no attribute value templates beyond {@name}, no
+  predicates in match patterns, no absolute paths from inside a nested template, no
+  xsl:sort inside for-each. So every dynamic attribute is xsl:attribute, every sort
+  is on apply-templates, and everything a template would otherwise compute arrives as
+  a view:* literal on the subject it describes.
+
+  ⚠ No `{` or `}` in any literal attribute value: they are AVT delimiters.
+-->
+  <xsl:output method="html" omit-xml-declaration="yes"/>
+  <!-- ⚠ A space between two elements is <xsl:value-of select="' '"/>, never
+       <xsl:text> </xsl:text> and never &#160;: xrust 2.2 drops a whitespace-only xsl:text
+       (it never preserves xsl:text) and any text node of only no-break spaces (its test is
+       str::trim), so either renders as nothing and two words run together (ledger #1693).
+       A space INSIDE other text (<xsl:text> · </xsl:text>) survives.
+       tests/xsl_spaces_1693.rs refuses the two dropped shapes. -->
+
+  <xsl:template match="/">
+    <xsl:apply-templates select="view:page"/>
+  </xsl:template>
+
+  <!-- ============================================================ the shell -->
+
+  <xsl:template match="view:page">
+    <xsl:choose>
+      <xsl:when test="@full = 'true'">
+        <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <!-- htmx's configuration, set once (UI conventions D7) and pinned by
+                 tests/htmx_config_1958.rs. allowScriptTags:false: htmx 2.0.4 would otherwise
+                 run a <script> inside swapped content, a src= one included, which CSP's
+                 script-src 'self' does not stop for a same-origin path (ledger #1948, #1958).
+                 Nothing gonk swaps carries a script: the two scripts are in this head, which a
+                 swap never takes. includeIndicatorStyles:false: htmx would inject a <style>
+                 element, which the CSP refuses; gonk styles no indicator. -->
+            <meta name="htmx-config"><xsl:attribute name="content">{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}</xsl:attribute></meta>
+            <title><xsl:value-of select="@title"/> · gonk</title>
+            <link rel="stylesheet" href="/static/gonk.css"/>
+            <!-- A page that hosts another family's faces links that family's own stylesheet
+                 (urn:repo:style, through the /k/ adapter). Withheld when the caller could
+                 not read it, so the page does not paint itself with a 403. -->
+            <xsl:if test="@stylesheet">
+              <link rel="stylesheet"><xsl:attribute name="href"><xsl:value-of select="@stylesheet"/></xsl:attribute></link>
+            </xsl:if>
+            <!-- …and that family's LAYOUT sheet (urn:repo:style:layout, ikigai-browse 0.4.2+),
+                 which is the one that makes its markup legible: the theme above only colors
+                 the hl- classes inside a file view. Same gate, same reason. Ledger #441. -->
+            <xsl:if test="@layout-stylesheet">
+              <link rel="stylesheet"><xsl:attribute name="href"><xsl:value-of select="@layout-stylesheet"/></xsl:attribute></link>
+            </xsl:if>
+            <script src="/static/htmx.min.js" defer="defer"></script>
+            <script src="/static/gonk.js" defer="defer"></script>
+          </head>
+          <body>
+            <a class="skip" href="#main">Skip to content</a>
+            <header class="top">
+              <a class="brand" href="/">gonk</a>
+              <xsl:apply-templates select="view:ledger-menu"/>
+              <xsl:apply-templates select="view:browse"/>
+              <xsl:apply-templates select="view:queue"/>
+              <xsl:apply-templates select="view:layers-link"/>
+              <xsl:apply-templates select="view:views-link"/>
+              <xsl:apply-templates select="view:onboard-link"/>
+              <a class="navlink" href="/sparql">SPARQL</a>
+              <xsl:apply-templates select="view:toolbox-link"/>
+              <div id="auth" class="auth">
+                <xsl:apply-templates select="view:withheld"/>
+                <span id="auth-who" class="who" hidden="hidden"></span>
+                <button id="auth-login" type="button" class="quiet" hidden="hidden">Sign in with passkey</button>
+                <button id="auth-logout" type="button" class="quiet" hidden="hidden">Sign out</button>
+                <a id="auth-localhost" class="note" hidden="hidden">Passkeys need localhost</a>
+              </div>
+            </header>
+            <section id="enrol" class="panel enrol" hidden="hidden" aria-labelledby="enrol-title">
+              <h2 id="enrol-title">Create a passkey for this server</h2>
+              <p>This link carries a one-time invite. Creating the passkey enrolls it under the grant the invite names; after that, signing in with it gives this browser that grant.</p>
+              <form id="enrol-form" class="row">
+                <label for="enrol-label">Label</label>
+                <input id="enrol-label" name="label" type="text" autocomplete="off" placeholder="e.g. laptop Touch ID"/>
+                <button type="submit">Create passkey</button>
+              </form>
+            </section>
+            <div id="flash" class="flash-area" role="status" aria-live="polite"></div>
+            <main id="main">
+              <xsl:call-template name="body"/>
+            </main>
+          </body>
+        </html>
+      </xsl:when>
+      <xsl:otherwise>
+        <xsl:call-template name="body"/>
+      </xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
+  <!-- A section this caller's grant does not reach was left out of the header (ledger #446,
+       src/web.rs::withholds). One generic sentence, never which section; signed out or signed
+       in is web/gonk.js's call from /auth/session, like the sign-in notices below; its own
+       attribute, so a page's sign-in notice is still the one `[data-signin-notice]`. -->
+  <xsl:template match="view:withheld">
+    <span class="note withheld" data-withheld-notice="true">
+      <span class="signed-out"><xsl:value-of select="@signed-out"/></span>
+      <span class="signed-in" hidden="hidden"><xsl:value-of select="@signed-in"/></span>
+    </span>
+  </xsl:template>
+
+  <!-- The header's ledger picker (ledger #1888, src/web.rs::ledger_menu). Every value here is
+       computed there: the set is the ledgers the caller may read, in `default`-then-by-name
+       order. No counts: they cost every page a read per ledger, so they are on /l only.
+
+       ★ A menu of LINKS, never a navigating <select> (WCAG 3.2.2): without a script it is this
+       <details>, which opens and closes on its own; web/gonk.js replaces the <summary> with a
+       disclosure button (aria-expanded, aria-controls) and adds Escape and a click outside.
+       One readable ledger is its name and no menu. The filter is drawn only past
+       web::MENU_FILTER_PAST ledgers and stays hidden until the script that runs it is here. -->
+  <xsl:template match="view:ledger-menu">
+    <nav class="ledgers" aria-label="Ledgers">
+      <xsl:choose>
+        <xsl:when test="@single = 'true'">
+          <span class="ledger-only"><xsl:text>Ledger:</xsl:text><xsl:value-of select="' '"/><xsl:apply-templates select="view:menu-ledger" mode="only"/></span>
+        </xsl:when>
+        <xsl:otherwise>
+          <details class="ledger-menu" data-ledger-menu="true">
+            <summary class="ledger-summary"><xsl:value-of select="@label"/></summary>
+            <div id="ledger-panel" class="ledger-panel">
+              <xsl:if test="@filter = 'true'">
+                <div class="ledger-filter" data-ledger-filter="true" hidden="hidden">
+                  <label for="ledger-filter">Filter ledgers</label>
+                  <input id="ledger-filter" type="search" autocomplete="off" spellcheck="false" aria-describedby="ledger-filter-status"/>
+                  <p id="ledger-filter-status" class="note" role="status" aria-live="polite"></p>
+                </div>
+              </xsl:if>
+              <ul class="ledger-list">
+                <xsl:apply-templates select="view:menu-ledger"/>
+              </ul>
+              <a class="all-ledgers">
+                <xsl:attribute name="href"><xsl:value-of select="@all-href"/></xsl:attribute>
+                <xsl:if test="@all-current = 'true'"><xsl:attribute name="aria-current">page</xsl:attribute></xsl:if>
+                <xsl:text>All ledgers</xsl:text>
+              </a>
+            </div>
+          </details>
+        </xsl:otherwise>
+      </xsl:choose>
+    </nav>
+  </xsl:template>
+
+  <xsl:template match="view:menu-ledger">
+    <li>
+      <xsl:attribute name="data-ledger-name"><xsl:value-of select="@name"/></xsl:attribute>
+      <a class="ledger-link">
+        <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">page</xsl:attribute></xsl:if>
+        <xsl:value-of select="@name"/>
+      </a>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:menu-ledger" mode="only">
+    <a class="ledger-link">
+      <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">page</xsl:attribute></xsl:if>
+      <xsl:value-of select="@name"/>
+    </a>
+  </xsl:template>
+
+  <!-- The browse family's entry point, present only when this caller may read a root
+       (src/web.rs::nav). A link into a refusal is worse than no link. -->
+  <xsl:template match="view:browse">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>Browse</a>
+  </xsl:template>
+
+  <!-- The review queue, present only when this caller may read a root AND may decide
+       (src/queue.rs::offers_queue). Ledger #444 settled the label: it names the THING,
+       because the page shows the whole pipeline and "Review" is already the file face's
+       button that RUNS a pass.
+
+       ⚠ The badge beside it is the armed trigger's ONLY liveness signal (ledger #466), not
+       decoration: `watch()` catches up at startup and then lives on a thread nothing else
+       observes, so a depth that stops falling is the whole symptom of a dead watcher. It
+       polls rather than blinking — the web-demo nav clock's shape, at the interval
+       src/queue.rs::BADGE_EVERY names, so the number and the cadence are the Rust side's
+       and not this file's.
+
+       ★ `hx-sync="this:drop"` (ledger #947): a tick that comes while this badge's last poll
+       is still in flight is DROPPED, not queued. htmx's default queues the last one, so a poll
+       slower than the interval ran back to back forever, and every one of them was work the
+       server did again. -->
+  <xsl:template match="view:queue">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>Queue<xsl:if test="@depth-url">
+      <span class="queue-badge" hx-swap="innerHTML" hx-sync="this:drop">
+        <xsl:attribute name="hx-get"><xsl:value-of select="@depth-url"/></xsl:attribute>
+        <xsl:attribute name="hx-trigger">load, every <xsl:value-of select="@every"/></xsl:attribute>
+      </span>
+    </xsl:if></a>
+  </xsl:template>
+
+  <!-- The badge's own answer: one number, one state word as a class, and the depth
+       resource's whole sentence as the tooltip. `stuck` is the one a person is looking
+       for — armed, not empty, nothing running.
+
+       ⚠ Two things ride along that are NOT the number (ledger #469, and both are computed
+       in src/queue.rs — this file decides nothing):
+
+       `@activity` draws a spark: a pass running now, or one that ended inside the window
+       the server measures against its own poll interval. Without it a pass shorter than the
+       cadence is invisible, which is the whole complaint — the depth was 0 before it and 0
+       after it, and the badge had nothing to say either time.
+
+       `@rev` is the queue's whole state as one token. web/gonk.js compares it with the
+       previous poll's and, when it differs, tells the findings list there is news. It is an
+       attribute rather than markup because the badge must not know what a list looks
+       like. -->
+  <xsl:template name="queue-badge">
+    <span>
+      <xsl:attribute name="class">badge-depth <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:attribute name="title"><xsl:value-of select="@title"/></xsl:attribute>
+      <xsl:if test="@rev"><xsl:attribute name="data-rev"><xsl:value-of select="@rev"/></xsl:attribute></xsl:if>
+      <xsl:if test="@activity">
+        <span aria-hidden="true">
+          <xsl:attribute name="class">spark <xsl:value-of select="@activity"/></xsl:attribute>
+        </span>
+      </xsl:if>
+      <!-- Two numbers (ledger #496): findings waiting for a human in the serious set, and
+           the rest — minted and counted, not queued. Both computed in src/queue.rs; the
+           tooltip's sentence says which is which, so the split is readable and not only
+           visible. -->
+      <span class="serious"><xsl:value-of select="@count"/></span>
+      <xsl:if test="@other">
+        <span class="other"><xsl:text>+</xsl:text><xsl:value-of select="@other"/></span>
+      </xsl:if>
+    </span>
+  </xsl:template>
+
+  <xsl:template match="view:ledger" mode="option">
+    <option>
+      <xsl:attribute name="value"><xsl:value-of select="@name"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="selected">selected</xsl:attribute></xsl:if>
+      <xsl:value-of select="@name"/>
+    </option>
+  </xsl:template>
+
+  <xsl:template match="view:flash">
+    <p>
+      <xsl:attribute name="class">flash <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:value-of select="."/>
+    </p>
+  </xsl:template>
+
+  <!-- The flash as web/gonk.js writes one into #flash: a refusal is an alert. -->
+  <xsl:template match="view:flash" mode="announce">
+    <p>
+      <xsl:attribute name="class">flash <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:choose>
+        <xsl:when test="@kind = 'error'"><xsl:attribute name="role">alert</xsl:attribute></xsl:when>
+        <xsl:otherwise><xsl:attribute name="role">status</xsl:attribute></xsl:otherwise>
+      </xsl:choose>
+      <xsl:value-of select="."/>
+    </p>
+  </xsl:template>
+
+  <!-- Where a shell's rows go: a comment src/render.rs::splice replaces with the rows it
+       rendered in chunks. A comment because it is the one node that can stand inside any
+       element without being markup, and because xrust writes xsl:comment verbatim. Each
+       view applies the slot by NAME (`view:slot[@name = '…']`, a filter xrust honors —
+       measured 2026-09-26), so a page carries exactly one marker for each slot it cut. -->
+  <xsl:template match="view:slot">
+    <xsl:comment>gonk-slot:<xsl:value-of select="@name"/></xsl:comment>
+  </xsl:template>
+
+  <xsl:template name="body">
+    <xsl:choose>
+      <xsl:when test="@view = 'ledger'"><xsl:call-template name="ledger"/></xsl:when>
+      <xsl:when test="@view = 'item'"><xsl:call-template name="item"/></xsl:when>
+      <xsl:when test="@view = 'doctor'"><xsl:apply-templates select="view:doctor"/></xsl:when>
+      <xsl:when test="@view = 'gone'"><xsl:call-template name="gone"/></xsl:when>
+      <xsl:when test="@view = 'refusal'"><xsl:apply-templates select="view:refusal"/></xsl:when>
+      <xsl:when test="@view = 'sparql'"><xsl:call-template name="sparql"/></xsl:when>
+      <xsl:when test="@view = 'browse'"><xsl:call-template name="browse"/></xsl:when>
+      <xsl:when test="@view = 'roots'"><xsl:call-template name="roots"/></xsl:when>
+      <xsl:when test="@view = 'github'"><xsl:call-template name="github"/></xsl:when>
+      <xsl:when test="@view = 'ledgers'"><xsl:call-template name="ledgers"/></xsl:when>
+      <xsl:when test="@view = 'queue'"><xsl:call-template name="queue"/></xsl:when>
+      <xsl:when test="@view = 'queue-badge'"><xsl:call-template name="queue-badge"/></xsl:when>
+      <xsl:when test="@view = 'results'"><xsl:apply-templates select="view:results"/></xsl:when>
+      <xsl:when test="@view = 'layers'"><xsl:call-template name="layers"/></xsl:when>
+      <xsl:when test="@view = 'onboard'"><xsl:call-template name="onboard"/></xsl:when>
+      <xsl:when test="@view = 'layer'"><xsl:call-template name="layer"/></xsl:when>
+      <xsl:when test="@view = 'layers-wait'"><xsl:call-template name="layers-wait"/></xsl:when>
+      <xsl:when test="@view = 'layers-count'"><xsl:call-template name="layers-count"/></xsl:when>
+      <xsl:when test="@view = 'layers-say'"><xsl:call-template name="layers-say"/></xsl:when>
+      <xsl:when test="@view = 'views'"><xsl:call-template name="views"/></xsl:when>
+      <!-- A CHUNK (ledger #519): rows and nothing else, rendered apart from the shell that
+           holds their slot and spliced in by src/render.rs. Every row template below reads
+           only its own element, which is what makes a chunk's rows render as the page's. -->
+      <xsl:when test="@view = 'chunk'">
+        <xsl:apply-templates select="view:finding"/>
+        <xsl:apply-templates select="view:group"/>
+        <xsl:apply-templates select="view:batch"/>
+        <xsl:apply-templates select="view:walk-group"/>
+        <xsl:apply-templates select="view:entry"/>
+        <xsl:apply-templates select="view:tuple"/>
+        <xsl:apply-templates select="view:receipt"/>
+        <xsl:apply-templates select="rdf:RDF/ledger:Item">
+          <xsl:sort select="dcterms:modified" order="descending"/>
+        </xsl:apply-templates>
+      </xsl:when>
+      <xsl:otherwise>
+        <section class="panel empty-state">
+          <h1><xsl:value-of select="@title"/></h1>
+          <xsl:if test="@message">
+            <p><xsl:value-of select="@message"/></p>
+          </xsl:if>
+          <xsl:apply-templates select="view:signin"/>
+        </section>
+      </xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
+  <!--
+    A caller whose grant does not reach this page (ledger #739): src/web.rs `Lacking`, the one
+    shape every page that can say so shares. Two sentences and a footnote, and the
+    signed-out one is what shows: no capability IRI is the first thing anybody reads.
+
+    ★ Which sentence shows is web/gonk.js's call, from the same `/auth/session` answer that
+    draws "Signed in as …" in the header — a page is a read, and `ikigai-web` hands the
+    principal to writes only. So the signed-in half arrives hidden, and so does the button
+    (the script shows it where a passkey can actually be used, as it does the header's).
+  -->
+  <xsl:template match="view:signin">
+    <div class="signin-notice" data-signin-notice="true">
+      <p class="signed-out">
+        <xsl:value-of select="@signed-out"/>
+        <xsl:value-of select="' '"/>
+        <button type="button" class="signin-here" hidden="hidden">Sign in with passkey</button>
+      </p>
+      <div class="signed-in" hidden="hidden">
+        <p><xsl:value-of select="@signed-in"/></p>
+        <details class="grant-needed">
+          <summary>The grant this needs</summary>
+          <ul>
+            <xsl:for-each select="view:need">
+              <li><code><xsl:value-of select="@iri"/></code> — <xsl:value-of select="@for"/></li>
+            </xsl:for-each>
+          </ul>
+        </details>
+      </div>
+    </div>
+  </xsl:template>
+
+  <!--
+    The page a browser NAVIGATING to an error gets (ledger #2021, src/refusal.rs): the same
+    shell as every page, the status unchanged (the door keeps it; this is only the body). Three
+    kinds, decided in Rust from the request:
+    - signin: a refusal signing in may cure. The sentence, and the passkey sign-in button,
+      hidden until web/gonk.js knows a passkey can be used here (as the header's is). Signing
+      in reloads the page, so the browser lands on the address it asked for.
+    - grant: signed in, and the grant does not reach the page. The sentence, then the grant it
+      needs, last; nothing offers a sign-in, which would cure nothing.
+    - error: anything else. The status as the heading, and the message.
+    Focus (D13): the heading is focusable and autofocused, so a page with no script still puts
+    a screen reader on it; web/gonk.js moves focus to the sign-in button once it shows it. The
+    heading and the button are each described by the sentence, so whichever has focus, the
+    refusal is read with it.
+  -->
+  <xsl:template match="view:refusal">
+    <section class="panel refusal" data-refusal="true" aria-labelledby="refusal-title">
+      <xsl:attribute name="data-kind"><xsl:value-of select="@kind"/></xsl:attribute>
+      <h1 id="refusal-title" tabindex="-1" autofocus="autofocus">
+        <xsl:if test="@sentence"><xsl:attribute name="aria-describedby">refusal-sentence</xsl:attribute></xsl:if>
+        <xsl:value-of select="@heading"/>
+      </h1>
+      <xsl:if test="@sentence">
+        <p id="refusal-sentence"><xsl:value-of select="@sentence"/></p>
+      </xsl:if>
+      <xsl:if test="@kind = 'signin'">
+        <div class="signin-notice" data-signin-notice="true">
+          <p>
+            <button type="button" class="signin-here" hidden="hidden" aria-describedby="refusal-sentence">Sign in with passkey</button>
+          </p>
+          <p class="note">Signing in brings you back to this page.</p>
+        </div>
+      </xsl:if>
+      <xsl:if test="@grant">
+        <p class="grant-needed">The grant it needs: <code><xsl:value-of select="@grant"/></code></p>
+      </xsl:if>
+    </section>
+  </xsl:template>
+
+  <!-- ============================================================ layers -->
+
+  <!--
+    The Layers page (ledger #1675, src/layers_view.rs): every layer the CONFIGURED identity
+    reads at its layer door, and one layer's entries. Everything here is computed in Rust and
+    arrives as attributes; the page reads gonk's copy, never the door.
+
+    ★ Live: a hidden `view:watch` element asks /layers/~/wait a few seconds after it lands (a
+    short poll, ledger #1705: it holds no connection between asks) and is replaced by the
+    answer (outerHTML), which carries the next one; what changed comes OUT OF BAND (new entries
+    before the first, a task layer's lists, the overview's rows, the banner, and one sentence for
+    the live region). A failed ask is re-armed by web/gonk.js with a backoff, and
+    `#layers-reconnect` says so in words, once.
+    ★ Color is never the only signal: "New" is a word, an unread count is a number and a word.
+  -->
+  <!-- The header's Layers link and its unread count (ledger #1700). The count is TEXT in the
+       link's accessible name ("Layers, 3 new"): the number shows, and the comma and the word are
+       there for a screen reader (`sr-only`). The first poll is at load; each answer is a new
+       badge carrying the next (`every`, the Queue badge's cadence, src/layers_view.rs::Count),
+       so a failed poll is simply tried again and nothing here keeps a timer of its own. The
+       first badge asks at load AND every interval, so a first poll that fails is tried again
+       too (ledger #1705); the answer replaces it, and its timer with it. A failed poll is not
+       written into #flash (web/gonk.js): the badge retries on its own.
+       ★ The live region is OUTSIDE the link, so a sentence in it never becomes part of the
+       link's name; the count's answer writes it (out of band) only when the count rose. -->
+  <xsl:template match="view:layers-link">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>Layers<xsl:if test="@count-url">
+      <span class="layers-badge" hx-swap="outerHTML" hx-sync="this:drop">
+        <xsl:attribute name="hx-get"><xsl:value-of select="@count-url"/></xsl:attribute>
+        <xsl:attribute name="hx-trigger">load, every <xsl:value-of select="@every"/></xsl:attribute>
+      </span>
+    </xsl:if></a>
+    <xsl:if test="@count-url">
+      <span id="layers-badge-live" class="sr-only" role="status" aria-live="polite"></span>
+    </xsl:if>
+  </xsl:template>
+
+  <!-- The RDF Toolbox (ledger #2021), present only when this server serves one: a
+       gonk.toolbox.dist line (src/web.rs::nav_with, Web::toolbox). The toolbox is its own page
+       with its own script and CSP, so this is an ordinary link: a full navigation, never a swap. -->
+  <xsl:template match="view:toolbox-link">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>Toolbox</a>
+  </xsl:template>
+
+  <!-- The Views page (ledger #2099, src/views_page.rs), offered only to a caller whose grant
+       reads the views declaration (src/web.rs::nav_with). An ordinary link, beside Layers. -->
+  <xsl:template match="view:views-link">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">page</xsl:attribute></xsl:if>Views</a>
+  </xsl:template>
+
+  <xsl:template name="layers-count">
+    <span class="layers-badge" hx-swap="outerHTML" hx-sync="this:drop">
+      <xsl:if test="@url">
+        <xsl:attribute name="hx-get"><xsl:value-of select="@url"/></xsl:attribute>
+        <xsl:attribute name="hx-trigger">every <xsl:value-of select="@every"/></xsl:attribute>
+      </xsl:if>
+      <xsl:if test="@count"><span class="sr-only">, </span><span class="layers-count"><xsl:value-of select="@count"/></span><span class="sr-only"> new</span></xsl:if>
+    </span>
+    <xsl:if test="@announce">
+      <span id="layers-badge-live" hx-swap-oob="innerHTML"><xsl:value-of select="@announce"/></span>
+    </xsl:if>
+  </xsl:template>
+
+  <xsl:template match="view:notice">
+    <p>
+      <xsl:attribute name="class">flash <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:value-of select="."/>
+      <xsl:if test="@config">
+        <code class="config-line"><xsl:value-of select="@config"/></code>
+      </xsl:if>
+    </p>
+  </xsl:template>
+
+  <xsl:template match="view:watch">
+    <div class="layers-watch" hidden="hidden" hx-swap="outerHTML">
+      <xsl:attribute name="hx-get"><xsl:value-of select="@url"/></xsl:attribute>
+      <xsl:attribute name="hx-trigger"><xsl:value-of select="@trigger"/></xsl:attribute>
+    </div>
+  </xsl:template>
+
+  <!-- Onboarding (ledger #2009, src/onboard.rs): offered only when this server onboards nodes
+       and the caller's grant reads the page (src/onboard.rs::offers_page). -->
+  <xsl:template match="view:onboard-link">
+    <a class="navlink"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>Onboard</a>
+  </xsl:template>
+
+  <!-- The Onboard page: read-only. An approval is a command on the owner's socket, never a
+       button here (Brian, 2026-10-22: the controller key is used on plasma only), so a pending
+       request shows the command to copy. -->
+  <xsl:template name="onboard">
+    <section class="panel onboard" aria-labelledby="onboard-title">
+      <h1 id="onboard-title"><xsl:value-of select="@title"/></h1>
+      <xsl:if test="@note"><p class="note"><xsl:value-of select="@note"/></p></xsl:if>
+      <xsl:if test="@error"><p class="note" role="alert"><xsl:value-of select="@error"/></p></xsl:if>
+      <xsl:if test="@restart"><p class="note" role="status"><xsl:value-of select="@restart"/></p></xsl:if>
+      <xsl:if test="not(@note)">
+        <h2 id="onboard-pending-title">Waiting for approval</h2>
+        <p class="note">Approve on this machine, from a terminal: the command is beside each request.</p>
+        <xsl:choose>
+          <xsl:when test="view:onboard-request">
+            <ul class="onboard-list" aria-labelledby="onboard-pending-title">
+              <xsl:apply-templates select="view:onboard-request"/>
+            </ul>
+          </xsl:when>
+          <xsl:otherwise><p class="empty">No enrollment requests are waiting.</p></xsl:otherwise>
+        </xsl:choose>
+        <h2 id="onboard-entitlements-title">Entitlements</h2>
+        <xsl:choose>
+          <xsl:when test="view:onboard-entitlement">
+            <ul class="onboard-list" aria-labelledby="onboard-entitlements-title">
+              <xsl:apply-templates select="view:onboard-entitlement"/>
+            </ul>
+          </xsl:when>
+          <xsl:otherwise><p class="empty">No entitlements have been said.</p></xsl:otherwise>
+        </xsl:choose>
+      </xsl:if>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:onboard-request">
+    <li class="onboard-row">
+      <p>
+        <strong><xsl:value-of select="@name"/></strong>
+        <xsl:if test="@kinds != ''"><xsl:text> (</xsl:text><xsl:value-of select="@kinds"/><xsl:text>)</xsl:text></xsl:if>
+        <xsl:text>: </xsl:text>
+        <xsl:value-of select="@verdict"/>
+        <xsl:if test="@reason != ''"><xsl:text>, </xsl:text><xsl:value-of select="@reason"/></xsl:if>
+      </p>
+      <p class="note">Request <code class="iri"><xsl:value-of select="@id"/></code>, certificate <code class="iri"><xsl:value-of select="@fingerprint"/></code></p>
+      <xsl:if test="@verdict = 'pending'">
+        <p>Approve with <code><xsl:value-of select="@approve"/></code></p>
+      </xsl:if>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:onboard-entitlement">
+    <li class="onboard-row">
+      <p>
+        <strong><xsl:value-of select="@principal"/></strong>
+        <xsl:text>: </xsl:text>
+        <xsl:value-of select="@verdict"/>
+        <xsl:if test="@reason != ''"><xsl:text>, </xsl:text><xsl:value-of select="@reason"/></xsl:if>
+      </p>
+      <p class="note">Entry <code class="iri"><xsl:value-of select="@entry"/></code></p>
+    </li>
+  </xsl:template>
+
+  <xsl:template name="layers">
+    <section class="panel layers" aria-labelledby="layers-title">
+      <h1 id="layers-title"><xsl:value-of select="@title"/></h1>
+      <xsl:apply-templates select="view:signin"/>
+      <div id="layers-banner"><xsl:apply-templates select="view:notice"/></div>
+      <xsl:if test="@me">
+        <p class="note">The door says this page reads and posts as <code class="iri"><xsl:value-of select="@me"/></code>, <xsl:value-of select="@me-kind"/>.</p>
+      </xsl:if>
+      <xsl:if test="@empty"><p class="empty"><xsl:value-of select="@empty"/></p></xsl:if>
+      <ul id="layers-list" class="layer-list">
+        <xsl:apply-templates select="view:layer-row"/>
+      </ul>
+      <p id="layers-live" class="note live" role="status" aria-live="polite"></p>
+      <p id="layers-reconnect" class="note live" role="status" aria-live="polite"></p>
+      <xsl:apply-templates select="view:watch"/>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:layer-row">
+    <li class="layer-row">
+      <h2 class="layer-name">
+        <a><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="@label"/></a>
+        <span class="note"> (<xsl:value-of select="@name"/>)</span>
+      </h2>
+      <p class="layer-facts">
+        <span>
+          <xsl:attribute name="class">unread <xsl:if test="@has-unread = 'true'">has-unread</xsl:if></xsl:attribute>
+          <xsl:value-of select="@unread"/>
+        </span>
+        <xsl:if test="@when != ''">
+          <xsl:text> · last entry </xsl:text>
+          <time><xsl:attribute name="datetime"><xsl:value-of select="@datetime"/></xsl:attribute><xsl:value-of select="@when"/></time>
+        </xsl:if>
+      </p>
+      <p class="note"><xsl:value-of select="@model"/>. <xsl:value-of select="@verbs"/></p>
+    </li>
+  </xsl:template>
+
+  <xsl:template name="layer">
+    <section class="panel layer" aria-labelledby="layer-title">
+      <p class="crumbs"><a href="/layers">Layers</a></p>
+      <h1 id="layer-title"><xsl:value-of select="@title"/></h1>
+      <xsl:apply-templates select="view:signin"/>
+      <div id="layers-banner"><xsl:apply-templates select="view:notice"/></div>
+      <xsl:if test="@model"><p class="note"><xsl:value-of select="@model"/>. <xsl:value-of select="@verbs"/></p></xsl:if>
+      <xsl:if test="@me">
+        <p class="note">The door says this page reads and posts as <code class="iri"><xsl:value-of select="@me"/></code>, <xsl:value-of select="@me-kind"/>.</p>
+      </xsl:if>
+      <xsl:if test="@no-post"><p class="note"><xsl:value-of select="@no-post"/></p></xsl:if>
+      <xsl:if test="@reading"><p class="note"><xsl:value-of select="@reading"/></p></xsl:if>
+      <xsl:apply-templates select="view:say"/>
+      <p id="layers-live" class="note live" role="status" aria-live="polite"></p>
+      <p id="layers-reconnect" class="note live" role="status" aria-live="polite"></p>
+      <!-- `@entries` is true, false (read, and empty) or pending (not read yet: the list is
+           drawn empty so the poll's entries have somewhere to land, ledger #1718). -->
+      <xsl:if test="@entries">
+        <h2 id="entries-title">Entries, newest first</h2>
+        <xsl:if test="@older-unread"><p class="note"><xsl:value-of select="@older-unread"/></p></xsl:if>
+        <xsl:if test="@entries = 'false'"><p class="empty">Nothing has been said here yet.</p></xsl:if>
+        <ol id="layer-entries" class="entries" aria-labelledby="entries-title">
+          <xsl:apply-templates select="view:slot[@name = 'entries']"/>
+        </ol>
+      </xsl:if>
+      <xsl:if test="@tuplespace">
+        <h2 id="tuples-title">Pending, newest first</h2>
+        <ol id="layer-tuples" class="entries" aria-labelledby="tuples-title">
+          <xsl:apply-templates select="view:slot[@name = 'tuples']"/>
+        </ol>
+        <h2 id="receipts-title">Recent takes, newest first</h2>
+        <ol id="layer-receipts" class="entries" aria-labelledby="receipts-title">
+          <xsl:apply-templates select="view:slot[@name = 'receipts']"/>
+        </ol>
+      </xsl:if>
+      <xsl:apply-templates select="view:watch"/>
+    </section>
+  </xsl:template>
+
+  <!-- One entry of a channel (`view:entry`) or one pending tuple (`view:tuple`): its heading is
+       a link to itself, so every entry is one Tab stop and has an address. A tuple whose offer
+       is about an item of this gonk's ledgers links to that item in its own ledger
+       (`@item-href`, built from the store's answer, never from the layer; ledger #1856). -->
+  <xsl:template match="view:entry"><xsl:call-template name="entry-card"/></xsl:template>
+  <xsl:template match="view:tuple"><xsl:call-template name="entry-card"/></xsl:template>
+
+  <xsl:template name="entry-card">
+    <li class="entry">
+      <xsl:attribute name="id"><xsl:value-of select="@anchor"/></xsl:attribute>
+      <article>
+        <xsl:attribute name="aria-labelledby"><xsl:value-of select="@anchor"/>-head</xsl:attribute>
+        <h3 class="entry-head">
+          <xsl:attribute name="id"><xsl:value-of select="@anchor"/>-head</xsl:attribute>
+          <a class="entry-link"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="@kind-label"/> from <xsl:value-of select="@who"/></a>
+          <xsl:if test="@new = 'true'"><span class="badge new"><span class="sr-only">, </span>New</span></xsl:if>
+        </h3>
+        <p class="entry-meta">
+          <time><xsl:attribute name="datetime"><xsl:value-of select="@datetime"/></xsl:attribute><xsl:value-of select="@when"/></time>
+          <xsl:text> · number </xsl:text><xsl:value-of select="@seq"/>
+          <xsl:if test="@reply-href">
+            <xsl:text> · in reply to </xsl:text>
+            <a><xsl:attribute name="href"><xsl:value-of select="@reply-href"/></xsl:attribute><xsl:value-of select="@reply-label"/></a>
+          </xsl:if>
+          <xsl:if test="@supersedes-href">
+            <xsl:text> · replaces </xsl:text>
+            <a><xsl:attribute name="href"><xsl:value-of select="@supersedes-href"/></xsl:attribute><xsl:value-of select="@supersedes-label"/></a>
+          </xsl:if>
+          <xsl:if test="@addressed-to"><xsl:text> · addressed to </xsl:text><xsl:value-of select="@addressed-to"/></xsl:if>
+          <xsl:if test="@offer"><xsl:text> · about the offer </xsl:text><code><xsl:value-of select="@offer"/></code></xsl:if>
+          <xsl:if test="@item-href"><xsl:text> · tracked here as </xsl:text><a class="entry-item"><xsl:attribute name="href"><xsl:value-of select="@item-href"/></xsl:attribute><xsl:value-of select="@item-label"/></a></xsl:if>
+        </p>
+        <xsl:if test="@title"><p class="entry-title"><xsl:value-of select="@title"/></p></xsl:if>
+        <xsl:if test="@repository or @severity">
+          <p class="entry-meta">
+            <xsl:if test="@repository">
+              <xsl:text>Repository: </xsl:text>
+              <xsl:choose>
+                <xsl:when test="@repository-href"><a><xsl:attribute name="href"><xsl:value-of select="@repository-href"/></xsl:attribute><xsl:if test="starts-with(@repository-href, 'https://github.com/')"><xsl:attribute name="target">_blank</xsl:attribute><xsl:attribute name="rel">noopener noreferrer</xsl:attribute></xsl:if><xsl:value-of select="@repository"/><xsl:if test="starts-with(@repository-href, 'https://github.com/')"><span class="sr-only"> (opens in a new tab)</span></xsl:if></a></xsl:when>
+                <xsl:otherwise><code><xsl:value-of select="@repository"/></code></xsl:otherwise>
+              </xsl:choose>
+            </xsl:if>
+            <xsl:if test="@repository and @severity"><xsl:text> · </xsl:text></xsl:if>
+            <xsl:if test="@severity"><xsl:text>Severity: </xsl:text><span class="severity"><xsl:value-of select="@severity"/></span></xsl:if>
+          </p>
+        </xsl:if>
+        <xsl:if test="@file-name">
+          <p class="entry-file">
+            <xsl:text>File </xsl:text><code><xsl:value-of select="@file-name"/></code>
+            <xsl:text>, </xsl:text><xsl:value-of select="@media-type"/>
+            <xsl:text>, </xsl:text><xsl:value-of select="@size"/>
+            <xsl:text>. </xsl:text>
+            <a>
+              <xsl:attribute name="href"><xsl:value-of select="@download-href"/></xsl:attribute>
+              <xsl:attribute name="download"><xsl:value-of select="@file-name"/></xsl:attribute>
+              <xsl:text>Download </xsl:text><xsl:value-of select="@file-name"/>
+            </a>
+            <span class="note"> (checked against its size and its digest, <code class="iri"><xsl:value-of select="@digest"/></code>, before it is sent)</span>
+          </p>
+        </xsl:if>
+        <!-- A layer entry's references link by CONTEXT (ledger #1856): `view:body/@linkify` is
+             src/render.rs::layer_refs's value, built from who wrote it and the ledgers this gonk
+             holds, never `default` by assumption and never a name from the layer. -->
+        <xsl:if test="view:body"><div class="body"><xsl:attribute name="data-linkify"><xsl:value-of select="view:body/@linkify"/></xsl:attribute><xsl:value-of select="view:body"/></div></xsl:if>
+        <xsl:if test="@answer-href">
+          <p class="entry-actions"><a><xsl:attribute name="href"><xsl:value-of select="@answer-href"/></xsl:attribute>Reply<span class="sr-only"> to the <xsl:value-of select="@kind-label"/> from <xsl:value-of select="@who"/>, number <xsl:value-of select="@seq"/></span></a></p>
+        </xsl:if>
+      </article>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:receipt">
+    <li class="entry receipt">
+      <p>
+        <strong><xsl:value-of select="@taker"/></strong>
+        <xsl:text> took </xsl:text><xsl:value-of select="@what"/>
+        <xsl:text>, </xsl:text>
+        <time><xsl:attribute name="datetime"><xsl:value-of select="@datetime"/></xsl:attribute><xsl:value-of select="@when"/></time>
+        <xsl:text> (number </xsl:text><xsl:value-of select="@seq"/><xsl:text>)</xsl:text>
+        <xsl:if test="@item-href"><xsl:text> · tracked here as </xsl:text><a class="entry-item"><xsl:attribute name="href"><xsl:value-of select="@item-href"/></xsl:attribute><xsl:value-of select="@item-label"/></a></xsl:if>
+        <xsl:if test="@new = 'true'"><span class="badge new"><span class="sr-only">, </span>New</span></xsl:if>
+      </p>
+    </li>
+  </xsl:template>
+
+  <!-- The say form: a message or a question, and the entry it answers when one was chosen.
+       It posts with htmx and is replaced by the answer: a fresh form, and the flash. -->
+  <xsl:template match="view:say">
+    <form id="say" class="say panel" method="post" hx-target="this" hx-swap="outerHTML" aria-labelledby="say-title">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+      <h2 id="say-title">Post to <xsl:value-of select="@label"/></h2>
+      <fieldset class="row kind">
+        <legend>Kind</legend>
+        <label><input type="radio" name="kind" value="message" checked="checked"/> Message</label>
+        <label><input type="radio" name="kind" value="question"/> Question</label>
+      </fieldset>
+      <xsl:if test="@reply-to">
+        <input type="hidden" name="reply_to"><xsl:attribute name="value"><xsl:value-of select="@reply-to"/></xsl:attribute></input>
+        <p class="note">
+          <xsl:text>Replying to </xsl:text>
+          <a><xsl:attribute name="href"><xsl:value-of select="@reply-href"/></xsl:attribute><xsl:value-of select="@reply-label"/></a>
+          <xsl:text>. </xsl:text>
+          <a><xsl:attribute name="href"><xsl:value-of select="@cancel-href"/></xsl:attribute>Do not reply to it</a>
+        </p>
+      </xsl:if>
+      <label for="say-body">Text (Markdown is shown as written)</label>
+      <textarea id="say-body" name="body" rows="4" required="required"></textarea>
+      <p class="row"><button type="submit">Post</button></p>
+    </form>
+  </xsl:template>
+
+  <!-- A post's answer: a fresh form in place of the one that posted, and the flash. -->
+  <xsl:template name="layers-say">
+    <xsl:apply-templates select="view:say"/>
+    <div id="flash" hx-swap-oob="innerHTML">
+      <p class="flash ok" role="status"><xsl:value-of select="@flash"/></p>
+    </div>
+  </xsl:template>
+
+  <!-- The poll's answer: the next watcher in place of this one, and what changed, out of
+       band. Only parts an open page has are sent: a task layer's lists, a channel's new
+       entries (before the first), the overview's rows. -->
+  <xsl:template name="layers-wait">
+    <xsl:apply-templates select="view:watch"/>
+    <xsl:if test="@banner">
+      <div id="layers-banner" hx-swap-oob="innerHTML"><xsl:apply-templates select="view:notice"/></div>
+    </xsl:if>
+    <xsl:if test="@announce">
+      <p id="layers-live" hx-swap-oob="innerHTML"><xsl:value-of select="@announce"/></p>
+    </xsl:if>
+    <xsl:if test="@entries">
+      <ol hx-swap-oob="afterbegin:#layer-entries"><xsl:apply-templates select="view:slot[@name = 'entries']"/></ol>
+    </xsl:if>
+    <xsl:if test="@tuplespace">
+      <ol id="layer-tuples" class="entries" aria-labelledby="tuples-title" hx-swap-oob="true"><xsl:apply-templates select="view:slot[@name = 'tuples']"/></ol>
+      <ol id="layer-receipts" class="entries" aria-labelledby="receipts-title" hx-swap-oob="true"><xsl:apply-templates select="view:slot[@name = 'receipts']"/></ol>
+    </xsl:if>
+    <xsl:if test="@rows">
+      <ul id="layers-list" class="layer-list" hx-swap-oob="true"><xsl:apply-templates select="view:layer-row"/></ul>
+    </xsl:if>
+  </xsl:template>
+
+  <!-- ============================================================ views -->
+
+  <!-- /views (ledger #2099, src/views_page.rs): the named views IN FORCE, the views space's
+       status, and for a caller holding the declaration's write token one form per view and
+       one to add a view. Every form is a plain POST to /views/save answered with this page and
+       the verdict at its top, so it works the same without a script. A caller without the
+       token gets no forms at all, not disabled ones. -->
+  <xsl:template name="views">
+    <section class="panel views" aria-labelledby="views-title">
+      <h1 id="views-title"><xsl:value-of select="@title"/></h1>
+      <xsl:apply-templates select="view:flash" mode="announce"/>
+      <p class="note"><xsl:value-of select="@intro"/></p>
+      <xsl:apply-templates select="view:views-status"/>
+      <xsl:apply-templates select="view:notice"/>
+      <h2 id="views-list-title">Views in force</h2>
+      <xsl:if test="@empty"><p class="empty"><xsl:value-of select="@empty"/></p></xsl:if>
+      <xsl:if test="@listed = 'true'">
+        <div class="table-wrap">
+          <table aria-labelledby="views-list-title">
+            <thead>
+              <tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Target</th><th scope="col">Resolves at</th></tr>
+            </thead>
+            <tbody>
+              <xsl:apply-templates select="view:view-rule"/>
+            </tbody>
+          </table>
+        </div>
+      </xsl:if>
+      <xsl:if test="@editable = 'true'">
+        <xsl:if test="@listed = 'true'">
+          <h2 id="views-edit-title">Change or remove a view</h2>
+          <xsl:apply-templates select="view:view-rule" mode="edit"/>
+        </xsl:if>
+        <xsl:apply-templates select="view:views-add"/>
+      </xsl:if>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:views-status">
+    <h2 id="views-status-title">Status</h2>
+    <dl class="meta" aria-labelledby="views-status-title">
+      <dt>In force</dt>
+      <dd><xsl:value-of select="@in-force"/><xsl:if test="@when"><xsl:text>, bound </xsl:text><xsl:value-of select="@when"/></xsl:if></dd>
+      <dt>Last refusal</dt>
+      <dd><xsl:value-of select="@refusal"/><xsl:if test="@refused-at"><xsl:text> (at </xsl:text><code class="iri"><xsl:value-of select="@refused-at"/></code>)</xsl:if></dd>
+      <dt>Stored</dt>
+      <dd><xsl:value-of select="@stored"/></dd>
+    </dl>
+  </xsl:template>
+
+  <xsl:template match="view:view-rule">
+    <tr>
+      <th scope="row" class="iri">
+        <xsl:choose>
+          <xsl:when test="@href"><a><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="@name"/></a></xsl:when>
+          <xsl:otherwise><xsl:value-of select="@name"/></xsl:otherwise>
+        </xsl:choose>
+      </th>
+      <td><xsl:value-of select="@kind"/></td>
+      <td class="iri"><xsl:value-of select="@target"/></td>
+      <td><xsl:value-of select="@at"/></td>
+    </tr>
+  </xsl:template>
+
+  <!-- One view's form. Its legend names the view, and both buttons are described by it
+       (aria-describedby), so a list of buttons read alone still says which view each is for.
+       Enter in a field presses the first button, Save. -->
+  <xsl:template match="view:view-rule" mode="edit">
+    <form class="panel view-form" method="post">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <fieldset>
+        <legend><xsl:attribute name="id">view-<xsl:value-of select="@index"/></xsl:attribute><xsl:value-of select="@name"/></legend>
+        <input type="hidden" name="base"><xsl:attribute name="value"><xsl:value-of select="@base"/></xsl:attribute></input>
+        <input type="hidden" name="was"><xsl:attribute name="value"><xsl:value-of select="@name"/></xsl:attribute></input>
+        <input type="hidden" name="was-kind"><xsl:attribute name="value"><xsl:value-of select="@kind"/></xsl:attribute></input>
+        <div class="grid">
+          <label>Name, after urn:iki:gonk:view:
+            <input type="text" name="name" required="required" autocomplete="off" spellcheck="false"><xsl:attribute name="value"><xsl:value-of select="@local"/></xsl:attribute></input>
+          </label>
+          <label>Target
+            <input type="text" name="target" required="required" autocomplete="off" spellcheck="false"><xsl:attribute name="value"><xsl:value-of select="@target"/></xsl:attribute></input>
+          </label>
+        </div>
+        <fieldset class="row kind">
+          <legend>Kind</legend>
+          <label><input type="radio" name="kind" value="exact"><xsl:if test="@kind = 'exact'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if></input> Exact: this one name</label>
+          <label><input type="radio" name="kind" value="prefix"><xsl:if test="@kind = 'prefix'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if></input> Prefix: every name that starts with it</label>
+        </fieldset>
+        <p class="row">
+          <button type="submit" name="op" value="change"><xsl:attribute name="aria-describedby">view-<xsl:value-of select="@index"/></xsl:attribute>Save</button>
+          <button type="submit" name="op" value="remove" class="quiet"><xsl:attribute name="aria-describedby">view-<xsl:value-of select="@index"/></xsl:attribute>Remove</button>
+        </p>
+      </fieldset>
+    </form>
+  </xsl:template>
+
+  <xsl:template match="view:views-add">
+    <form class="panel view-form" method="post" aria-labelledby="views-add-title">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <h2 id="views-add-title">Add a view</h2>
+      <input type="hidden" name="op" value="add"/>
+      <input type="hidden" name="base"><xsl:attribute name="value"><xsl:value-of select="@base"/></xsl:attribute></input>
+      <div class="grid">
+        <label>Name, after <xsl:value-of select="@prefix"/>
+          <input type="text" name="name" required="required" autocomplete="off" spellcheck="false"/>
+        </label>
+        <label>Target
+          <input type="text" name="target" required="required" autocomplete="off" spellcheck="false"/>
+        </label>
+      </div>
+      <fieldset class="row kind">
+        <legend>Kind</legend>
+        <label><input type="radio" name="kind" value="exact" checked="checked"/> Exact: this one name</label>
+        <label><input type="radio" name="kind" value="prefix"/> Prefix: every name that starts with it</label>
+      </fieldset>
+      <p class="row"><button type="submit">Add view</button></p>
+    </form>
+  </xsl:template>
+
+  <!-- ======================================================== browse shell -->
+
+  <!--
+    The region ikigai-browse's own HTML faces render into. Everything after the first
+    paint is THEIR markup and THEIR affordances (hx-get/hx-post at the /k/ adapter), so
+    there is nothing here to keep in step with them — which is the point.
+  -->
+  <!--
+    The roots this caller may browse. One link each, into that root's tree; the rest of
+    the browse family is reached from there. ⚠ A root the caller cannot read is not in
+    this list at all — the page is built from `k::readable_roots`, not from the config.
+  -->
+  <!-- /l (ledger #1888, src/web.rs::LedgersIndex): every ledger the caller may read, in the
+       header menu's order, with the counts the ledger itself answers. A count the caller may
+       not read says so in words rather than showing a number it does not have. -->
+  <xsl:template name="ledgers">
+    <section class="panel ledgers-index" aria-labelledby="ledgers-title">
+      <h1 id="ledgers-title"><xsl:value-of select="@title"/></h1>
+      <p class="note"><xsl:value-of select="@count"/></p>
+      <div class="table-wrap">
+        <table class="ledger-table">
+          <thead>
+            <tr><th scope="col">Ledger</th><th scope="col">Open</th><th scope="col">Total</th></tr>
+          </thead>
+          <tbody>
+            <xsl:apply-templates select="view:ledger-row"/>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:ledger-row">
+    <tr>
+      <th scope="row">
+        <a><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="@name"/></a>
+      </th>
+      <td class="num">
+        <xsl:choose>
+          <xsl:when test="@open"><xsl:value-of select="@open"/></xsl:when>
+          <xsl:otherwise>not counted</xsl:otherwise>
+        </xsl:choose>
+      </td>
+      <td class="num">
+        <xsl:choose>
+          <xsl:when test="@total"><xsl:value-of select="@total"/></xsl:when>
+          <xsl:otherwise>not counted</xsl:otherwise>
+        </xsl:choose>
+      </td>
+    </tr>
+  </xsl:template>
+
+  <xsl:template name="roots">
+    <section class="panel roots" aria-labelledby="roots-title">
+      <h1 id="roots-title"><xsl:value-of select="@title"/></h1>
+      <xsl:if test="@message != ''">
+        <p class="note"><xsl:value-of select="@message"/></p>
+      </xsl:if>
+      <xsl:apply-templates select="view:signin"/>
+      <ul class="root-list">
+        <xsl:apply-templates select="view:root"/>
+      </ul>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:root">
+    <li>
+      <a class="root-link">
+        <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:value-of select="@name"/>
+      </a>
+      <span class="note"><xsl:value-of select="@iri"/></span>
+    </li>
+  </xsl:template>
+
+  <xsl:template name="browse">
+    <section class="browse-shell" aria-label="Browse">
+      <!-- The posture the layout sheet keys on, when the door knows this caller cannot
+           write annotations. Unanchored in that sheet, so this ancestor will do. -->
+      <xsl:if test="@posture">
+        <xsl:attribute name="data-browse-posture"><xsl:value-of select="@posture"/></xsl:attribute>
+      </xsl:if>
+      <xsl:choose>
+        <xsl:when test="@start-url">
+          <xsl:call-template name="github"/>
+          <div id="browse" class="browse" hx-trigger="load" hx-swap="innerHTML">
+            <xsl:attribute name="hx-get"><xsl:value-of select="@start-url"/></xsl:attribute>
+            <p class="note"><xsl:value-of select="@message"/></p>
+          </div>
+        </xsl:when>
+        <xsl:otherwise>
+          <div id="browse" class="browse panel">
+            <h1><xsl:value-of select="@title"/></h1>
+            <xsl:if test="@message">
+              <p class="note"><xsl:value-of select="@message"/></p>
+            </xsl:if>
+            <xsl:apply-templates select="view:signin"/>
+          </div>
+        </xsl:otherwise>
+      </xsl:choose>
+    </section>
+  </xsl:template>
+
+
+  <!--
+    "On GitHub" (ledger #1907, src/github.rs): the same directory or file on GitHub, above
+    the region. The shell draws it for the view it opens on; web/gonk.js swaps in this same
+    template's fragment (urn:iki:gonk:github:…, as=text/html) whenever the region moves to
+    another view, and carries a file view's #L10 or #L10-L20 onto the link from data-base.
+    Like every link to GitHub here, it opens in a new tab and says so. With no link the paragraph is
+    still drawn, hidden, so the script has one place to swap into.
+  -->
+  <xsl:template name="github">
+    <xsl:choose>
+      <xsl:when test="view:github"><xsl:apply-templates select="view:github"/></xsl:when>
+      <xsl:otherwise><p id="github" class="github" hidden="hidden"></p></xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
+  <xsl:template match="view:github">
+    <p id="github" class="github">
+      <a class="github-link">
+        <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:attribute name="data-base"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:if test="@kind = 'file'">
+          <xsl:attribute name="data-lines">true</xsl:attribute>
+        </xsl:if>
+        <!-- A new tab, said aloud, for the reasons render::NEW_TAB_ATTRS and NEW_TAB_NOTE give. -->
+        <xsl:attribute name="target">_blank</xsl:attribute>
+        <xsl:attribute name="rel">noopener noreferrer</xsl:attribute>
+        <xsl:text>On GitHub</xsl:text>
+        <span class="sr-only"> (opens in a new tab)</span>
+      </a>
+      <xsl:if test="@note">
+        <span class="note github-note"><xsl:value-of select="@note"/></span>
+      </xsl:if>
+    </p>
+  </xsl:template>
+
+  <!-- ==================================================== the review queue -->
+
+  <!--
+    Ledger #444. The rows come from `urn:repo:{root}:findings` in the order that resource
+    returns them (triage order: severity rank, then path, then position) and are NOT
+    re-sorted here. The severity menu, the decision buttons and this state nav are all
+    rendered from `view:*` elements the Rust side built out of the resources' own
+    `one_of` declarations — there is no severity word, decision word or state word written
+    anywhere in this stylesheet, and that is deliberate (src/queue.rs).
+  -->
+  <xsl:template name="queue">
+    <section id="queue" class="queue">
+      <!-- ★ The one page in gonk whose content changes with nobody touching it, and until
+           ledger #469 the one page that never refreshed itself.
+
+           It has NO clock of its own. `@news` is the event the header badge's existing poll
+           raises when the queue's revision changes (web/gonk.js relays it), so this list is
+           re-fetched when there is something to show and never on a timer — one cadence on
+           this server, and it is src/queue.rs::BADGE_EVERY. `@refresh-url` keeps the filter
+           AND the row bound the human is looking at. -->
+      <xsl:if test="@refresh-url">
+        <xsl:attribute name="hx-get"><xsl:value-of select="@refresh-url"/></xsl:attribute>
+        <xsl:attribute name="hx-trigger"><xsl:value-of select="@news"/></xsl:attribute>
+        <xsl:attribute name="hx-target">#queue</xsl:attribute>
+        <xsl:attribute name="hx-swap">outerHTML</xsl:attribute>
+      </xsl:if>
+      <header class="queue-head">
+        <h1><xsl:value-of select="@title"/></h1>
+        <p class="note"><xsl:value-of select="@message"/></p>
+        <nav class="filters" aria-label="Pipeline state">
+          <xsl:apply-templates select="view:state"/>
+        </nav>
+        <!-- The scope (ledger #496): the serious set the page asks about, or everything. The
+             serious words in the label are the CONFIGURATION's, passed through from Rust —
+             this file still spells no severity. -->
+        <xsl:if test="view:scope">
+          <nav class="filters scope" aria-label="Severity">
+            <xsl:apply-templates select="view:scope"/>
+          </nav>
+        </xsl:if>
+        <!-- The batch view (ledger #506): one entry per group kind, the words the findings
+             contract's own `group` set declares, in its order — this file spells none. -->
+        <xsl:if test="view:kind">
+          <nav class="filters kinds" aria-label="Decide in batches">
+            <span class="filters-label">decide in batches:</span>
+            <xsl:apply-templates select="view:kind"/>
+          </nav>
+        </xsl:if>
+        <!-- The walk (ledger #653): the unconfirmed declines that still steer, offered when
+             the findings contract declares it. -->
+        <xsl:if test="view:walk">
+          <nav class="filters walk" aria-label="Revisit declines">
+            <span class="filters-label">revisit:</span>
+            <xsl:apply-templates select="view:walk"/>
+          </nav>
+        </xsl:if>
+      </header>
+      <xsl:apply-templates select="view:intray"/>
+      <xsl:apply-templates select="view:backfill"/>
+      <xsl:apply-templates select="view:flash"/>
+      <!-- ★ The same sentence, ANNOUNCED (ledger #657): a swapped-in paragraph is seen and
+           not heard, so a fragment also carries it out of band into #flash, the polite live
+           region every page already has. `innerHTML` keeps that region the element the
+           screen reader is already watching. The wrapper is hidden so that, with scripting
+           off and nothing to move it, the sentence is not shown twice. -->
+      <xsl:if test="view:flash and @full = 'false'">
+        <div id="flash" hx-swap-oob="innerHTML" hidden="hidden">
+          <xsl:apply-templates select="view:flash" mode="announce"/>
+        </div>
+      </xsl:if>
+      <xsl:if test="@posture-text">
+        <p class="note posture"><xsl:value-of select="@posture-text"/></p>
+      </xsl:if>
+      <xsl:apply-templates select="view:denied"/>
+      <xsl:apply-templates select="view:hidden"/>
+      <xsl:apply-templates select="view:order"/>
+      <xsl:apply-templates select="view:folded"/>
+      <xsl:apply-templates select="view:signin"/>
+      <xsl:if test="@empty = 'true'">
+        <p class="empty"><xsl:value-of select="@empty-text"/></p>
+      </xsl:if>
+      <xsl:if test="@count-text">
+        <p class="count">
+          <span class="how-many"><xsl:value-of select="@count-text"/></span>
+          <xsl:if test="@more = 'true'">
+            <a class="more" hx-target="#queue" hx-swap="outerHTML">
+              <xsl:attribute name="href"><xsl:value-of select="@more-url"/></xsl:attribute>
+              <xsl:attribute name="hx-get"><xsl:value-of select="@more-rows-url"/></xsl:attribute>
+              <xsl:attribute name="hx-push-url"><xsl:value-of select="@more-url"/></xsl:attribute>
+              <xsl:value-of select="@more-label"/>
+            </a>
+          </xsl:if>
+        </p>
+      </xsl:if>
+      <!-- ⚠ A refresh that was HELD BACK, because a human had a decision open on this list
+           (web/gonk.js decides; the sentence is the server's). Hidden until that happens,
+           and `role="status"` so it is announced rather than only seen. -->
+      <xsl:if test="@stale-text">
+        <p class="stale" id="queue-stale" hidden="hidden" role="status"><xsl:value-of select="@stale-text"/></p>
+      </xsl:if>
+      <ol class="findings">
+        <xsl:apply-templates select="view:finding"/>
+        <xsl:apply-templates select="view:slot[@name = 'rows']"/>
+      </ol>
+      <xsl:apply-templates select="view:no-form"/>
+      <xsl:apply-templates select="view:batch"/>
+      <xsl:apply-templates select="view:slot[@name = 'batches']"/>
+      <xsl:apply-templates select="view:slot[@name = 'walk']"/>
+    </section>
+  </xsl:template>
+
+  <xsl:template match="view:walk">
+    <a hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:attribute name="hx-get"><xsl:value-of select="@rows-url"/></xsl:attribute>
+      <xsl:attribute name="hx-push-url"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">true</xsl:attribute></xsl:if>
+      <xsl:value-of select="@label"/>
+    </a>
+  </xsl:template>
+
+  <!-- ★ The walk (ledger #653): one burst or batch of unconfirmed declines, oldest first. The
+       grouping, the order and which declines are here are ikigai-browse's answer
+       (`summary=unconfirmed`); src/walk.rs only joins one burst seen from two roots. -->
+  <xsl:template match="view:walk-group">
+    <section class="group walk-group">
+      <h2 class="group-label"><xsl:value-of select="@label"/></h2>
+      <p class="note"><xsl:value-of select="@count-text"/></p>
+      <ol class="findings">
+        <xsl:apply-templates select="view:decline"/>
+      </ol>
+    </section>
+  </xsl:template>
+
+  <!-- One unconfirmed decline: the finding, the decision on record (which says it is
+       unconfirmed, in words), what it still marks, and the revise forms. -->
+  <xsl:template match="view:decline">
+    <li class="finding declined">
+      <xsl:attribute name="id">decline-<xsl:value-of select="@id"/></xsl:attribute>
+      <div class="finding-head">
+        <span>
+          <xsl:attribute name="class">badge sev <xsl:value-of select="@severity"/></xsl:attribute>
+          <xsl:value-of select="@severity-label"/>
+        </span>
+        <xsl:choose>
+          <xsl:when test="@browse-href">
+            <a class="finding-where">
+              <xsl:attribute name="href"><xsl:value-of select="@browse-href"/></xsl:attribute>
+              <xsl:value-of select="@repo"/><xsl:text>/</xsl:text><xsl:value-of select="@where"/>
+            </a>
+          </xsl:when>
+          <xsl:otherwise>
+            <span class="finding-where"><xsl:value-of select="@repo"/><xsl:text>/</xsl:text><xsl:value-of select="@where"/></span>
+          </xsl:otherwise>
+        </xsl:choose>
+        <a class="finding-link">
+          <xsl:attribute name="href"><xsl:value-of select="@finding-href"/></xsl:attribute>
+          <xsl:text>the finding</xsl:text>
+        </a>
+      </div>
+      <p class="finding-body" data-linkify="default"><xsl:value-of select="view:body"/></p>
+      <xsl:if test="view:quote">
+        <pre class="finding-quote"><xsl:value-of select="view:quote"/></pre>
+      </xsl:if>
+      <p class="note finding-prov"><xsl:value-of select="@provenance"/></p>
+      <xsl:apply-templates select="view:decision"/>
+      <xsl:apply-templates select="view:steers"/>
+      <xsl:apply-templates select="view:revise"/>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:steers">
+    <p class="note steers">
+      <xsl:value-of select="@label"/>
+      <xsl:for-each select="view:pending">
+        <xsl:value-of select="' '"/>
+        <a class="finding-link"><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="."/></a>
+      </xsl:for-each>
+    </p>
+  </xsl:template>
+
+  <!-- ★ Revising a decline: TWO forms, because the Sink refuses a rating beside a withdrawal
+       and a severity menu always submits a value. The first carries the answers (confirm,
+       reverse) with a rating, a word and a note; the second the revision-only words with a
+       note. Both name the decision they revise (`revises`) and post to the Queue's own
+       adapter, which stamps `made=single`; `_summary` keeps the re-render on the walk. The
+       words and their order arrive from src/walk.rs, which reads them from the contract. -->
+  <xsl:template match="view:revise">
+    <xsl:if test="@problem">
+      <p class="problem">
+        <xsl:attribute name="id">problem-<xsl:value-of select="@id"/></xsl:attribute>
+        <xsl:value-of select="@problem"/>
+      </p>
+    </xsl:if>
+    <form class="decide revise" method="post" hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:if test="@refused = 'true'"><xsl:attribute name="data-refused">true</xsl:attribute></xsl:if>
+      <xsl:call-template name="revise-hidden"/>
+      <label class="decide-severity">
+        <xsl:text>Severity</xsl:text>
+        <select name="severity">
+          <xsl:if test="@required = 'true'"><xsl:attribute name="required">required</xsl:attribute></xsl:if>
+          <xsl:if test="@problem">
+            <xsl:attribute name="autofocus">autofocus</xsl:attribute>
+            <xsl:attribute name="aria-describedby">problem-<xsl:value-of select="@id"/></xsl:attribute>
+          </xsl:if>
+          <xsl:apply-templates select="view:severity-option"/>
+        </select>
+      </label>
+      <xsl:if test="view:reason-option">
+        <label class="decide-severity">
+          <xsl:text>Reason word</xsl:text>
+          <select name="reason">
+            <xsl:apply-templates select="view:reason-option"/>
+          </select>
+        </label>
+      </xsl:if>
+      <label class="decide-reason">
+        <xsl:text>Note — kept with the revision</xsl:text>
+        <textarea name="content" rows="2"><xsl:value-of select="view:note"/></textarea>
+      </label>
+      <div class="decide-buttons">
+        <xsl:for-each select="view:answer-option">
+          <button type="submit" name="decision">
+            <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+            <xsl:attribute name="class">decide-button <xsl:value-of select="@value"/></xsl:attribute>
+            <xsl:value-of select="@label"/>
+          </button>
+        </xsl:for-each>
+      </div>
+    </form>
+    <xsl:if test="view:withdraw-option">
+      <form class="decide withdraw" method="post" hx-target="#queue" hx-swap="outerHTML">
+        <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+        <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+        <xsl:call-template name="revise-hidden"/>
+        <p class="note"><xsl:value-of select="@withdraw-text"/></p>
+        <label class="decide-reason">
+          <xsl:text>Note — why withdraw it (optional)</xsl:text>
+          <textarea name="content" rows="1"></textarea>
+        </label>
+        <div class="decide-buttons">
+          <xsl:for-each select="view:withdraw-option">
+            <button type="submit" name="decision">
+              <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+              <xsl:attribute name="class">decide-button <xsl:value-of select="@value"/></xsl:attribute>
+              <xsl:value-of select="@label"/>
+            </button>
+          </xsl:for-each>
+        </div>
+      </form>
+    </xsl:if>
+  </xsl:template>
+
+  <!-- ★ The verdict filter's mode, carried through a decision's re-render (ledger #704). The
+       field's NAME arrives from src/verdict.rs (`@shown-field`), so this file spells no
+       verdict word; an empty value means the default. -->
+  <xsl:template name="shown-field">
+    <xsl:if test="@shown-field">
+      <input type="hidden">
+        <xsl:attribute name="name"><xsl:value-of select="@shown-field"/></xsl:attribute>
+        <xsl:attribute name="value"><xsl:value-of select="@shown-value"/></xsl:attribute>
+      </input>
+    </xsl:if>
+  </xsl:template>
+
+  <xsl:template name="revise-hidden">
+    <input type="hidden" name="id"><xsl:attribute name="value"><xsl:value-of select="@id"/></xsl:attribute></input>
+    <input type="hidden" name="revises"><xsl:attribute name="value"><xsl:value-of select="@revises"/></xsl:attribute></input>
+    <input type="hidden" name="_repo"><xsl:attribute name="value"><xsl:value-of select="@repo"/></xsl:attribute></input>
+    <input type="hidden" name="_summary"><xsl:attribute name="value"><xsl:value-of select="@summary"/></xsl:attribute></input>
+  </xsl:template>
+
+  <xsl:template match="view:kind">
+    <a hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:attribute name="hx-get"><xsl:value-of select="@rows-url"/></xsl:attribute>
+      <xsl:attribute name="hx-push-url"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">true</xsl:attribute></xsl:if>
+      <xsl:value-of select="@name"/>
+    </a>
+  </xsl:template>
+
+  <!-- A group that repeated a later kind's proposal, said rather than silently dropped. -->
+  <xsl:template match="view:folded">
+    <p class="note folded"><xsl:value-of select="."/></p>
+  </xsl:template>
+
+  <!-- ★ One batch: a form over one proposed group — or, in the twin-carrying view, over every
+       group at once, each member with its own twin's word. The members are SHOWN and each
+       carries its own box; nothing is decided until the button, and only ticked boxes are
+       sent. ⚠ There is no publish here, and no decision field at all: the adapter declines,
+       and refuses any other decision by name. -->
+  <!-- ★ The FORM carries the htmx post (ledger #657), not the button: htmx validates only a
+       request whose element is a form, so a post on the button skipped every `required`
+       here, and the browser's own check — which names the control and focuses it — never
+       ran. `_key` says which form this was, so a refusal is drawn back into this one, and
+       `data-refused` marks a form drawn back that way: it is a decision in progress, which
+       web/gonk.js will not let a news refresh replace. -->
+  <xsl:template match="view:batch">
+    <form class="batch" method="post" hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:attribute name="data-key"><xsl:value-of select="@key"/></xsl:attribute>
+      <xsl:if test="@refused = 'true'"><xsl:attribute name="data-refused">true</xsl:attribute></xsl:if>
+      <input type="hidden" name="_key"><xsl:attribute name="value"><xsl:value-of select="@key"/></xsl:attribute></input>
+      <input type="hidden" name="_group"><xsl:attribute name="value"><xsl:value-of select="@group"/></xsl:attribute></input>
+      <input type="hidden" name="_repo"><xsl:attribute name="value"><xsl:value-of select="@repo"/></xsl:attribute></input>
+      <input type="hidden" name="_severity"><xsl:attribute name="value"><xsl:value-of select="@scope"/></xsl:attribute></input>
+      <xsl:call-template name="shown-field"/>
+      <xsl:apply-templates select="view:group"/>
+      <xsl:apply-templates select="view:slot[@name = 'groups']"/>
+      <xsl:if test="@decide = 'true'">
+        <div class="batch-decide">
+          <!-- The batch's one word: REQUIRED on a group form, where it is every ticked
+               member's reason; OPTIONAL in the twin-carrying form, where it is the fallback
+               for a member whose twin had no word (ledger #508) and a member's own picker
+               wins. The label, with the count, is the server's. -->
+          <xsl:if test="view:reason-option">
+            <label class="batch-word">
+              <xsl:value-of select="@word-label"/>
+              <select name="reason">
+                <xsl:if test="@word-required = 'true'"><xsl:attribute name="required">required</xsl:attribute></xsl:if>
+                <!-- A refused form whose members take THIS word: the control that fixes
+                     them, so it takes the focus and says it is the problem. -->
+                <xsl:if test="@word-autofocus = 'true'">
+                  <xsl:attribute name="autofocus">autofocus</xsl:attribute>
+                  <xsl:attribute name="aria-invalid">true</xsl:attribute>
+                </xsl:if>
+                <xsl:apply-templates select="view:reason-option"/>
+              </select>
+            </label>
+          </xsl:if>
+          <button type="submit">
+            <xsl:attribute name="class"><xsl:value-of select="@button-class"/></xsl:attribute>
+            <xsl:value-of select="@button-label"/>
+          </button>
+        </div>
+      </xsl:if>
+    </form>
+  </xsl:template>
+
+  <xsl:template match="view:group">
+    <section class="group">
+      <h2 class="group-label">
+        <xsl:choose>
+          <xsl:when test="@browse-href">
+            <a><xsl:attribute name="href"><xsl:value-of select="@browse-href"/></xsl:attribute><xsl:value-of select="@label"/></a>
+          </xsl:when>
+          <xsl:otherwise><xsl:value-of select="@label"/></xsl:otherwise>
+        </xsl:choose>
+      </h2>
+      <!-- A target-only group's suggested word (ledger #508): SHOWN here, never pre-selected
+           in the picker below — its members start unticked, and the person ticks what they
+           have read. -->
+      <xsl:if test="@suggested-label">
+        <p class="note suggested-word"><xsl:value-of select="@suggested-label"/></p>
+      </xsl:if>
+      <!-- The label above is browse's and counts every severity; this is what the serious
+           scope left out of THIS group, so the two numbers agree. -->
+      <xsl:if test="@left-out">
+        <p class="note left-out"><xsl:value-of select="@left-out"/></p>
+      </xsl:if>
+      <!-- What the verdict filter left out of THIS group (ledger #704), said rather than
+           silently subtracted from browse's label. -->
+      <xsl:if test="@judged-out">
+        <p class="note left-out"><xsl:value-of select="@judged-out"/></p>
+      </xsl:if>
+      <xsl:apply-templates select="view:twin"/>
+      <ol class="findings group-members">
+        <xsl:apply-templates select="view:kept"/>
+        <xsl:apply-templates select="view:member"/>
+      </ol>
+    </section>
+  </xsl:template>
+
+  <!-- The declined twin's decision line: what a human already said about this claim. -->
+  <xsl:template match="view:twin">
+    <p class="prior-decision twin">
+      <xsl:text>the like claim on this line was </xsl:text><xsl:value-of select="@outcome"/>
+      <xsl:if test="@reason"><xsl:text> (</xsl:text><span class="reason-word"><xsl:value-of select="@reason"/></span><xsl:text>)</xsl:text></xsl:if>
+      <xsl:text> as </xsl:text><xsl:value-of select="@severity"/>
+      <xsl:text> · </xsl:text><xsl:value-of select="@at"/>
+      <xsl:if test="view:note"><xsl:text>: </xsl:text><span class="prior-note"><xsl:value-of select="view:note"/></span></xsl:if>
+      <xsl:text> · </xsl:text><span class="prior-twin"><xsl:value-of select="@twin-id"/></span>
+      <xsl:call-template name="unconfirmed"/>
+    </p>
+  </xsl:template>
+
+  <!-- ★ An UNCONFIRMED decline (ledger #653), said in words — never by a color alone — with
+       the link to the walk where it can be confirmed, withdrawn or reversed. -->
+  <xsl:template name="unconfirmed">
+    <xsl:if test="@unconfirmed">
+      <xsl:text> · </xsl:text>
+      <span class="unconfirmed"><xsl:value-of select="@unconfirmed"/></span>
+      <xsl:if test="@walk-href">
+        <xsl:text> — </xsl:text>
+        <a class="walk-link"><xsl:attribute name="href"><xsl:value-of select="@walk-href"/></xsl:attribute><xsl:value-of select="@walk-label"/></a>
+      </xsl:if>
+    </xsl:if>
+  </xsl:template>
+
+  <!-- The row a group proposes to KEEP (the oldest of reworded repeats on one line): shown
+       above the members, unticked and locked, so the person sees what survives the batch. -->
+  <xsl:template match="view:kept">
+    <li class="finding member kept">
+      <label class="member-tick">
+        <input type="checkbox" disabled="disabled"/>
+        <span class="badge final">kept</span>
+      </label>
+      <xsl:call-template name="member-card"/>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:member">
+    <li>
+      <xsl:attribute name="class">finding member<xsl:if test="@problem"> offending</xsl:if></xsl:attribute>
+      <label class="member-tick">
+        <!-- Ticked at first only beside EVIDENCE (a twin or a kept row — ledger #508); a
+             box the Sink would refuse (an unrated finding) is locked. Both are the server's
+             call: `ticked` and `tickable` arrive on the element. -->
+        <input type="checkbox" name="member">
+          <xsl:attribute name="value"><xsl:value-of select="@id"/></xsl:attribute>
+          <xsl:if test="@ticked = 'true'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if>
+          <xsl:if test="@tickable != 'true'"><xsl:attribute name="disabled">disabled</xsl:attribute></xsl:if>
+          <xsl:attribute name="aria-label">include <xsl:value-of select="@where"/> in this batch</xsl:attribute>
+        </input>
+      </label>
+      <!-- The group this member was proposed in, for the door's `batch=` stamp (ledger #653):
+           a twin-carrying form holds many groups, so the form's own key cannot say it. -->
+      <xsl:if test="@tickable = 'true' and @group-key != ''">
+        <input type="hidden">
+          <xsl:attribute name="name">key:<xsl:value-of select="@id"/></xsl:attribute>
+          <xsl:attribute name="value"><xsl:value-of select="@group-key"/></xsl:attribute>
+        </input>
+      </xsl:if>
+      <xsl:call-template name="member-card"/>
+      <!-- ★ Why a member with a twin starts UNTICKED (ledger #653): the decline it repeats is
+           unconfirmed, so it is no evidence. Said in words, with the way to revisit it. -->
+      <xsl:if test="@unticked-why">
+        <p class="note unticked-why">
+          <xsl:value-of select="@unticked-why"/>
+          <xsl:if test="@walk-href">
+            <xsl:value-of select="' '"/>
+            <a class="walk-link"><xsl:attribute name="href"><xsl:value-of select="@walk-href"/></xsl:attribute><xsl:value-of select="@walk-label"/></a>
+          </xsl:if>
+        </p>
+      </xsl:if>
+      <xsl:if test="@untickable">
+        <p class="note warn">
+          <xsl:value-of select="@untickable"/>
+          <xsl:if test="@untickable-link">
+            <xsl:value-of select="' '"/>
+            <a class="finding-link"><xsl:attribute name="href"><xsl:value-of select="@finding-href"/></xsl:attribute><xsl:value-of select="@untickable-link"/></a>
+          </xsl:if>
+        </p>
+      </xsl:if>
+      <!-- ★ What a refused batch said about THIS finding (ledger #657), in words: the
+           mark is text, never color alone, and the picker below points at it. -->
+      <xsl:if test="@problem">
+        <p class="problem">
+          <xsl:attribute name="id">problem-<xsl:value-of select="@id"/></xsl:attribute>
+          <xsl:value-of select="@problem"/>
+        </p>
+      </xsl:if>
+      <!-- The member's OWN word, in the twin-carrying view: its twin's, pre-selected. An
+           empty first option means the twin had none, and the batch is refused until one is
+           picked, a batch word is chosen, or this box is unticked. `data-member` and
+           `data-missing` are for web/gonk.js, which makes this picker required exactly while
+           its box is ticked with no word behind it; the sentence is the server's. -->
+      <xsl:if test="@reason-name">
+        <label class="batch-word member-word">
+          <xsl:text>Reason</xsl:text>
+          <select>
+            <xsl:attribute name="name"><xsl:value-of select="@reason-name"/></xsl:attribute>
+            <xsl:attribute name="aria-label"><xsl:value-of select="@reason-label"/></xsl:attribute>
+            <xsl:attribute name="data-member"><xsl:value-of select="@id"/></xsl:attribute>
+            <xsl:attribute name="data-missing"><xsl:value-of select="@reason-missing"/></xsl:attribute>
+            <xsl:if test="@problem">
+              <xsl:attribute name="aria-invalid">true</xsl:attribute>
+              <xsl:attribute name="aria-describedby">problem-<xsl:value-of select="@id"/></xsl:attribute>
+            </xsl:if>
+            <xsl:if test="@autofocus = 'true'"><xsl:attribute name="autofocus">autofocus</xsl:attribute></xsl:if>
+            <xsl:apply-templates select="view:reason-option"/>
+          </select>
+        </label>
+      </xsl:if>
+    </li>
+  </xsl:template>
+
+  <!-- A member's card — folded, like a row, when the judge refuted it (ledger #696). The tick
+       and the member's own picker sit OUTSIDE the fold, so a folded member is decided with the
+       rest of the batch exactly as an open one is. -->
+  <xsl:template name="member-card">
+    <xsl:choose>
+      <xsl:when test="@fold = 'true'">
+        <details class="verdict-fold">
+          <summary>
+            <xsl:value-of select="@verdict-label"/><xsl:text> — </xsl:text><xsl:value-of select="@where"/>
+            <xsl:text> (folded; open it to read what the judge answered)</xsl:text>
+          </summary>
+          <xsl:call-template name="member-card-body"/>
+        </details>
+      </xsl:when>
+      <xsl:otherwise><xsl:call-template name="member-card-body"/></xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
+  <xsl:template name="member-card-body">
+    <div class="finding-head">
+      <span>
+        <xsl:attribute name="class">badge sev <xsl:value-of select="@severity"/></xsl:attribute>
+        <xsl:value-of select="@severity-label"/>
+      </span>
+      <xsl:if test="@orphaned = 'true'"><span class="badge warn">orphaned</span></xsl:if>
+      <xsl:choose>
+        <xsl:when test="@browse-href">
+          <a class="finding-where">
+            <xsl:attribute name="href"><xsl:value-of select="@browse-href"/></xsl:attribute>
+            <xsl:value-of select="@where"/>
+          </a>
+        </xsl:when>
+        <xsl:otherwise><span class="finding-where"><xsl:value-of select="@where"/></span></xsl:otherwise>
+      </xsl:choose>
+    </div>
+    <p class="finding-body" data-linkify="default"><xsl:value-of select="view:body"/></p>
+    <xsl:if test="view:quote">
+      <pre class="finding-quote"><xsl:value-of select="view:quote"/></pre>
+    </xsl:if>
+    <p class="note finding-prov"><xsl:value-of select="@provenance"/></p>
+    <xsl:call-template name="verdict-line"/>
+    <xsl:apply-templates select="view:prior"/>
+  </xsl:template>
+
+  <xsl:template match="view:state">
+    <a hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:attribute name="hx-get"><xsl:value-of select="@rows-url"/></xsl:attribute>
+      <xsl:attribute name="hx-push-url"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">true</xsl:attribute></xsl:if>
+      <xsl:value-of select="@name"/>
+    </a>
+  </xsl:template>
+
+  <xsl:template match="view:scope">
+    <a hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:attribute name="hx-get"><xsl:value-of select="@rows-url"/></xsl:attribute>
+      <xsl:attribute name="hx-push-url"><xsl:value-of select="@href"/></xsl:attribute>
+      <xsl:attribute name="data-scope"><xsl:value-of select="@name"/></xsl:attribute>
+      <xsl:if test="@current = 'true'"><xsl:attribute name="aria-current">true</xsl:attribute></xsl:if>
+      <xsl:value-of select="@label"/>
+    </a>
+  </xsl:template>
+
+  <!-- The rows the serious gate left out, SAID rather than silently absent (ledger #496):
+       how many, which words, and the one link that lists them. -->
+  <!-- Rows a gate left out, said with the one link that lists them: the severity gate's
+       (ledger #496), or the verdict filter's (ledger #704, `@kind`), which in its shown mode
+       links back instead. The sentence and the label are src/queue.rs's and src/verdict.rs's. -->
+  <xsl:template match="view:hidden">
+    <p>
+      <xsl:attribute name="class">note hidden-rows <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:value-of select="."/>
+      <xsl:value-of select="' '"/>
+      <a hx-target="#queue" hx-swap="outerHTML">
+        <xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:attribute name="hx-get"><xsl:value-of select="@rows-url"/></xsl:attribute>
+        <xsl:attribute name="hx-push-url"><xsl:value-of select="@href"/></xsl:attribute>
+        <xsl:value-of select="@label"/>
+      </a>
+    </p>
+  </xsl:template>
+
+  <!-- The trigger's intray depth, which no other face has. ⚠ Four kinds, and three of
+       them are NOT a number: "no queue configured", "empty", and "could not be read" are
+       different statements and must not render alike (ledger #446). -->
+  <xsl:template match="view:intray">
+    <p>
+      <xsl:attribute name="class">intray <xsl:value-of select="@kind"/></xsl:attribute>
+      <xsl:value-of select="."/>
+    </p>
+  </xsl:template>
+
+  <!-- One repository's read was refused. The page still renders the others: a partial
+       answer that says which part is missing beats a whole page replaced by one 403. -->
+  <xsl:template match="view:denied">
+    <p class="flash error">
+      <xsl:value-of select="@repo"/><xsl:text>: </xsl:text><xsl:value-of select="."/>
+    </p>
+  </xsl:template>
+
+  <!-- ★ One row, and the judge's standing on it (ledger #696): said in WORDS with the judge's
+       tag on every row (`@verdict-label`), never by position or color alone. A refuted row
+       still waiting for a decision is FOLDED (`@fold`): a closed <details> whose summary says
+       what it is and where, with the whole card — the judge's answers and the decision form
+       included — one click inside. Ordered last, never hidden. -->
+  <xsl:template match="view:finding">
+    <li>
+      <xsl:attribute name="class">finding <xsl:value-of select="@state"/> verdict <xsl:value-of select="@verdict"/></xsl:attribute>
+      <xsl:choose>
+        <xsl:when test="@fold = 'true'">
+          <details class="verdict-fold">
+            <summary>
+              <xsl:value-of select="@verdict-label"/><xsl:text> — </xsl:text>
+              <xsl:value-of select="@repo"/><xsl:text>/</xsl:text><xsl:value-of select="@where"/>
+              <xsl:text> (folded; open it to read what the judge answered, and decide)</xsl:text>
+            </summary>
+            <xsl:call-template name="finding-card"/>
+          </details>
+        </xsl:when>
+        <xsl:otherwise><xsl:call-template name="finding-card"/></xsl:otherwise>
+      </xsl:choose>
+    </li>
+  </xsl:template>
+
+  <xsl:template name="finding-card">
+      <div class="finding-head">
+        <span>
+          <xsl:attribute name="class">badge sev <xsl:value-of select="@severity"/></xsl:attribute>
+          <xsl:value-of select="@severity-label"/>
+        </span>
+        <xsl:if test="@effective">
+          <span class="badge final"><xsl:text>human: </xsl:text><xsl:value-of select="@effective"/></span>
+        </xsl:if>
+        <span>
+          <xsl:attribute name="class">badge state <xsl:value-of select="@state"/></xsl:attribute>
+          <xsl:value-of select="@state"/>
+        </span>
+        <xsl:if test="@orphaned = 'true'"><span class="badge warn">orphaned</span></xsl:if>
+        <xsl:if test="@reanchored = 'true'"><span class="badge warn">re-anchored</span></xsl:if>
+        <xsl:choose>
+          <xsl:when test="@browse-href">
+            <a class="finding-where">
+              <xsl:attribute name="href"><xsl:value-of select="@browse-href"/></xsl:attribute>
+              <xsl:value-of select="@repo"/><xsl:text>/</xsl:text><xsl:value-of select="@where"/>
+            </a>
+          </xsl:when>
+          <xsl:otherwise>
+            <span class="finding-where"><xsl:value-of select="@repo"/><xsl:text>/</xsl:text><xsl:value-of select="@where"/></span>
+          </xsl:otherwise>
+        </xsl:choose>
+      </div>
+      <p class="finding-body" data-linkify="default"><xsl:value-of select="view:body"/></p>
+      <xsl:if test="view:quote">
+        <pre class="finding-quote"><xsl:value-of select="view:quote"/></pre>
+      </xsl:if>
+      <p class="note finding-prov"><xsl:value-of select="@provenance"/></p>
+      <xsl:call-template name="verdict-line"/>
+      <xsl:apply-templates select="view:prior"/>
+      <xsl:apply-templates select="view:decision"/>
+      <xsl:apply-templates select="view:reproduce"/>
+      <xsl:apply-templates select="view:unsaved"/>
+      <xsl:apply-templates select="view:decide"/>
+      <xsl:apply-templates select="view:no-form"/>
+  </xsl:template>
+
+  <!-- The judge's standing in words, and — when a judge has looked — its four answers, each
+       with its reason, one click away. The question names and the answer words are the
+       verdict's own (src/verdict.rs reads them off the row); this file spells none. -->
+  <xsl:template name="verdict-line">
+    <p>
+      <xsl:attribute name="class">verdict-line <xsl:value-of select="@verdict"/></xsl:attribute>
+      <xsl:value-of select="@verdict-label"/>
+    </p>
+    <xsl:apply-templates select="view:judge"/>
+  </xsl:template>
+
+  <xsl:template match="view:judge">
+    <details class="judge-answers">
+      <xsl:if test="@open = 'true'"><xsl:attribute name="open">open</xsl:attribute></xsl:if>
+      <summary>
+        <xsl:text>what the judge answered · </xsl:text><xsl:value-of select="@at"/>
+        <xsl:if test="@test-code = 'true'"><xsl:text> · told the site is test code</xsl:text></xsl:if>
+      </summary>
+      <dl class="judge-answer-list">
+        <xsl:apply-templates select="view:answer"/>
+      </dl>
+    </details>
+  </xsl:template>
+
+  <xsl:template match="view:answer">
+    <dt><xsl:value-of select="@question"/><xsl:text>: </xsl:text><xsl:value-of select="@answer"/></dt>
+    <dd><xsl:value-of select="."/></dd>
+  </xsl:template>
+
+  <!-- Where the judge backfill stands (ledger #696), once it has run in this process. -->
+  <xsl:template match="view:backfill">
+    <p class="intray backfill"><xsl:value-of select="."/></p>
+  </xsl:template>
+
+  <!-- The sentence that says the list is ORDERED, and by what (ledger #696). -->
+  <xsl:template match="view:order">
+    <p class="note judge-order"><xsl:value-of select="."/></p>
+  </xsl:template>
+
+  <!-- A like claim on this line was already declined (ledger #475). The mark is information
+       beside the same form: the second decision is one click, and a DIFFERENT claim on a
+       declined line is visibly different, which withholding could never show. The reason
+       is optional because most declines carry none. -->
+  <xsl:template match="view:prior">
+    <p class="prior-decision">
+      <xsl:text>a like claim on this line was </xsl:text><xsl:value-of select="@outcome"/>
+      <xsl:if test="@reason"><xsl:text> (</xsl:text><span class="reason-word"><xsl:value-of select="@reason"/></span><xsl:text>)</xsl:text></xsl:if>
+      <xsl:text> as </xsl:text><xsl:value-of select="@severity"/>
+      <xsl:text> · </xsl:text><xsl:value-of select="@at"/>
+      <xsl:if test="view:note"><xsl:text>: </xsl:text><span class="prior-note"><xsl:value-of select="view:note"/></span></xsl:if>
+      <xsl:text> · </xsl:text><span class="prior-twin"><xsl:value-of select="@twin-id"/></span>
+      <xsl:call-template name="unconfirmed"/>
+    </p>
+  </xsl:template>
+
+  <!-- A decision already taken. ★ It is final: the form is gone, and the line says what
+       undoing it would actually be — deleting the ANNOTATION (a separate, visible act) for
+       a publication, and nothing at all for a decline, because the decline is the record. -->
+  <xsl:template match="view:decision">
+    <div>
+      <xsl:attribute name="class">decision <xsl:value-of select="@outcome"/></xsl:attribute>
+      <p class="decision-line">
+        <xsl:value-of select="@outcome"/>
+        <xsl:if test="@reason"><xsl:text> (</xsl:text><span class="reason-word"><xsl:value-of select="@reason"/></span><xsl:text>)</xsl:text></xsl:if>
+        <xsl:text> as </xsl:text><xsl:value-of select="@severity"/><xsl:text> · </xsl:text><xsl:value-of select="@at"/>
+        <xsl:if test="@reproduced">
+          <xsl:text> · </xsl:text><span class="reproduced"><xsl:value-of select="@reproduced"/></span>
+        </xsl:if>
+        <xsl:call-template name="unconfirmed"/>
+      </p>
+      <xsl:if test="view:note">
+        <p class="decision-note"><xsl:value-of select="view:note"/></p>
+      </xsl:if>
+      <p class="note"><xsl:value-of select="@undo"/></p>
+      <xsl:if test="@minted-href">
+        <a class="minted">
+          <xsl:attribute name="href"><xsl:value-of select="@minted-href"/></xsl:attribute>
+          <xsl:value-of select="@minted"/>
+        </a>
+      </xsl:if>
+    </div>
+  </xsl:template>
+
+  <!-- A refused decision's note, when the finding was decided meanwhile and there is no
+       form left to draw it back into (ledger #657): shown, never silently dropped. -->
+  <xsl:template match="view:unsaved">
+    <p class="problem unsaved">
+      <xsl:value-of select="@label"/><xsl:value-of select="' '"/><span class="prior-note"><xsl:value-of select="."/></span>
+    </p>
+  </xsl:template>
+
+  <!-- The human's answer. The `action` is a plain form post as well as an htmx one, so the
+       page works with scripting off. ★ The FORM carries the htmx post (ledger #657), so the
+       browser's own check of the `required` rating runs before anything is sent; htmx sends
+       the pressed button's `name`/`value`, which is the decision on both entrances. A form
+       drawn back after a refusal carries the refusal on the row and the focus on its
+       first control. -->
+  <xsl:template match="view:decide">
+    <xsl:if test="@problem">
+      <p class="problem">
+        <xsl:attribute name="id">problem-<xsl:value-of select="@id"/></xsl:attribute>
+        <xsl:value-of select="@problem"/>
+      </p>
+    </xsl:if>
+    <form class="decide" method="post" hx-target="#queue" hx-swap="outerHTML">
+      <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+      <xsl:if test="@refused = 'true'"><xsl:attribute name="data-refused">true</xsl:attribute></xsl:if>
+      <input type="hidden" name="id"><xsl:attribute name="value"><xsl:value-of select="@id"/></xsl:attribute></input>
+      <input type="hidden" name="_state"><xsl:attribute name="value"><xsl:value-of select="@state"/></xsl:attribute></input>
+      <input type="hidden" name="_repo"><xsl:attribute name="value"><xsl:value-of select="@repo"/></xsl:attribute></input>
+      <!-- The scope the human was looking at, so the re-render after a decision keeps it
+           (ledger #496). `_severity` is the page argument; `severity` below is the rating. -->
+      <input type="hidden" name="_severity"><xsl:attribute name="value"><xsl:value-of select="@scope"/></xsl:attribute></input>
+      <xsl:call-template name="shown-field"/>
+      <label class="decide-severity">
+        <xsl:text>Severity</xsl:text>
+        <select name="severity">
+          <xsl:if test="@required = 'true'"><xsl:attribute name="required">required</xsl:attribute></xsl:if>
+          <xsl:if test="@problem">
+            <xsl:attribute name="autofocus">autofocus</xsl:attribute>
+            <xsl:attribute name="aria-describedby">problem-<xsl:value-of select="@id"/></xsl:attribute>
+          </xsl:if>
+          <xsl:apply-templates select="view:severity-option"/>
+        </select>
+      </label>
+      <!-- The free-text NOTE (`content`), kept on both outcomes: the word beside Decline is
+           the category, this is anything a word cannot say. -->
+      <label class="decide-reason">
+        <xsl:text>Note — kept on both outcomes</xsl:text>
+        <textarea name="content" rows="2"><xsl:value-of select="view:note"/></textarea>
+      </label>
+      <div class="decide-buttons">
+        <xsl:apply-templates select="view:decision-option"/>
+      </div>
+    </form>
+  </xsl:template>
+
+  <xsl:template match="view:severity-option">
+    <option>
+      <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+      <xsl:if test="@selected = 'true'"><xsl:attribute name="selected">selected</xsl:attribute></xsl:if>
+      <xsl:if test="@placeholder = 'true'"><xsl:attribute name="disabled">disabled</xsl:attribute></xsl:if>
+      <xsl:value-of select="@label"/>
+    </option>
+  </xsl:template>
+
+  <!-- A decision button — and, for the one decision that takes a reason word, the picker
+       grouped WITH it, so the word visibly belongs to Decline and not to the form. The
+       words, their order and their meanings (`title`) arrive from src/queue.rs, which reads
+       them from the finding contract; this file spells none of them. The adapter drops a
+       word sent with any other decision, so a pick followed by Publish still publishes. -->
+  <xsl:template match="view:decision-option">
+    <xsl:choose>
+      <!-- ★ The reproduced box (ledger #696), grouped WITH Publish: the mark is a publish's
+           alone, and the note above is where the person says how. Its one value is the
+           contract's word, carried in from src/queue.rs. -->
+      <xsl:when test="view:reproduced-option">
+        <span class="decide-mark">
+          <xsl:call-template name="decide-button"/>
+          <xsl:apply-templates select="view:reproduced-option"/>
+        </span>
+      </xsl:when>
+      <xsl:when test="view:reason-option">
+        <span class="decide-why">
+          <xsl:call-template name="decide-button"/>
+          <select name="reason" class="decide-why-word" aria-label="reason word, optional">
+            <xsl:apply-templates select="view:reason-option"/>
+          </select>
+        </span>
+      </xsl:when>
+      <xsl:otherwise><xsl:call-template name="decide-button"/></xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
+  <xsl:template match="view:reproduced-option">
+    <label class="decide-reproduced">
+      <input type="checkbox">
+        <xsl:attribute name="name">reproduced</xsl:attribute>
+        <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+        <xsl:if test="@checked = 'true'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if>
+      </input>
+      <xsl:value-of select="' '"/><xsl:value-of select="@label"/>
+    </label>
+  </xsl:template>
+
+  <!-- ★ The folded "record a reproduction" form on a published finding (ledger #696): a
+       revision of the publish that keeps its outcome and rating and adds the mark, the note
+       saying how. A refused one comes back OPEN with the note (ledger #657). -->
+  <xsl:template match="view:reproduce">
+    <details class="reproduce">
+      <xsl:if test="@open = 'true'"><xsl:attribute name="open">open</xsl:attribute></xsl:if>
+      <summary><xsl:value-of select="@summary-label"/></summary>
+      <xsl:if test="@problem">
+        <p class="problem">
+          <xsl:attribute name="id">problem-<xsl:value-of select="@id"/></xsl:attribute>
+          <xsl:value-of select="@problem"/>
+        </p>
+      </xsl:if>
+      <form class="decide reproduce" method="post" hx-target="#queue" hx-swap="outerHTML">
+        <xsl:attribute name="action"><xsl:value-of select="@action"/></xsl:attribute>
+        <xsl:attribute name="hx-post"><xsl:value-of select="@action"/></xsl:attribute>
+        <xsl:if test="@problem"><xsl:attribute name="data-refused">true</xsl:attribute></xsl:if>
+        <input type="hidden" name="id"><xsl:attribute name="value"><xsl:value-of select="@id"/></xsl:attribute></input>
+        <input type="hidden" name="_state"><xsl:attribute name="value"><xsl:value-of select="@state"/></xsl:attribute></input>
+        <input type="hidden" name="_repo"><xsl:attribute name="value"><xsl:value-of select="@repo"/></xsl:attribute></input>
+        <input type="hidden" name="_severity"><xsl:attribute name="value"><xsl:value-of select="@scope"/></xsl:attribute></input>
+        <xsl:call-template name="shown-field"/>
+        <input type="hidden" name="decision"><xsl:attribute name="value"><xsl:value-of select="@decision"/></xsl:attribute></input>
+        <input type="hidden" name="reproduced"><xsl:attribute name="value"><xsl:value-of select="@reproduced"/></xsl:attribute></input>
+        <input type="hidden" name="revises"><xsl:attribute name="value"><xsl:value-of select="@revises"/></xsl:attribute></input>
+        <label class="decide-reason">
+          <xsl:text>How it was reproduced</xsl:text>
+          <textarea name="content" rows="2" required="required">
+            <xsl:if test="@problem">
+              <xsl:attribute name="autofocus">autofocus</xsl:attribute>
+              <xsl:attribute name="aria-describedby">problem-<xsl:value-of select="@id"/></xsl:attribute>
+            </xsl:if>
+            <xsl:value-of select="view:note"/>
+          </textarea>
+        </label>
+        <div class="decide-buttons">
+          <button type="submit" class="decide-button reproduce">Record the reproduction</button>
+        </div>
+      </form>
+    </details>
+  </xsl:template>
+
+  <xsl:template name="decide-button">
+    <button type="submit" name="decision">
+      <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+      <xsl:attribute name="class">decide-button <xsl:value-of select="@value"/></xsl:attribute>
+      <xsl:value-of select="@label"/>
+    </button>
+  </xsl:template>
+
+  <xsl:template match="view:reason-option">
+    <option>
+      <xsl:attribute name="value"><xsl:value-of select="@value"/></xsl:attribute>
+      <xsl:if test="@title != ''"><xsl:attribute name="title"><xsl:value-of select="@title"/></xsl:attribute></xsl:if>
+      <!-- The batch pickers (ledger #506) pre-select a word where there is one to pre-select,
+           else an empty placeholder: LOCKED where a word must be chosen (it cannot be
+           submitted), choosable where the word is optional (ledger #508: the batch-wide
+           fallback, and a member's own picker under it). The single-finding picker carries
+           none of these attributes. -->
+      <xsl:if test="@selected = 'true'"><xsl:attribute name="selected">selected</xsl:attribute></xsl:if>
+      <xsl:if test="@locked = 'true'"><xsl:attribute name="disabled">disabled</xsl:attribute></xsl:if>
+      <xsl:value-of select="@label"/>
+    </option>
+  </xsl:template>
+
+  <!-- ⚠ The manifold went quiet: the finding resource did not describe its menus, so this
+       page renders NO form rather than inventing one. -->
+  <xsl:template match="view:no-form">
+    <p class="note warn"><xsl:value-of select="."/></p>
+  </xsl:template>
+
+  <!-- ============================================================ a ledger -->
+
+  <xsl:template name="ledger">
+    <section id="ledger" class="ledger">
+      <header class="ledger-head">
+        <h1><xsl:value-of select="@title"/></h1>
+        <nav class="filters" aria-label="Status">
+          <xsl:call-template name="status-link"><xsl:with-param name="status" select="'open'"/></xsl:call-template>
+          <xsl:call-template name="status-link"><xsl:with-param name="status" select="'closed'"/></xsl:call-template>
+          <xsl:call-template name="status-link"><xsl:with-param name="status" select="'all'"/></xsl:call-template>
+          <xsl:if test="@ledger != ''">
+            <a class="doctor-link"><xsl:attribute name="href">/l/<xsl:value-of select="@ledger"/>/doctor</xsl:attribute>doctor</a>
+          </xsl:if>
+        </nav>
+        <form class="search" method="get" role="search" hx-target="#ledger" hx-swap="outerHTML">
+          <xsl:attribute name="action"><xsl:value-of select="@page-url"/></xsl:attribute>
+          <xsl:attribute name="hx-get"><xsl:value-of select="@items-url"/></xsl:attribute>
+          <input type="hidden" name="status"><xsl:attribute name="value"><xsl:value-of select="@status"/></xsl:attribute></input>
+          <label class="sr-only" for="search-text">Search titles</label>
+          <input id="search-text" type="search" name="text" placeholder="Search titles">
+            <xsl:attribute name="value"><xsl:value-of select="@text"/></xsl:attribute>
+          </input>
+          <button type="submit" class="quiet">Search</button>
+        </form>
+      </header>
+      <xsl:apply-templates select="view:flash"/>
+      <xsl:if test="@can-write = 'true'">
+        <form class="panel file" method="post" action="/act" hx-post="/act" hx-target="#ledger" hx-swap="outerHTML">
+          <input type="hidden" name="_action" value="append"/>
+          <input type="hidden" name="_then" value="items"/>
+          <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="@ledger"/></xsl:attribute></input>
+          <input type="hidden" name="_status"><xsl:attribute name="value"><xsl:value-of select="@status"/></xsl:attribute></input>
+          <label for="file-content">File an item — first line is the title, then a blank line, then the body</label>
+          <textarea id="file-content" name="content" rows="3" required="required"></textarea>
+          <details>
+            <summary>More fields</summary>
+            <div class="grid">
+              <label>Priority
+                <select name="priority">
+                  <option value="">unset</option>
+                  <option value="0">0 highest</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4 lowest</option>
+                </select>
+              </label>
+              <label>Labels <input type="text" name="labels" placeholder="comma, separated"/></label>
+              <label>About <input type="text" name="about" placeholder="resource IRIs, space separated"/></label>
+              <label>Revision <input type="text" name="revision" placeholder="commit sha or tag"/></label>
+            </div>
+          </details>
+          <button type="submit">File</button>
+        </form>
+      </xsl:if>
+      <!-- ⚠ `@has-rows`, not `count(rdf:RDF/ledger:Item)`: the rows are rendered in chunks
+           apart from this shell (ledger #519), so the shell holds none of them and the
+           count is the Rust side's (`web::Count`), evaluated once. -->
+      <xsl:if test="@has-rows = 'false'">
+        <p class="empty">No items match.</p>
+      </xsl:if>
+      <!-- ⚠ What this page rendered and what the filter MATCHED are different numbers, and
+           the page says both: a listing that reports its own length as the total is the
+           defect in #419, one surface over. The sentence and the link are built in Rust
+           (`web::Count`) because the engine has no variables to build them with. -->
+      <xsl:if test="@has-rows = 'true'">
+        <p class="count">
+          <span class="how-many"><xsl:value-of select="@count"/></span>
+          <xsl:if test="@more = 'true'">
+            <a class="more" hx-target="#ledger" hx-swap="outerHTML">
+              <xsl:attribute name="href"><xsl:value-of select="@more-url"/></xsl:attribute>
+              <xsl:attribute name="hx-get"><xsl:value-of select="@more-items-url"/></xsl:attribute>
+              <xsl:attribute name="hx-push-url"><xsl:value-of select="@more-url"/></xsl:attribute>
+              <xsl:value-of select="@more-label"/>
+            </a>
+          </xsl:if>
+          <!-- A page that cannot grow pages ON, by `offset=` (#419): every item is reachable,
+               whatever the ledger holds. -->
+          <xsl:if test="@next = 'true'">
+            <a class="more" hx-target="#ledger" hx-swap="outerHTML">
+              <xsl:attribute name="href"><xsl:value-of select="@next-url"/></xsl:attribute>
+              <xsl:attribute name="hx-get"><xsl:value-of select="@next-items-url"/></xsl:attribute>
+              <xsl:attribute name="hx-push-url"><xsl:value-of select="@next-url"/></xsl:attribute>
+              <xsl:value-of select="@next-label"/>
+            </a>
+          </xsl:if>
+        </p>
+        <ol class="items">
+          <xsl:apply-templates select="rdf:RDF/ledger:Item">
+            <xsl:sort select="dcterms:modified" order="descending"/>
+          </xsl:apply-templates>
+          <xsl:apply-templates select="view:slot[@name = 'items']"/>
+        </ol>
+      </xsl:if>
+    </section>
+  </xsl:template>
+
+  <xsl:template name="status-link">
+    <xsl:param name="status"/>
+    <a hx-target="#ledger" hx-swap="outerHTML">
+      <xsl:attribute name="href"><xsl:value-of select="@page-url"/>?status=<xsl:value-of select="$status"/></xsl:attribute>
+      <xsl:attribute name="hx-get"><xsl:value-of select="@items-url"/>?status=<xsl:value-of select="$status"/></xsl:attribute>
+      <xsl:attribute name="hx-push-url"><xsl:value-of select="@page-url"/>?status=<xsl:value-of select="$status"/></xsl:attribute>
+      <xsl:if test="@status = $status"><xsl:attribute name="aria-current">true</xsl:attribute></xsl:if>
+      <xsl:value-of select="$status"/>
+    </a>
+  </xsl:template>
+
+  <!-- One row of a ledger listing: the default rendering of a ledger:Item. -->
+  <xsl:template match="ledger:Item">
+    <li>
+      <xsl:attribute name="class">row <xsl:value-of select="view:status"/></xsl:attribute>
+      <span class="num"><xsl:value-of select="view:short"/></span>
+      <a class="title">
+        <xsl:attribute name="href"><xsl:value-of select="view:href"/></xsl:attribute>
+        <xsl:value-of select="dcterms:title"/>
+      </a>
+      <span class="badges">
+        <xsl:call-template name="badges"/>
+      </span>
+      <xsl:if test="view:canWrite = 'true'">
+        <xsl:if test="view:status = 'open'">
+          <form class="inline" method="post" action="/act" hx-post="/act" hx-target="#ledger" hx-swap="outerHTML">
+            <input type="hidden" name="_action" value="close"/>
+            <input type="hidden" name="_then" value="items"/>
+            <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+            <input type="hidden" name="_status"><xsl:attribute name="value"><xsl:value-of select="view:listStatus"/></xsl:attribute></input>
+            <input type="hidden" name="item"><xsl:attribute name="value"><xsl:value-of select="view:iri"/></xsl:attribute></input>
+            <button type="submit" class="quiet small">
+              <xsl:attribute name="aria-label">Close <xsl:value-of select="view:short"/> with the ledger's default reason</xsl:attribute>
+              Close
+            </button>
+          </form>
+        </xsl:if>
+      </xsl:if>
+    </li>
+  </xsl:template>
+
+  <xsl:template name="badges">
+    <span>
+      <xsl:attribute name="class">badge <xsl:value-of select="view:status"/></xsl:attribute>
+      <xsl:value-of select="view:status"/>
+      <xsl:if test="view:reason"> · <xsl:value-of select="view:reason"/></xsl:if>
+    </span>
+    <span class="badge priority"><xsl:value-of select="view:priority"/></span>
+    <xsl:if test="view:deferred = 'true'"><span class="badge deferred">deferred</span></xsl:if>
+    <xsl:if test="ledger:claimedBy"><span class="badge claimed">claimed by <xsl:value-of select="ledger:claimedBy"/></span></xsl:if>
+    <xsl:for-each select="ledger:label"><span class="badge label"><xsl:value-of select="."/></span></xsl:for-each>
+  </xsl:template>
+
+  <!-- ============================================================ the doctor -->
+
+  <!-- Ledger #775: the doctor's five checks and what they found, read-only. Each problem
+       names its item, says what is wrong and gives the ledger's remedy as text; nothing on
+       this page acts, because the doctor never repairs. -->
+  <xsl:template match="view:doctor">
+    <section id="doctor" class="panel doctor" aria-labelledby="doctor-title">
+      <p class="crumbs"><a><xsl:attribute name="href"><xsl:value-of select="@ledger-href"/></xsl:attribute><xsl:value-of select="@ledger"/></a></p>
+      <h1 id="doctor-title">Doctor</h1>
+      <!-- Ledger #1604: ONE sentence, in reading order, never a grid (`.meta` is the item
+           card's two-column `<dl>` layout and split this into cells). The lifecycle links to
+           its states; the checked time is when the doctor's CACHED answer last ran, which is
+           deliberate (ledger #1567), so the page says so. -->
+      <p class="doctor-scope">
+        <xsl:text>Judged against the </xsl:text>
+        <a><xsl:attribute name="href"><xsl:value-of select="@lifecycle-href"/></xsl:attribute><xsl:value-of select="@lifecycle"/><xsl:text> lifecycle</xsl:text></a>
+        <xsl:text> · checked </xsl:text>
+        <time><xsl:attribute name="datetime"><xsl:value-of select="@checked-at"/></xsl:attribute><xsl:value-of select="@checked"/></time>
+        <xsl:text> (when this cached check last ran) · checks: </xsl:text><xsl:value-of select="@checks"/>
+      </p>
+      <xsl:choose>
+        <xsl:when test="@count = '0'"><p class="empty">None of these checks found a problem.</p></xsl:when>
+        <xsl:otherwise>
+          <p><xsl:value-of select="@count"/><xsl:text> problem(s). Nothing here is repaired: each remedy is a judgment for whoever reads it.</xsl:text></p>
+          <ol class="plain doctor-list">
+            <xsl:for-each select="view:problem">
+              <li>
+                <span class="badge"><xsl:value-of select="@check"/></span>
+                <xsl:value-of select="' '"/>
+                <a><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:value-of select="@item"/></a>
+                <p class="detail"><xsl:value-of select="view:detail"/></p>
+                <p class="remedy"><xsl:text>remedy: </xsl:text><code><xsl:value-of select="view:remedy"/></code></p>
+              </li>
+            </xsl:for-each>
+          </ol>
+        </xsl:otherwise>
+      </xsl:choose>
+    </section>
+  </xsl:template>
+
+  <!-- ============================================================ one item -->
+
+  <xsl:template name="item">
+    <article id="item" class="item-page">
+      <xsl:apply-templates select="view:flash"/>
+      <xsl:apply-templates select="rdf:RDF/ledger:Item" mode="card"/>
+      <xsl:if test="count(rdf:RDF/view:Link) &gt; 0">
+        <section class="panel links" aria-labelledby="links-title">
+          <h2 id="links-title">Links</h2>
+          <ul class="plain">
+            <xsl:apply-templates select="rdf:RDF/view:Link">
+              <xsl:sort select="view:order"/>
+            </xsl:apply-templates>
+          </ul>
+        </section>
+      </xsl:if>
+      <!-- The inbound parent edges (ledger #1501): src/web.rs::enrich_children. -->
+      <xsl:if test="count(rdf:RDF/view:Child) &gt; 0">
+        <section class="panel children" aria-labelledby="children-title">
+          <h2 id="children-title">Children</h2>
+          <ul class="plain">
+            <xsl:apply-templates select="rdf:RDF/view:Child">
+              <xsl:sort select="view:order"/>
+            </xsl:apply-templates>
+          </ul>
+        </section>
+      </xsl:if>
+      <section class="panel comments" aria-labelledby="comments-title">
+        <h2 id="comments-title">Comments</h2>
+        <xsl:if test="count(rdf:RDF/ledger:Comment) = 0"><p class="empty">No comments yet.</p></xsl:if>
+        <xsl:if test="count(rdf:RDF/ledger:Comment) &gt; 0">
+          <ol class="plain comment-list">
+            <xsl:apply-templates select="rdf:RDF/ledger:Comment">
+              <xsl:sort select="dcterms:created"/>
+            </xsl:apply-templates>
+          </ol>
+        </xsl:if>
+      </section>
+      <xsl:apply-templates select="rdf:RDF/ledger:Item" mode="actions"/>
+    </article>
+  </xsl:template>
+
+  <xsl:template match="ledger:Item" mode="card">
+    <header class="item-head">
+      <p class="crumbs">
+        <a><xsl:attribute name="href"><xsl:value-of select="view:ledgerHref"/></xsl:attribute><xsl:value-of select="view:ledger"/></a>
+        <span class="num"><xsl:value-of select="view:short"/></span>
+      </p>
+      <h1 class="item-title"><xsl:value-of select="dcterms:title"/></h1>
+      <p class="badges"><xsl:call-template name="badges"/></p>
+    </header>
+    <!-- data-linkify: src/render.rs::linkify links this text's http(s) URLs and `ledger #N`
+         references after the transform (ledger #989); the value is the ledger they resolve in. -->
+    <xsl:if test="ledger:body"><div class="body"><xsl:attribute name="data-linkify"><xsl:value-of select="view:ledger"/></xsl:attribute><xsl:value-of select="ledger:body"/></div></xsl:if>
+    <dl class="meta">
+      <dt>Filed</dt><dd><xsl:value-of select="view:created"/><xsl:if test="view:author"> by <xsl:value-of select="view:author"/></xsl:if></dd>
+      <dt>Updated</dt><dd><xsl:value-of select="view:modified"/></dd>
+      <xsl:if test="view:kind"><dt>Level</dt><dd><code><xsl:value-of select="view:kind"/></code></dd></xsl:if>
+      <xsl:if test="ledger:revision"><dt>Revision</dt><dd><code><xsl:value-of select="ledger:revision"/></code></dd></xsl:if>
+      <xsl:if test="ledger:purpose"><dt>Purpose</dt><dd><xsl:value-of select="ledger:purpose"/></dd></xsl:if>
+      <!-- Ledger #775: the lifecycle state (no state is `filed`), and the claim's holder, its
+           host-stamped kind and its lease. -->
+      <dt>State</dt><dd><xsl:value-of select="view:state"/></dd>
+      <xsl:if test="ledger:claimedBy">
+        <dt>Claim</dt>
+        <dd class="claim">
+          <xsl:text>held by </xsl:text><xsl:value-of select="ledger:claimedBy"/>
+          <xsl:if test="view:claimKind"><xsl:text> (</xsl:text><xsl:value-of select="view:claimKind"/><xsl:text>)</xsl:text></xsl:if>
+          <xsl:choose>
+            <xsl:when test="view:leaseExpires">
+              <xsl:text>, leased </xsl:text><xsl:value-of select="view:lease"/>
+              <xsl:text> until </xsl:text><xsl:value-of select="view:leaseExpires"/>
+            </xsl:when>
+            <xsl:otherwise><xsl:text>, no lease</xsl:text></xsl:otherwise>
+          </xsl:choose>
+        </dd>
+      </xsl:if>
+      <dt>IRI</dt><dd><code class="iri"><xsl:value-of select="view:iri"/></code></dd>
+    </dl>
+  </xsl:template>
+
+  <xsl:template match="view:Link">
+    <li>
+      <span class="rel"><xsl:value-of select="view:rel"/></span>
+      <xsl:choose>
+        <xsl:when test="view:href">
+          <a><xsl:attribute name="href"><xsl:value-of select="view:href"/></xsl:attribute><xsl:value-of select="view:text"/></a>
+        </xsl:when>
+        <xsl:otherwise><code class="iri"><xsl:value-of select="view:text"/></code></xsl:otherwise>
+      </xsl:choose>
+      <xsl:if test="view:canUnlink = 'true'">
+        <form class="inline" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+          <input type="hidden" name="_action" value="link"/>
+          <input type="hidden" name="_verb" value="Delete"/>
+          <input type="hidden" name="_then" value="card"/>
+          <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+          <input type="hidden" name="_id"><xsl:attribute name="value"><xsl:value-of select="view:id"/></xsl:attribute></input>
+          <input type="hidden" name="item"><xsl:attribute name="value"><xsl:value-of select="view:item"/></xsl:attribute></input>
+          <input type="hidden" name="content"><xsl:attribute name="value"><xsl:value-of select="view:target"/></xsl:attribute></input>
+          <input type="hidden" name="type"><xsl:attribute name="value"><xsl:value-of select="view:rel"/></xsl:attribute></input>
+          <button type="submit" class="quiet small">Unlink</button>
+        </form>
+      </xsl:if>
+    </li>
+  </xsl:template>
+
+  <xsl:template match="view:Child">
+    <li><a><xsl:attribute name="href"><xsl:value-of select="view:href"/></xsl:attribute><xsl:value-of select="view:text"/></a></li>
+  </xsl:template>
+
+  <xsl:template match="ledger:Comment">
+    <li class="comment">
+      <p class="comment-meta">
+        <xsl:value-of select="view:created"/>
+        <xsl:text> · </xsl:text>
+        <xsl:choose>
+          <xsl:when test="view:author"><xsl:value-of select="view:author"/></xsl:when>
+          <xsl:otherwise>unattributed</xsl:otherwise>
+        </xsl:choose>
+      </p>
+      <div class="body"><xsl:attribute name="data-linkify"><xsl:value-of select="view:ledger"/></xsl:attribute><xsl:value-of select="ledger:body"/></div>
+    </li>
+  </xsl:template>
+
+  <!-- Everything this caller may do to the item: offered only when the grant allows it. -->
+  <xsl:template match="ledger:Item" mode="actions">
+    <xsl:if test="view:canWrite = 'true'">
+      <section class="panel actions" aria-labelledby="act-title">
+        <h2 id="act-title">Work on it</h2>
+
+        <form class="stack" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+          <xsl:call-template name="hidden"><xsl:with-param name="action" select="'comment'"/></xsl:call-template>
+          <label for="comment-content">Comment</label>
+          <textarea id="comment-content" name="content" rows="3" required="required"></textarea>
+          <button type="submit">Comment</button>
+        </form>
+
+        <div class="row wrap">
+          <xsl:choose>
+            <xsl:when test="view:status = 'open'">
+              <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'close'"/></xsl:call-template>
+                <!-- The words are urn:iki:ledger:close's own `reason` set, in contract order
+                     (ledger #505, src/web.rs::enrich_close_reasons): this file spells none. -->
+                <xsl:if test="view:closeReason">
+                  <label for="close-reason">Close as</label>
+                  <select id="close-reason" name="reason">
+                    <xsl:apply-templates select="view:closeReason"/>
+                  </select>
+                </xsl:if>
+                <button type="submit">Close</button>
+              </form>
+            </xsl:when>
+            <xsl:otherwise>
+              <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'reopen'"/></xsl:call-template>
+                <button type="submit">Reopen</button>
+              </form>
+            </xsl:otherwise>
+          </xsl:choose>
+
+          <xsl:choose>
+            <xsl:when test="ledger:claimedBy">
+              <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'claim'"/><xsl:with-param name="verb" select="'Delete'"/></xsl:call-template>
+                <button type="submit" class="quiet">Release claim</button>
+              </form>
+            </xsl:when>
+            <xsl:otherwise>
+              <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'claim'"/></xsl:call-template>
+                <label for="claim-holder">Claim for</label>
+                <input id="claim-holder" type="text" name="content" required="required" autocomplete="off"/>
+                <label for="claim-lease">for</label>
+                <input id="claim-lease" type="text" name="lease" size="6" placeholder="30m" autocomplete="off" aria-describedby="claim-lease-help"/>
+                <span id="claim-lease-help" class="sr-only">Optional lease: 90s, 30m, 2h or 1d. An expired lease is not freed; it is taken over.</span>
+                <button type="submit" class="quiet">Claim</button>
+              </form>
+            </xsl:otherwise>
+          </xsl:choose>
+
+          <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+            <xsl:choose>
+              <xsl:when test="view:deferred = 'true'">
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'defer'"/><xsl:with-param name="verb" select="'Delete'"/></xsl:call-template>
+                <button type="submit" class="quiet">Resume</button>
+              </xsl:when>
+              <xsl:otherwise>
+                <xsl:call-template name="hidden"><xsl:with-param name="action" select="'defer'"/></xsl:call-template>
+                <button type="submit" class="quiet">Defer</button>
+              </xsl:otherwise>
+            </xsl:choose>
+          </form>
+        </div>
+
+        <details>
+          <summary>Edit title, body and priority</summary>
+          <form class="stack" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+            <input type="hidden" name="_action" value="item"/>
+            <input type="hidden" name="_then" value="card"/>
+            <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+            <input type="hidden" name="_id"><xsl:attribute name="value"><xsl:value-of select="view:id"/></xsl:attribute></input>
+            <label for="edit-content">Title, blank line, body</label>
+            <textarea id="edit-content" name="content" rows="6" required="required"><xsl:value-of select="view:content"/></textarea>
+            <label for="edit-priority">Priority</label>
+            <select id="edit-priority" name="priority">
+              <option value="">unchanged</option>
+              <option value="0">0 highest</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4 lowest</option>
+            </select>
+            <button type="submit">Save</button>
+          </form>
+        </details>
+
+        <div class="row wrap">
+          <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+            <xsl:call-template name="hidden"><xsl:with-param name="action" select="'label'"/></xsl:call-template>
+            <label for="label-add">Label</label>
+            <input id="label-add" type="text" name="content" required="required" autocomplete="off"/>
+            <button type="submit" class="quiet">Add</button>
+          </form>
+          <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+            <xsl:call-template name="hidden"><xsl:with-param name="action" select="'label'"/><xsl:with-param name="verb" select="'Delete'"/></xsl:call-template>
+            <label for="label-remove">Remove label</label>
+            <input id="label-remove" type="text" name="content" required="required" autocomplete="off"/>
+            <button type="submit" class="quiet">Remove</button>
+          </form>
+          <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+            <xsl:call-template name="hidden"><xsl:with-param name="action" select="'link'"/></xsl:call-template>
+            <label for="link-type">Link</label>
+            <select id="link-type" name="type">
+              <option value="related">related to</option>
+              <option value="blocks">blocks</option>
+              <option value="parent">has parent</option>
+            </select>
+            <input type="text" name="content" required="required" placeholder="#12" aria-label="Linked item" autocomplete="off"/>
+            <button type="submit" class="quiet">Link</button>
+          </form>
+        </div>
+      </section>
+    </xsl:if>
+
+    <xsl:if test="view:canDelete = 'true'">
+      <section class="panel danger" aria-labelledby="delete-title">
+        <h2 id="delete-title">Delete</h2>
+        <p>Moves the item, its comments and the links pointing at it into this ledger's graveyard graph, and leaves a tombstone. Recoverable by hand; it leaves every listing now.</p>
+        <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+          <xsl:attribute name="hx-confirm">Delete <xsl:value-of select="view:short"/>? It can be recovered from the graveyard graph.</xsl:attribute>
+          <input type="hidden" name="_action" value="item"/>
+          <input type="hidden" name="_verb" value="Delete"/>
+          <input type="hidden" name="_then" value="gone"/>
+          <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+          <input type="hidden" name="_id"><xsl:attribute name="value"><xsl:value-of select="view:id"/></xsl:attribute></input>
+          <label for="delete-reason">Reason</label>
+          <input id="delete-reason" type="text" name="reason" autocomplete="off"/>
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </section>
+    </xsl:if>
+
+    <xsl:if test="view:canPurge = 'true'">
+      <section class="panel danger purge" aria-labelledby="purge-title">
+        <h2 id="purge-title">Purge</h2>
+        <p>Destroys the content in both the live graph and the graveyard. Only a tombstone remains: the number, the time, the reason, the quad count and a hash of what was destroyed. This is not the same act as Delete and cannot be undone.</p>
+        <form class="row" method="post" action="/act" hx-post="/act" hx-target="#item" hx-swap="outerHTML">
+          <xsl:attribute name="hx-confirm">Purge <xsl:value-of select="view:short"/> permanently? This cannot be undone.</xsl:attribute>
+          <input type="hidden" name="_action" value="purge"/>
+          <input type="hidden" name="_verb" value="Delete"/>
+          <input type="hidden" name="_then" value="gone"/>
+          <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+          <input type="hidden" name="content"><xsl:attribute name="value"><xsl:value-of select="view:iri"/></xsl:attribute></input>
+          <label for="purge-reason">Reason</label>
+          <input id="purge-reason" type="text" name="reason" autocomplete="off"/>
+          <button type="submit" class="danger">Purge permanently</button>
+        </form>
+      </section>
+    </xsl:if>
+  </xsl:template>
+
+  <!-- One close reason: `NN word`, the position first so the RDF/XML keeps the contract's
+       order (src/web.rs::enrich_close_reasons); the option is the word alone. -->
+  <xsl:template match="view:closeReason">
+    <option>
+      <xsl:attribute name="value"><xsl:value-of select="substring-after(., ' ')"/></xsl:attribute>
+      <xsl:value-of select="substring-after(., ' ')"/>
+    </option>
+  </xsl:template>
+
+  <!-- The hidden fields every item form carries. Context: the ledger:Item. -->
+  <xsl:template name="hidden">
+    <xsl:param name="action"/>
+    <xsl:param name="verb" select="'Sink'"/>
+    <input type="hidden" name="_action"><xsl:attribute name="value"><xsl:value-of select="$action"/></xsl:attribute></input>
+    <input type="hidden" name="_verb"><xsl:attribute name="value"><xsl:value-of select="$verb"/></xsl:attribute></input>
+    <input type="hidden" name="_then" value="card"/>
+    <input type="hidden" name="_ledger"><xsl:attribute name="value"><xsl:value-of select="view:ledger"/></xsl:attribute></input>
+    <input type="hidden" name="_id"><xsl:attribute name="value"><xsl:value-of select="view:id"/></xsl:attribute></input>
+    <input type="hidden" name="item"><xsl:attribute name="value"><xsl:value-of select="view:iri"/></xsl:attribute></input>
+  </xsl:template>
+
+  <xsl:template name="gone">
+    <article id="item" class="item-page">
+      <xsl:apply-templates select="view:flash"/>
+      <p><a><xsl:attribute name="href"><xsl:value-of select="@page-url"/></xsl:attribute>Back to <xsl:value-of select="@ledger"/></a></p>
+    </article>
+  </xsl:template>
+
+  <!-- ============================================================ SPARQL -->
+
+  <xsl:template name="sparql">
+    <section id="sparql" class="sparql">
+      <h1>SPARQL</h1>
+      <!-- ★ The limit belongs to THIS PAGE, not to the endpoint (#401). Since ikigai-store
+           0.2.5 a scoped read takes a SET of graphs, so the paragraph that read as "the
+           endpoint can only do one" was true of every sentence and false as a whole — a
+           reader concluded the ledger↔browse join was impossible, which it is not. Keep the
+           two halves apart: what this box sends, and what the endpoint accepts. -->
+      <p class="hint">Read-only. <strong>This page</strong> runs your query over one ledger's graph, as its whole dataset, under your grant. The endpoint behind it — <code>urn:iki:store:graph-select</code> (or <code>-ask</code>, <code>-construct</code>, <code>-describe</code>) — accepts <em>several</em> graphs in one read, so a caller holding a read token for each can join across them; this page has no graph selector yet. <code>FROM</code> and <code>FROM NAMED</code> are refused either way: the named graphs already are the dataset, and nothing outside them is visible.</p>
+      <!--
+        The sample queries. A button REPLACES the textarea's contents and runs nothing: the
+        person presses Run, so an edit is never lost to a surprise execution. Each query
+        travels as the TEXT of a view:sample (never an attribute — an XML parser normalizes
+        newlines in attribute values away, and a SPARQL query is nothing without them),
+        rendered into a hidden <pre> that web/gonk.js reads by id.
+      -->
+      <div class="samples" role="group" aria-label="Sample queries">
+        <xsl:apply-templates select="view:sample"/>
+      </div>
+      <p class="hint"><xsl:value-of select="view:hint"/></p>
+      <xsl:apply-templates select="view:cross-graph"/>
+      <div id="sample-queries" hidden="hidden"><xsl:apply-templates select="view:sample" mode="text"/></div>
+      <form class="panel stack" method="get" action="/sparql" hx-get="/sparql/results" hx-target="#results" hx-swap="innerHTML">
+        <div class="row">
+          <label for="q-ledger">Ledger</label>
+          <select id="q-ledger" name="ledger">
+            <xsl:apply-templates select="view:ledger" mode="option"/>
+          </select>
+        </div>
+        <label for="q">Query</label>
+        <textarea id="q" name="query" rows="12" spellcheck="false" class="mono"><xsl:value-of select="view:query"/></textarea>
+        <button type="submit">Run</button>
+      </form>
+      <div id="results" class="results" aria-live="polite">
+        <xsl:apply-templates select="view:results"/>
+      </div>
+    </section>
+  </xsl:template>
+
+  <!-- A sample button is a TOGGLE, not a link: `aria-pressed` says whether the editor holds
+       this sample's query. The server renders every one as `false` — a freshly served page
+       holds the default query, never a sample — and web/gonk.js moves the `true` on a click
+       and clears it on the first keystroke in the editor (#370). -->
+  <xsl:template match="view:sample">
+    <button type="button" class="sample quiet small" aria-pressed="false">
+      <xsl:attribute name="data-query"><xsl:value-of select="@id"/></xsl:attribute>
+      <xsl:value-of select="@label"/>
+    </button>
+  </xsl:template>
+
+  <xsl:template match="view:sample" mode="text">
+    <pre class="sample-text"><xsl:attribute name="id"><xsl:value-of select="@id"/></xsl:attribute><xsl:value-of select="."/></pre>
+  </xsl:template>
+
+  <!-- ★ The cross-graph example: SHOWN, never loadable. It is a `details` (the same idiom the
+       item form already uses) and NOT a `.sample` button — no `data-query`, no id under
+       `#sample-queries` — because web/gonk.js loads a sample by looking its `data-query` up as
+       an element id, and this page sends ONE graph: a multi-graph query run from the box would
+       come back empty and present a working capability as a broken feature. See
+       web::CROSS_GRAPH. -->
+  <xsl:template match="view:cross-graph">
+    <details class="cross-graph">
+      <summary>Joining two graphs — a query for the endpoint, not for this box</summary>
+      <p class="hint"><xsl:value-of select="@why"/></p>
+      <pre class="mono cross-graph-text"><xsl:value-of select="."/></pre>
+    </details>
+  </xsl:template>
+
+  <xsl:template match="view:results">
+    <xsl:apply-templates select="view:error"/>
+    <xsl:if test="@summary"><p class="result-meta"><xsl:value-of select="@summary"/></p></xsl:if>
+    <!-- The prefix legend: once per result set, as TEXT, so a shortened IRI is reachable
+         without a tooltip. See web::PREFIX_LEGEND. -->
+    <xsl:if test="view:prefix"><p class="result-meta legend"><xsl:value-of select="view:prefix"/></p></xsl:if>
+    <xsl:apply-templates select="view:table"/>
+    <xsl:if test="view:boolean"><p class="boolean"><xsl:value-of select="view:boolean"/></p></xsl:if>
+    <xsl:if test="view:graph"><pre class="mono graph"><xsl:value-of select="view:graph"/></pre></xsl:if>
+  </xsl:template>
+
+  <xsl:template match="view:error">
+    <p class="flash error" role="alert"><xsl:value-of select="."/></p>
+  </xsl:template>
+
+  <xsl:template match="view:table">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><xsl:for-each select="view:col"><th scope="col"><xsl:value-of select="."/></th></xsl:for-each></tr>
+        </thead>
+        <tbody>
+          <xsl:for-each select="view:row">
+            <tr>
+              <xsl:for-each select="view:cell">
+                <td><xsl:attribute name="class"><xsl:value-of select="@kind"/></xsl:attribute><xsl:if test="@title"><xsl:attribute name="title"><xsl:value-of select="@title"/></xsl:attribute></xsl:if><xsl:choose><xsl:when test="@href"><a><xsl:attribute name="href"><xsl:value-of select="@href"/></xsl:attribute><xsl:attribute name="aria-label"><xsl:value-of select="@label"/></xsl:attribute><xsl:attribute name="class">cell-link</xsl:attribute><xsl:attribute name="data-action"><xsl:value-of select="@action"/></xsl:attribute><xsl:value-of select="."/></a></xsl:when><xsl:otherwise><xsl:value-of select="."/></xsl:otherwise></xsl:choose></td>
+              </xsl:for-each>
+            </tr>
+          </xsl:for-each>
+        </tbody>
+      </table>
+    </div>
+  </xsl:template>
+</xsl:stylesheet>

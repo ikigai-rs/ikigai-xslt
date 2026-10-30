@@ -72,6 +72,7 @@
 
 #![forbid(unsafe_code)]
 
+mod boolean_values;
 mod html;
 pub mod limits;
 mod node_id;
@@ -412,6 +413,7 @@ impl CompiledStylesheet {
         // `Rc`, so afterwards the document is no longer the one that was parsed.
         let output_method = output_method_of(&styledoc);
         subset::check(&styledoc)?;
+        boolean_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
         let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
             .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
