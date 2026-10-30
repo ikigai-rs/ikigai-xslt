@@ -1,0 +1,213 @@
+2026-10-30; Intel Core i7-11800H; Linux x86_64; rustc 1.99.0
+ikigai-xslt 0.5.0; xrust 2.3.0; ikigai-core 0.2.8; release profile
+
+$ cargo run --release --example stylesheet-cost -- --rss 100 10000
+synthetic RSS: 100 items, 10000 CDATA body bytes per item
+stylesheet --rss (624 bytes), source 1017381 bytes, 5 runs each
+
+  parse stylesheet   run 0:    1.026 ms
+  parse stylesheet   run 1:    0.896 ms
+  parse stylesheet   run 2:    0.881 ms
+  parse stylesheet   run 3:    0.893 ms
+  parse stylesheet   run 4:    0.896 ms
+  compile            run 0:   18.645 ms
+  compile            run 1:   13.793 ms
+  compile            run 2:   13.689 ms
+  compile            run 3:   13.643 ms
+  compile            run 4:   13.712 ms
+  compile (crate)    run 0:   14.909 ms
+  compile (crate)    run 1:   14.704 ms
+  compile (crate)    run 2:   14.683 ms
+  compile (crate)    run 3:   14.678 ms
+  compile (crate)    run 4:   14.755 ms
+  reuse compiled     run 0:   27.000 ms  (9995 bytes out)
+  reuse compiled     run 1:   26.346 ms  (9995 bytes out)
+  reuse compiled     run 2:   26.152 ms  (9995 bytes out)
+  reuse compiled     run 3:   26.118 ms  (9995 bytes out)
+  reuse compiled     run 4:   26.109 ms  (9995 bytes out)
+  transform_xml      run 0:   45.079 ms  (9995 bytes out)
+  transform_xml      run 1:   27.030 ms  (9995 bytes out)
+  transform_xml      run 2:   26.565 ms  (9995 bytes out)
+  transform_xml      run 3:   26.634 ms  (9995 bytes out)
+  transform_xml      run 4:   26.739 ms  (9995 bytes out)
+
+source stages (stock xrust RNode; setup/teardown excluded):
+  source guard       run 0:    0.480 ms
+  source guard       run 1:    0.451 ms
+  source guard       run 2:    0.470 ms
+  source guard       run 3:    0.450 ms
+  source guard       run 4:    0.469 ms
+  parse source       run 0:   21.661 ms
+  parse source       run 1:   21.620 ms
+  parse source       run 2:   21.487 ms
+  parse source       run 3:   21.992 ms
+  parse source       run 4:   21.891 ms
+  evaluate           run 0:    3.663 ms
+  evaluate           run 1:    3.631 ms
+  evaluate           run 2:    3.635 ms
+  evaluate           run 3:    3.626 ms
+  evaluate           run 4:    3.665 ms
+  serialize XML      run 0:    0.268 ms
+  serialize XML      run 1:    0.273 ms
+  serialize XML      run 2:    0.261 ms
+  serialize XML      run 3:    0.268 ms
+  serialize XML      run 4:    0.272 ms
+
+$ cargo run --release --example stylesheet-cost -- --rss 1000 850
+synthetic RSS: 1000 items, 850 CDATA body bytes per item
+stylesheet --rss (624 bytes), source 1024881 bytes, 5 runs each
+
+  parse stylesheet   run 0:    1.009 ms
+  parse stylesheet   run 1:    0.874 ms
+  parse stylesheet   run 2:    0.875 ms
+  parse stylesheet   run 3:    0.891 ms
+  parse stylesheet   run 4:    0.890 ms
+  compile            run 0:   17.939 ms
+  compile            run 1:   13.926 ms
+  compile            run 2:   14.571 ms
+  compile            run 3:   13.785 ms
+  compile            run 4:   13.829 ms
+  compile (crate)    run 0:   15.017 ms
+  compile (crate)    run 1:   14.884 ms
+  compile (crate)    run 2:   15.136 ms
+  compile (crate)    run 3:   14.992 ms
+  compile (crate)    run 4:   14.841 ms
+  reuse compiled     run 0:  307.850 ms  (101795 bytes out)
+  reuse compiled     run 1:  299.034 ms  (101795 bytes out)
+  reuse compiled     run 2:  298.803 ms  (101795 bytes out)
+  reuse compiled     run 3:  300.084 ms  (101795 bytes out)
+  reuse compiled     run 4:  299.060 ms  (101795 bytes out)
+  transform_xml      run 0:  340.038 ms  (101795 bytes out)
+  transform_xml      run 1:  331.678 ms  (101795 bytes out)
+  transform_xml      run 2:  307.128 ms  (101795 bytes out)
+  transform_xml      run 3:  306.198 ms  (101795 bytes out)
+  transform_xml      run 4:  311.107 ms  (101795 bytes out)
+
+source stages (stock xrust RNode; setup/teardown excluded):
+  source guard       run 0:    0.556 ms
+  source guard       run 1:    0.539 ms
+  source guard       run 2:    0.519 ms
+  source guard       run 3:    0.518 ms
+  source guard       run 4:    0.520 ms
+  parse source       run 0:  205.565 ms
+  parse source       run 1:  204.660 ms
+  parse source       run 2:  204.120 ms
+  parse source       run 3:  204.421 ms
+  parse source       run 4:  204.915 ms
+  evaluate           run 0:   89.397 ms
+  evaluate           run 1:   88.306 ms
+  evaluate           run 2:   88.299 ms
+  evaluate           run 3:   89.787 ms
+  evaluate           run 4:   88.574 ms
+  serialize XML      run 0:    2.788 ms
+  serialize XML      run 1:    2.717 ms
+  serialize XML      run 2:    2.833 ms
+  serialize XML      run 3:    2.661 ms
+  serialize XML      run 4:    2.702 ms
+
+$ cargo run --release --example stylesheet-cost -- --rss 5000 50
+synthetic RSS: 5000 items, 50 CDATA body bytes per item
+stylesheet --rss (624 bytes), source 1132881 bytes, 5 runs each
+
+  parse stylesheet   run 0:    1.013 ms
+  parse stylesheet   run 1:    0.916 ms
+  parse stylesheet   run 2:    0.913 ms
+  parse stylesheet   run 3:    0.886 ms
+  parse stylesheet   run 4:    0.898 ms
+  compile            run 0:   18.100 ms
+  compile            run 1:   13.803 ms
+  compile            run 2:   13.711 ms
+  compile            run 3:   13.780 ms
+  compile            run 4:   13.806 ms
+  compile (crate)    run 0:   14.898 ms
+  compile (crate)    run 1:   14.687 ms
+  compile (crate)    run 2:   14.739 ms
+  compile (crate)    run 3:   14.782 ms
+  compile (crate)    run 4:   14.761 ms
+  reuse compiled     run 0: 2651.967 ms  (517795 bytes out)
+  reuse compiled     run 1: 2673.893 ms  (517795 bytes out)
+  reuse compiled     run 2: 2693.753 ms  (517795 bytes out)
+  reuse compiled     run 3: 2663.865 ms  (517795 bytes out)
+  reuse compiled     run 4: 2668.734 ms  (517795 bytes out)
+  transform_xml      run 0: 2778.010 ms  (517795 bytes out)
+  transform_xml      run 1: 2657.360 ms  (517795 bytes out)
+  transform_xml      run 2: 2661.363 ms  (517795 bytes out)
+  transform_xml      run 3: 2668.317 ms  (517795 bytes out)
+  transform_xml      run 4: 2653.465 ms  (517795 bytes out)
+
+source stages (stock xrust RNode; setup/teardown excluded):
+  source guard       run 0:    0.741 ms
+  source guard       run 1:    0.682 ms
+  source guard       run 2:    0.694 ms
+  source guard       run 3:    0.674 ms
+  source guard       run 4:    0.684 ms
+  parse source       run 0: 1088.166 ms
+  parse source       run 1: 1129.579 ms
+  parse source       run 2: 1075.717 ms
+  parse source       run 3: 1080.792 ms
+  parse source       run 4: 1074.438 ms
+  evaluate           run 0: 1547.420 ms
+  evaluate           run 1: 1552.251 ms
+  evaluate           run 2: 1549.365 ms
+  evaluate           run 3: 1549.385 ms
+  evaluate           run 4: 1549.773 ms
+  serialize XML      run 0:   15.882 ms
+  serialize XML      run 1:   15.533 ms
+  serialize XML      run 2:   15.515 ms
+  serialize XML      run 3:   18.703 ms
+  serialize XML      run 4:   15.694 ms
+
+$ cargo run --release --example stylesheet-cost -- --rss 10000 0
+synthetic RSS: 10000 items, 0 CDATA body bytes per item
+stylesheet --rss (624 bytes), source 1767881 bytes, 5 runs each
+
+  parse stylesheet   run 0:    0.992 ms
+  parse stylesheet   run 1:    0.894 ms
+  parse stylesheet   run 2:    0.952 ms
+  parse stylesheet   run 3:    2.197 ms
+  parse stylesheet   run 4:    1.318 ms
+  compile            run 0:   17.880 ms
+  compile            run 1:   14.068 ms
+  compile            run 2:   13.852 ms
+  compile            run 3:   13.931 ms
+  compile            run 4:   13.922 ms
+  compile (crate)    run 0:   15.079 ms
+  compile (crate)    run 1:   14.863 ms
+  compile (crate)    run 2:   14.904 ms
+  compile (crate)    run 3:   15.844 ms
+  compile (crate)    run 4:   15.135 ms
+  reuse compiled     run 0: 7938.655 ms  (1037795 bytes out)
+  reuse compiled     run 1: 8181.045 ms  (1037795 bytes out)
+  reuse compiled     run 2: 8197.426 ms  (1037795 bytes out)
+  reuse compiled     run 3: 8227.215 ms  (1037795 bytes out)
+  reuse compiled     run 4: 8203.046 ms  (1037795 bytes out)
+  transform_xml      run 0: 7961.769 ms  (1037795 bytes out)
+  transform_xml      run 1: 8223.166 ms  (1037795 bytes out)
+  transform_xml      run 2: 8208.184 ms  (1037795 bytes out)
+  transform_xml      run 3: 8219.282 ms  (1037795 bytes out)
+  transform_xml      run 4: 8215.468 ms  (1037795 bytes out)
+
+source stages (stock xrust RNode; setup/teardown excluded):
+  source guard       run 0:    1.192 ms
+  source guard       run 1:    1.208 ms
+  source guard       run 2:    1.118 ms
+  source guard       run 3:    1.186 ms
+  source guard       run 4:    1.143 ms
+  parse source       run 0: 2283.088 ms
+  parse source       run 1: 2278.471 ms
+  parse source       run 2: 2282.790 ms
+  parse source       run 3: 2279.968 ms
+  parse source       run 4: 2281.408 ms
+  evaluate           run 0: 5780.536 ms
+  evaluate           run 1: 5788.257 ms
+  evaluate           run 2: 6246.151 ms
+  evaluate           run 3: 5773.194 ms
+  evaluate           run 4: 5787.124 ms
+  serialize XML      run 0:   37.256 ms
+  serialize XML      run 1:   36.346 ms
+  serialize XML      run 2:   35.939 ms
+  serialize XML      run 3:   35.314 ms
+  serialize XML      run 4:   35.869 ms
+
+Separate default-budget probe on rss(10000, 0), using the same RSS_STYLE:
+1767881 source bytes; 5.003096134s; Err("timeout: this XSLT transform ran past its time budget of 5000 ms and its caller was answered instead of waiting (ledger #1040); nothing it produced is returned. The XSLT engine cannot be stopped partway, so it finishes on its own thread and is counted until it does. Some shapes are super-linear in the engine — a long chain of operators, a template that recurses to build a deep result, a path nested inside a predicate over every node — so make the input or the stylesheet smaller, or, as the host, run it with a larger budget")

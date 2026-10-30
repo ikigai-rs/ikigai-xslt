@@ -5,14 +5,28 @@
 //!
 //!     cargo run --release --example stylesheet-cost -- <stylesheet.xsl> [source.xml]
 //!
+//! Or generate offline RSS with independently variable item count and CDATA body size:
+//!
+//!     cargo run --release --example stylesheet-cost -- --rss [items=1000] [body-bytes=850]
+//!
+//! Source stages separate the guard, parse, evaluation and XML serialization using stock
+//! xrust RNode (no ikigai node wrapper or HTML postprocessing). End-to-end rows above them
+//! use the crate. Stage setup and teardown are excluded; end-to-end rows include teardown.
+//! This is a trusted-input benchmark: direct calls have no deadline and the public API row
+//! uses an hour instead of the production 5 s budget. File I/O is outside every timer.
+//!
 //! With no source document the source is `<doc/>`, which isolates the fixed overhead from
 //! anything the data costs. The parse/compile split reaches past this crate's API into
 //! `xrust` directly, because `CompiledStylesheet::compile` deliberately does both.
 
-use std::time::Instant;
-use xrust::item::Node;
+#[path = "rss-cost/mod.rs"]
+mod rss_cost;
+use rss_cost::{rss, RSS_STYLE};
+use std::time::{Duration, Instant};
+use xrust::item::{Item, Node, SequenceTrait};
 use xrust::parser::xml::parse as xmlparse;
 use xrust::parser::ParseError;
+use xrust::transform::context::StaticContextBuilder;
 use xrust::trees::smite::RNode;
 use xrust::xdmerror::Error as XsltError;
 use xrust::xslt::from_document;
@@ -67,14 +81,93 @@ fn timed_after<S>(
 }
 
 fn main() {
+    // Direct xrust and CompiledStylesheet calls need the same stack as production.
+    ikigai_xslt::limits::on_xslt_stack(run).expect("benchmark worker");
+}
+
+/// Keep both setup and teardown out of a stage's timer. In particular, dropping a
+/// source tree must not be mistaken for parsing it, or evaluation for serialization.
+fn stage<S, R>(label: &str, mut setup: impl FnMut() -> S, mut work: impl FnMut(&S) -> R) {
+    for run in 0..RUNS {
+        let state = setup();
+        let start = Instant::now();
+        let result = work(&state);
+        let elapsed = ms(start.elapsed());
+        std::hint::black_box(&result);
+        println!("  {label:<18} run {run}: {elapsed:8.3} ms");
+        drop(result);
+        drop(state);
+    }
+}
+
+fn source_stages(style: &str, src: &str) {
+    println!("\nsource stages (stock xrust RNode; setup/teardown excluded):");
+    stage(
+        "source guard",
+        || (),
+        |_| ikigai_xslt::limits::check_source(src, "src").expect("source bounds"),
+    );
+    stage(
+        "parse source",
+        || (),
+        |_| parse_xml(src).expect("parse source"),
+    );
+    let compiled = from_document(parse_xml(style).unwrap(), None, parse_xml, |_| {
+        Ok(String::new())
+    })
+    .expect("compile stock xrust");
+    let evaluate = |srcdoc: &RNode| {
+        let mut ctxt = compiled.clone();
+        ctxt.context(vec![Item::Node(srcdoc.clone())], 0);
+        ctxt.result_document(RNode::new_document());
+        let mut stctxt = StaticContextBuilder::new()
+            .message(|_| Ok(()))
+            .fetcher(|_| {
+                Err(XsltError::new(
+                    xrust::xdmerror::ErrorKind::NotImplemented,
+                    "no fetcher",
+                ))
+            })
+            .parser(|_| {
+                Err(XsltError::new(
+                    xrust::xdmerror::ErrorKind::NotImplemented,
+                    "no parser",
+                ))
+            })
+            .build();
+        ctxt.evaluate(&mut stctxt).expect("evaluate")
+    };
+    stage("evaluate", || parse_xml(src).unwrap(), &evaluate);
+    stage(
+        "serialize XML",
+        || evaluate(&parse_xml(src).unwrap()),
+        |seq| seq.to_xml(),
+    );
+}
+
+fn run() {
     let mut args = std::env::args().skip(1);
     let style_path = args
         .next()
         .expect("usage: stylesheet-cost <stylesheet.xsl> [source.xml]");
-    let style = std::fs::read_to_string(&style_path).expect("read stylesheet");
-    let src = match args.next() {
-        Some(path) => std::fs::read_to_string(path).expect("read source"),
-        None => "<doc/>".to_string(),
+    let (style, src) = if style_path == "--rss" {
+        let items = args
+            .next()
+            .map(|s| s.parse().expect("item count"))
+            .unwrap_or(1000);
+        let body = args
+            .next()
+            .map(|s| s.parse().expect("body bytes"))
+            .unwrap_or(850);
+        println!("synthetic RSS: {items} items, {body} CDATA body bytes per item");
+        (RSS_STYLE.to_string(), rss(items, body))
+    } else {
+        let style = std::fs::read_to_string(&style_path).expect("read stylesheet");
+        let src = match args.next() {
+            Some(path) => std::fs::read_to_string(path).expect("read source"),
+            None => "<doc/>".to_string(),
+        };
+        (style, src)
     };
     println!(
         "stylesheet {style_path} ({} bytes), source {} bytes, {RUNS} runs each\n",
@@ -114,9 +207,11 @@ fn main() {
     // `transform_xml` memoizes the compile per thread, so run 0 pays it and the rest do
     // not. Before the memo, every run cost what run 0 costs.
     ikigai_xslt::clear_stylesheet_cache();
+    // A measurement should finish even when it exceeds the production 5 s budget.
     timed("transform_xml", || {
-        ikigai_xslt::transform_xml(&src, &style, false)
+        ikigai_xslt::transform_xml_within(&src, &style, false, Duration::from_secs(3600))
             .expect("transform")
             .len()
     });
+    source_stages(&style, &src);
 }
