@@ -5,6 +5,26 @@
 //! booleans before stringification; reject ambiguous conversions. Its
 //! number(string(...)) path works for nodes. Parse operator precedence so
 //! the adaptation applies to operands, never to names, string literals or AVT text.
+//!
+//! Why the shared parser cannot serve here (xrust 2.3.0; ledger #2669):
+//! `parser::xpath::parse` returns an editable `Transform`, and the standalone AST
+//! test below proves that wrapping its arithmetic operands fixes conversion. But
+//! `xslt::from_document` reparses attribute strings internally, accepts no XPath
+//! compiler callback or pre-parsed expressions, and returns a `Context` whose
+//! template bodies, globals and keys are crate-private. We cannot install those
+//! edited expressions into the stylesheet compiled by our existing XSLT pipeline.
+//! Unlike boolean_values, this adapter must change operands inside expressions,
+//! not just classify a result and emit ordinary XSLT around the original string.
+//!
+//! Nor does `Transform` retain source spans or lexical spellings: arithmetic has
+//! only operator/operand fields, literals become values, and QName resolution can
+//! discard prefixes. Its Debug output is diagnostic (e.g. "Arithmetic 2 operands"),
+//! not XPath serialization. Locating nested operands in the original text would
+//! still require parsing; writing an AST-to-XPath serializer would add another
+//! substantial syntax implementation. Retain this bounded source adapter until
+//! upstream exposes a stylesheet XPath compilation hook, a mutable compiled-tree
+//! visitor, or operand spans. See docs/numeric-cost.md for API evidence, the AST
+//! experiment, and chart-sized wrapper costs beside PR 39's RSS measurements.
 
 use crate::{
     boolean_values::{self, Kind},
@@ -493,6 +513,49 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The standalone AST is editable. The missing piece is handing that edited
+    // AST to the stylesheet compiler; see the module header and docs/numeric-cost.md.
+    #[test]
+    fn standalone_xrust_ast_can_adapt_numeric_operands() {
+        use xrust::{
+            item::{Item, SequenceTrait},
+            parser::xpath::parse,
+            transform::{
+                context::{Context, StaticContextBuilder},
+                Transform,
+            },
+        };
+
+        let doc = crate::parse_xml("<r><v> 12.5 </v><v>99</v></r>").unwrap();
+        let evaluate = |t: &Transform<IdNode>| {
+            let mut context = Context::new();
+            context.context(vec![Item::Node(doc.clone())], 0);
+            let mut static_context = StaticContextBuilder::new()
+                .message(|_| Ok(()))
+                .fetcher(|_| Ok(String::new()))
+                .parser(|_| Ok(doc.clone()))
+                .build();
+            context
+                .dispatch(&mut static_context, t)
+                .unwrap()
+                .to_string()
+        };
+        let mut t = parse::<IdNode>("/r/v + 1", None, None).unwrap();
+        assert_eq!(evaluate(&t), "NaN");
+        let Transform::Arithmetic(operands) = &mut t else {
+            panic!("expected arithmetic AST");
+        };
+        for operand in operands {
+            let first = Transform::Compose(vec![
+                operand.operand.clone(),
+                Transform::Filter(Box::new(parse::<IdNode>("1", None, None).unwrap())),
+            ]);
+            operand.operand =
+                Transform::NormalizeSpace(Some(Box::new(Transform::String(Box::new(first)))));
+        }
+        assert_eq!(evaluate(&t), "13.5");
+    }
 
     #[test]
     fn avt_text_escaped_braces_and_quoted_braces_are_preserved() {

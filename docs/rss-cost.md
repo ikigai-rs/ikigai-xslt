@@ -6,6 +6,10 @@ budget**, even with a warm stylesheet. There is no byte-size cutoff that guarant
 feed will finish: input shape and template work matter as well as bytes. Validation and
 input resolution happen before the worker's timer; this is not a total ingestion deadline.
 
+For arithmetic-heavy workloads, see the separate [numeric adapter investigation and
+chart-sized operand-cost comparison](numeric-cost.md). It measures numeric wrappers
+independently; RSS throughput is not a proxy for their cost.
+
 ## Reproduction
 
 Measured 2026-10-30 on an Intel Core i7-11800H, Linux x86_64, rustc 1.99.0,
