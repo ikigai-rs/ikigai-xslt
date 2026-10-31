@@ -1,10 +1,16 @@
 //! XPath 1.0 numeric operands, adapted before xrust compiles them (#2487).
 //!
 //! xrust's Item::to_double rejects nodes and ValueData::UnsignedLong (the result of
-//! string-length). Its number(string(...)) path works. Parse operator precedence so
+//! string-length), and booleans have no string value upstream. Convert known
+//! booleans before stringification; reject ambiguous conversions. Its
+//! number(string(...)) path works for nodes. Parse operator precedence so
 //! the adaptation applies to operands, never to names, string literals or AVT text.
 
-use crate::{node_id::IdNode, XSL_NS};
+use crate::{
+    boolean_values::{self, Kind},
+    node_id::IdNode,
+    XSL_NS,
+};
 use ikigai_core::{Error, Result};
 use std::rc::Rc;
 use xrust::{item::Node, value::Value};
@@ -51,11 +57,34 @@ fn tokens(s: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
+struct Expr {
+    text: String,
+    kind: Kind,
+}
+
+impl Expr {
+    fn other(text: String) -> Self {
+        Self {
+            text,
+            kind: Kind::Other,
+        }
+    }
+}
+
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 struct Parser<'a> {
     tokens: Vec<&'a str>,
     pos: usize,
     changed: bool,
     depth: usize,
+    node: Option<IdNode>,
+    ambiguous: bool,
+    item_name: String,
 }
 
 fn numeric(value: &str) -> String {
@@ -65,6 +94,46 @@ fn numeric(value: &str) -> String {
 }
 
 impl Parser<'_> {
+    fn conversion(&mut self, value: &Expr, string: bool) -> String {
+        match value.kind {
+            Kind::Boolean => {
+                // xrust supports conditional expressions internally. Each branch
+                // has the required type and the condition is evaluated once.
+                if string {
+                    format!("(if ({value}) then 'true' else 'false')")
+                } else {
+                    format!("(if ({value}) then 1 else 0)")
+                }
+            }
+            Kind::Other => {
+                if string {
+                    format!("string({value})")
+                } else {
+                    numeric(&value.text)
+                }
+            }
+            Kind::Unknown => {
+                self.ambiguous = true;
+                value.text.clone()
+            }
+        }
+    }
+
+    fn numeric_items(&mut self, value: &Expr) -> String {
+        // Relational comparisons are existential over both node-sets, unlike
+        // number(node-set), which takes only the first node. Atomize each item
+        // before comparing: xrust reverses the operands when the left is a node.
+        let item = Expr {
+            text: format!("${}", self.item_name),
+            kind: value.kind,
+        };
+        let converted = self.conversion(&item, false);
+        format!(
+            "(for ${} in ({value}) return number({converted}))",
+            self.item_name
+        )
+    }
+
     fn peek(&self) -> Option<&str> {
         self.tokens.get(self.pos).copied()
     }
@@ -80,11 +149,11 @@ impl Parser<'_> {
     }
 
     // XPath 1.0 precedence, low to high. Path and predicate parsing is in primary.
-    fn expression(&mut self, min: u8) -> Option<String> {
+    fn expression(&mut self, min: u8) -> Option<Expr> {
         self.bounded(|parser| parser.expression_inner(min))
     }
 
-    fn bounded(&mut self, parse: impl FnOnce(&mut Self) -> Option<String>) -> Option<String> {
+    fn bounded(&mut self, parse: impl FnOnce(&mut Self) -> Option<Expr>) -> Option<Expr> {
         // Brackets are bounded in caller input, but unary signs and malformed axis
         // chains can recurse without brackets. Leave such syntax to xrust.
         if self.depth >= 4 * crate::limits::MAX_EXPR_DEPTH {
@@ -96,11 +165,15 @@ impl Parser<'_> {
         result
     }
 
-    fn expression_inner(&mut self, min: u8) -> Option<String> {
+    fn expression_inner(&mut self, min: u8) -> Option<Expr> {
         let mut left = if matches!(self.peek(), Some("-" | "+")) {
             let sign = self.take()?.to_string();
             let value = self.expression(7)?;
-            format!("{sign}{value}")
+            self.changed = true;
+            // xrust's unary expression evaluator is unimplemented. Multiplication
+            // applies the sign without losing negative zero (unlike 0 - value).
+            let factor = if sign == "-" { "number('-1')" } else { "1" };
+            Expr::other(format!("({} * {factor})", self.conversion(&value, false)))
         } else {
             self.primary()?
         };
@@ -123,25 +196,49 @@ impl Parser<'_> {
             let right = self.expression(precedence + 1)?;
             left = if matches!(precedence, 5 | 6) {
                 self.changed = true;
-                format!("({} {op} {})", numeric(&left), numeric(&right))
+                Expr::other(format!(
+                    "({} {op} {})",
+                    self.conversion(&left, false),
+                    self.conversion(&right, false)
+                ))
+            } else if precedence == 4 {
+                self.changed = true;
+                Expr {
+                    text: format!(
+                        "({} {op} {})",
+                        self.numeric_items(&left),
+                        self.numeric_items(&right)
+                    ),
+                    kind: Kind::Boolean,
+                }
             } else {
-                format!("{left} {op} {right}")
+                Expr {
+                    text: format!("{left} {op} {right}"),
+                    kind: if precedence <= 4 {
+                        Kind::Boolean
+                    } else {
+                        Kind::Other
+                    },
+                }
             };
         }
         Some(left)
     }
 
-    fn primary(&mut self) -> Option<String> {
+    fn primary(&mut self) -> Option<Expr> {
         self.bounded(Self::primary_inner)
     }
 
-    fn primary_inner(&mut self) -> Option<String> {
+    fn primary_inner(&mut self) -> Option<Expr> {
         let token = self.take()?.to_string();
         let mut value = match token.as_str() {
             "(" => {
                 let value = self.expression(1)?;
                 self.expect(")")?;
-                format!("({value})")
+                Expr {
+                    text: format!("({value})"),
+                    kind: value.kind,
+                }
             }
             "/" | "//" => {
                 if matches!(
@@ -150,18 +247,27 @@ impl Parser<'_> {
                         ")" | "]" | "," | "|" | "+" | "-" | "=" | "!=" | "<" | ">" | "<=" | ">="
                     )
                 ) {
-                    token
+                    Expr::other(token)
                 } else {
-                    format!("{token}{}", self.expression(10)?)
+                    Expr::other(format!("{token}{}", self.expression(10)?))
                 }
             }
             "@" | "$" => {
                 let name = self.take()?.to_string();
                 if token == "@" && name.ends_with(':') && self.peek() == Some("*") {
                     self.take();
-                    format!("@{name}*")
+                    Expr::other(format!("@{name}*"))
                 } else {
-                    format!("{token}{name}")
+                    let text = format!("{token}{name}");
+                    let kind = if token == "$" {
+                        self.node
+                            .as_ref()
+                            .map(|n| boolean_values::expression_kind(&text, n))
+                            .unwrap_or(Kind::Unknown)
+                    } else {
+                        Kind::Other
+                    };
+                    Expr { text, kind }
                 }
             }
             ")" | "]" | "," | "=" | "!=" | "<" | ">" | "<=" | ">=" => return None,
@@ -179,23 +285,55 @@ impl Parser<'_> {
                         }
                     }
                     self.expect(")")?;
-                    if token == "number" && args.len() <= 1 {
+                    if matches!(token.as_str(), "number" | "string") && args.len() <= 1 {
                         self.changed = true;
-                        format!(
-                            "number({})",
-                            numeric(args.first().map(String::as_str).unwrap_or("."))
-                        )
+                        let default = Expr::other(".".into());
+                        let arg = args.first().unwrap_or(&default);
+                        let converted = self.conversion(arg, token == "string");
+                        Expr::other(if token == "number" {
+                            format!("number({converted})")
+                        } else {
+                            converted
+                        })
                     } else {
-                        format!("{token}({})", args.join(", "))
+                        let kind = if matches!(
+                            token.as_str(),
+                            "true"
+                                | "false"
+                                | "boolean"
+                                | "not"
+                                | "contains"
+                                | "starts-with"
+                                | "ends-with"
+                        ) {
+                            Kind::Boolean
+                        } else {
+                            Kind::Other
+                        };
+                        Expr {
+                            text: format!(
+                                "{token}({})",
+                                args.iter()
+                                    .map(|a| a.text.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            kind,
+                        }
                     }
                 } else if self.peek() == Some("::") {
                     self.take();
-                    format!("{token}::{}", self.primary()?)
+                    Expr::other(format!("{token}::{}", self.primary()?))
                 } else if token.ends_with(':') && self.peek() == Some("*") {
                     self.take();
-                    format!("{token}*")
+                    Expr::other(format!("{token}*"))
+                } else if token.bytes().all(|c| c.is_ascii_digit()) && token.parse::<i64>().is_err()
+                {
+                    // XPath 1.0 literals are doubles; xrust first tries an i64.
+                    self.changed = true;
+                    Expr::other(format!("number('{token}')"))
                 } else {
-                    token
+                    Expr::other(token)
                 }
             }
         };
@@ -203,24 +341,52 @@ impl Parser<'_> {
             self.take();
             let predicate = self.expression(1)?;
             self.expect("]")?;
-            value = format!("{value}[{predicate}]");
+            value = Expr {
+                text: format!("{value}[{predicate}]"),
+                kind: if value.kind == Kind::Other {
+                    Kind::Other
+                } else {
+                    Kind::Unknown
+                },
+            };
         }
         Some(value)
     }
 }
 
-fn expression(source: &str) -> Option<String> {
+fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> {
+    let mut item_name = "__ikigai_numeric_item".to_string();
+    while source.contains(&item_name) {
+        item_name.push('_');
+    }
     let mut parser = Parser {
-        tokens: tokens(source)?,
+        tokens: match tokens(source) {
+            Some(t) => t,
+            None => return Ok(None),
+        },
         pos: 0,
         changed: false,
         depth: 0,
+        node: node.cloned(),
+        ambiguous: false,
+        item_name,
     };
-    let result = parser.expression(1)?;
-    (parser.changed && parser.pos == parser.tokens.len()).then_some(result)
+    let Some(result) = parser.expression(1) else {
+        return Ok(None);
+    };
+    if parser.pos != parser.tokens.len() {
+        return Ok(None);
+    }
+    if parser.ambiguous {
+        return Err(Error::InvalidArgument {
+            name: "stylesheet".into(),
+            detail: format!("refused: numeric/string conversion in `{source}` may receive a boolean or a nonboolean value (ledger #2668); use xsl:choose to convert mixed parameter values explicitly"),
+        });
+    }
+    Ok(parser.changed.then_some(result.text))
 }
 
-fn avt(source: &str) -> String {
+fn avt_at(source: &str, node: Option<&IdNode>) -> Result<String> {
     let mut result = String::new();
     let mut i = 0;
     while i < source.len() {
@@ -247,7 +413,11 @@ fn avt(source: &str) -> String {
             }
             let original = &source[start..i];
             result.push('{');
-            result.push_str(expression(original).as_deref().unwrap_or(original));
+            result.push_str(
+                expression_at(original, node)?
+                    .as_deref()
+                    .unwrap_or(original),
+            );
             result.push('}');
             i += 1;
         } else {
@@ -256,7 +426,17 @@ fn avt(source: &str) -> String {
             i += c.len_utf8();
         }
     }
-    result
+    Ok(result)
+}
+
+#[cfg(test)]
+fn expression(source: &str) -> Option<String> {
+    expression_at(source, None).unwrap()
+}
+
+#[cfg(test)]
+fn avt(source: &str) -> String {
+    avt_at(source, None).unwrap()
 }
 
 pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
@@ -284,9 +464,9 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
                     "attribute" | "element" | "processing-instruction"
                 ) && matches!(attr_local.as_str(), "name" | "namespace"))
             {
-                Some(avt(&source))
+                Some(avt_at(&source, Some(&node))?)
             } else if matches!(attr_local.as_str(), "select" | "test" | "use" | "value") {
-                expression(&source)
+                expression_at(&source, Some(&node))?
             } else {
                 None
             };

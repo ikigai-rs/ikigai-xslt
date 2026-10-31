@@ -15,7 +15,7 @@ use xrust::{
 };
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Boolean,
     Other,
     Unknown,
@@ -54,6 +54,14 @@ fn binding(node: &IdNode, name: &str) -> Option<IdNode> {
         current = parent;
     }
     None
+}
+
+// Shared with numeric/string conversion: resolve variable and parameter types in
+// their lexical scope using the same bounded analysis as direct value-of.
+pub(crate) fn expression_kind(source: &str, node: &IdNode) -> Kind {
+    parse(source, Some(node.clone()), None)
+        .map(|t| kind(&t, node, &mut Vec::new()))
+        .unwrap_or(Kind::Unknown)
 }
 
 fn kind(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>) -> Kind {

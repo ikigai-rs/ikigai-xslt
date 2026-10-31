@@ -1,4 +1,4 @@
-//! XPath 1.0 numeric conversion regressions (ledger #2487).
+//! XPath 1.0 numeric conversion regressions (ledger #2487 and #2668).
 use ikigai_xslt::transform_xml;
 
 fn evaluate(src: &str, expression: &str) -> String {
@@ -109,4 +109,116 @@ fn namespaced_attributes_are_numeric() {
 fn arithmetic_preserves_floating_point_signed_zero() {
     let src = "<r><v>-1</v></r>";
     assert_eq!(evaluate(src, "1 div (0 div /r/v)"), "-inf");
+}
+
+// Each reported row is independent so the baseline run reproduces all six (#2668).
+macro_rules! reported_boolean_numeric_case {
+    ($name:ident, $expression:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            assert_eq!(evaluate("<r><v>3</v></r>", $expression), $expected);
+        }
+    };
+}
+reported_boolean_numeric_case!(boolean_number_true, "number(true())", "1");
+reported_boolean_numeric_case!(boolean_number_false, "number(false())", "0");
+reported_boolean_numeric_case!(boolean_addition, "true() + 1", "2");
+reported_boolean_numeric_case!(boolean_comparison_number, "number(/r/v &gt; 2) * 5", "5");
+reported_boolean_numeric_case!(
+    boolean_conditional_substring,
+    "concat('[', substring('yes', 1, number(/r/v &gt; 2) * 3), ']')",
+    "[yes]"
+);
+reported_boolean_numeric_case!(
+    large_literal_addition,
+    "100000000000000000000 + 1",
+    "100000000000000000000"
+);
+
+#[test]
+fn boolean_conversion_preserves_types_and_false_conditions() {
+    for (expression, expected) in [
+        ("string(true())", "true"),
+        ("string(false())", "false"),
+        ("concat('[', string(/r/v &gt; 2), ']')", "[true]"),
+        ("number('true')", "NaN"),
+        ("number('false')", "NaN"),
+        ("number(string(true()))", "NaN"),
+        ("number(string(false()))", "NaN"),
+        ("false() + 1", "1"),
+        ("true() - false()", "1"),
+        ("true() * 5", "5"),
+        ("true() div 2", "0.5"),
+        ("true() mod 2", "1"),
+        ("-true()", "-1"),
+        ("1 div (-false())", "-inf"),
+        ("1 div (+ (0 div /r/negative))", "-inf"),
+        ("number(not(/r/v))", "0"),
+        ("number(contains('abc', 'b'))", "1"),
+        ("number(starts-with('abc', 'b'))", "0"),
+        ("number((true() and false()) or true())", "1"),
+        (
+            "concat('[', substring('yes', 1, number(/r/v &lt; 2) * 3), ']')",
+            "[]",
+        ),
+        ("100000000000000000000", "100000000000000000000"),
+        ("-100000000000000000000 + 1", "-100000000000000000000"),
+        (
+            "concat('100000000000000000000', ' + true()')",
+            "100000000000000000000 + true()",
+        ),
+    ] {
+        assert_eq!(
+            evaluate("<r><v>3</v><negative>-1</negative></r>", expression),
+            expected,
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn relational_conditions_compare_all_numeric_node_pairs_in_order() {
+    let src = "<r><v>1</v><v>3</v><w>2</w><w>4</w><bad>x</bad></r>";
+    for (expression, expected) in [
+        ("number(/r/v &gt; 2)", "1"),
+        ("number(/r/v &lt; 0)", "0"),
+        ("number(2 &lt; /r/v)", "1"),
+        ("number(/r/v &gt; /r/w)", "1"),
+        ("number(/r/v &gt;= 3)", "1"),
+        ("number(/r/v &lt;= 1)", "1"),
+        ("number(/r/missing &gt; 0)", "0"),
+        ("number(0 &gt; /r/missing)", "0"),
+        ("number(/r/bad &gt; 0)", "0"),
+        ("number('10' &lt; '2')", "0"),
+        ("number(true() &gt; false())", "1"),
+    ] {
+        assert_eq!(evaluate(src, expression), expected, "{expression}");
+    }
+}
+
+#[test]
+fn boolean_variables_parameters_predicates_and_avts_are_adapted() {
+    let stylesheet = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:template match="/"><xsl:variable name="__ikigai_numeric_item" select="2"/><xsl:variable name="b" select="/r/v &gt; $__ikigai_numeric_item"/><xsl:variable name="alias" select="$b"/><out n="{number($alias) * 5}" s="{string($alias)}"><xsl:for-each select="r/v[number(. &gt; 2) = 1]"><xsl:value-of select="number($b) + 1"/></xsl:for-each><xsl:call-template name="local"><xsl:with-param name="flag" select="$alias"/></xsl:call-template></out></xsl:template><xsl:template name="local"><xsl:param name="flag" select="false()"/><xsl:value-of select="concat('[', string($flag), '][', number($flag), ']')"/></xsl:template></xsl:stylesheet>"#;
+    let result = transform_xml("<r><v>1</v><v>3</v></r>", stylesheet, false).unwrap();
+    assert!(result.contains("n='5'"), "{result}");
+    assert!(result.contains("s='true'"), "{result}");
+    assert!(result.ends_with(">2[true][1]</out>"), "{result}");
+}
+
+#[test]
+fn ambiguous_parameter_conversions_are_refused_explicitly() {
+    for conversion in ["number($flag)", "$flag + 1", "string($flag)"] {
+        let stylesheet = format!(
+            r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:param name="flag" select="true()"/><xsl:template match="/"><xsl:value-of select="{conversion}"/></xsl:template></xsl:stylesheet>"#
+        );
+        let error = transform_xml("<r/>", &stylesheet, true).unwrap_err();
+        assert!(
+            error.starts_with("invalid argument `stylesheet`:"),
+            "{error}"
+        );
+        assert!(
+            error.contains("boolean") && error.contains("xsl:choose"),
+            "{error}"
+        );
+    }
 }
