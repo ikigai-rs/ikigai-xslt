@@ -1212,3 +1212,42 @@ fn numeric_conversion_is_adapted_over_stock_xrust_nan() {
     assert_eq!(stock(src, templates).unwrap(), "<out>NaN</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>2</out>");
 }
+
+/// #2668: keep the unadapted upstream defects visible beside the public fixes.
+#[test]
+fn boolean_numeric_and_large_literal_upstream_causes() {
+    let src = "<r><v>3</v></r>";
+    for (expression, wrong, correct) in [
+        ("number(true())", "NaN", "1"),
+        ("number(false())", "NaN", "0"),
+        ("true() + 1", "NaN", "2"),
+        ("number(/r/v &gt; 2) * 5", "NaN", "5"),
+        ("100000000000000000000 + 1", "NaN", "100000000000000000000"),
+        (
+            "concat('[', string(true()), '][', string(false()), ']')",
+            "[][]",
+            "[true][false]",
+        ),
+    ] {
+        let templates = format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expression}"/></out></xsl:template>"#
+        );
+        assert_eq!(
+            stock(src, &templates).unwrap(),
+            format!("<out>{wrong}</out>"),
+            "upstream changed: {expression}; remeasure #2668"
+        );
+        assert_eq!(
+            ours(src, &templates).unwrap(),
+            format!("<out>{correct}</out>"),
+            "{expression}"
+        );
+    }
+    let templates = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', substring('yes', 1, number(/r/v &gt; 2) * 3), ']')"/></out></xsl:template>"#;
+    assert!(stock(src, templates).unwrap_err().contains("invalid digit"));
+    assert_eq!(ours(src, templates).unwrap(), "<out>[yes]</out>");
+    // Observe the comparison itself without going through boolean formatting.
+    let templates = r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="/r/v &gt; 2">true</xsl:when><xsl:otherwise>false</xsl:otherwise></xsl:choose></out></xsl:template>"#;
+    assert_eq!(stock(src, templates).unwrap(), "<out>false</out>");
+    assert_eq!(ours(src, templates).unwrap(), "<out>true</out>");
+}

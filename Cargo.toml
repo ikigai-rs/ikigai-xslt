@@ -11,6 +11,8 @@ name = "ikigai-xslt"
 # refusals of input the earlier 0.5.0 accepted; keep 0.5.0 while it remains unpublished.
 # #2487: numeric operands are adapted through their first item's string value before
 # compilation, fixing node-set number()/arithmetic and string-length() arithmetic.
+# #2668: boolean numeric/string conversion and large literals are adapted too; mixed
+# boolean/nonboolean parameter conversions are refused while 0.5.0 is unpublished.
 version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"

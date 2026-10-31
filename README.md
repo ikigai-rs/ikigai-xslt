@@ -189,8 +189,14 @@ text yield `NaN`. `number()` without an argument uses the context node. XPath 1.
 precedence, predicates, variable references, names and string literals are preserved.
 Syntax outside this adapter's XPath 1.0 grammar is left to xrust. Generated expressions
 obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the conversion
-adds brackets. The adapter addresses node and unsigned numeric conversion, not xrust's
-separate boolean-to-string defect described below. `tests/numeric_conversion.rs` covers
+adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
+`substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
+pair of selected items to numbers, preserving XPath 1.0's existential semantics and
+avoiding xrust's reversed node comparison. Integer literals larger than `i64` use
+floating-point parsing. `string(true())` / `string(false())` return `true` / `false`;
+the strings `'true'` and `'false'` still convert to `NaN`. Variable and parameter types
+use the bounded analysis below; ambiguous boolean/nonboolean numeric or string conversions
+are refused as `InvalidArgument` naming `stylesheet`. `tests/numeric_conversion.rs` covers
 the public path; `tests/xrust_subset.rs` pins the unadapted upstream failures.
 
 **Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
@@ -211,8 +217,9 @@ the default, so a boolean default is refused.
 | `xsl:value-of` of a template-local parameter whose default and all call-site values are boolean | `true` / `false` | empty string | adapted before compilation |
 | `xsl:value-of` of a global boolean-default parameter, a local parameter with mixed boolean/nonboolean incoming values, or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
 
-Only the direct boolean result of `value-of` is adapted; xrust's general boolean-to-string
-conversion (for example `string(false())`) remains defective. A literal attribute namespace
+Direct boolean results of `value-of` and explicit `string()` conversions are adapted.
+Other implicit boolean-to-string conversions (for example `concat('[', true(), ']')`)
+remain defective; use `string(true())` explicitly. A literal attribute namespace
 must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
 is written on that element: xrust does not copy that declaration by itself. The guard is
 conservative across dynamic element construction and matched-template dispatch. Named-only
