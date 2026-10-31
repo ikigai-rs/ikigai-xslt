@@ -110,3 +110,27 @@ fn arithmetic_preserves_floating_point_signed_zero() {
     let src = "<r><v>-1</v></r>";
     assert_eq!(evaluate(src, "1 div (0 div /r/v)"), "-inf");
 }
+
+// Each reported row is independent so the baseline run reproduces all six (#2668).
+macro_rules! reported_boolean_numeric_case {
+    ($name:ident, $expression:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            assert_eq!(evaluate("<r><v>3</v></r>", $expression), $expected);
+        }
+    };
+}
+reported_boolean_numeric_case!(boolean_number_true, "number(true())", "1");
+reported_boolean_numeric_case!(boolean_number_false, "number(false())", "0");
+reported_boolean_numeric_case!(boolean_addition, "true() + 1", "2");
+reported_boolean_numeric_case!(boolean_comparison_number, "number(/r/v &gt; 2) * 5", "5");
+reported_boolean_numeric_case!(
+    boolean_conditional_substring,
+    "concat('[', substring('yes', 1, number(/r/v &gt; 2) * 3), ']')",
+    "[yes]"
+);
+reported_boolean_numeric_case!(
+    large_literal_addition,
+    "100000000000000000000 + 1",
+    "100000000000000000000"
+);
