@@ -447,3 +447,67 @@ quoted text and escaped AVT braces remain untouched. Unsupported syntax remains
 xrust's to compile. Added bracket nesting is checked against `MAX_EXPR_DEPTH` before
 compilation, and the adapter's own recursion is bounded even on malformed input.
 The independent public-path regression matrix is `tests/numeric_conversion.rs`.
+
+## 15. Boolean numeric conversion and large integer literals (#2668)
+
+Measured on **xrust 2.3.0**, 2026-10-30. Source `<r><v>3</v></r>`;
+place each expression in `<xsl:value-of select="…"/>` in the root template
+(escape `>` as `&gt;` if desired):
+
+| expression | XPath 1.0 | stock xrust / ikigai-xslt before this fix |
+| --- | --- | --- |
+| `number(true())` | `1` | `NaN` |
+| `number(false())` | `0` | `NaN` |
+| `true() + 1` | `2` | `NaN` |
+| `number(/r/v > 2) * 5` | `5` | `NaN` |
+| `concat('[', substring('yes', 1, number(/r/v > 2) * 3), ']')` | `[yes]` | type conversion error: invalid digit found in string |
+| `100000000000000000000 + 1` | `100000000000000000000` (double rounding) | `NaN` |
+
+All six were reproduced as separate failing public-path tests before changing the
+adapter: `cargo test --test numeric_conversion` gave **8 passed, 6 failed**.
+`tests/numeric_conversion.rs` now requires the correct answers; the independent
+`boolean_numeric_and_large_literal_upstream_causes` test in `tests/xrust_subset.rs`
+pins the stock failures and corrected public results.
+
+There are four interacting upstream causes:
+
+* `Value::to_double` in `src/value.rs` has no `Boolean` arm, so arithmetic and
+  `number()` fall through to `NaN` instead of converting true to 1 and false to 0.
+* `ValueData::fmt` also has no `Boolean` arm (case 12), so `string(true())` and
+  `string(false())` both produce the empty string. The #2487 numeric adapter's
+  `normalize-space(string((X)[1]))` therefore cannot recover boolean operands.
+* `Item::compare` in `src/item.rs` handles a node on the left by calling
+  `other.compare(string(self), op)` without reversing `op`. Thus `/r/v > 2`
+  tests `2 > 3`, yielding false. Fixing conversion alone changed the two conditional
+  examples from NaN/error to `0`/`[]`, exposing this separate cause. An `xsl:choose`
+  in the stock test observes false directly, independently of boolean formatting.
+* `integer_literal` in `src/parser/xpath/literals.rs` parses digits as `i64` and
+  constructs `Transform::Error` on overflow. XPath 1.0 numbers are doubles, so
+  this literal is valid. The arithmetic evaluation ends up answering `NaN`.
+
+Upstream should implement boolean numeric and string conversions, preserve operand
+order during atomization (or invert directional operators when swapping operands),
+and parse XPath 1.0 integer literals outside `i64` as doubles. The substring error is
+secondary: its length conversion tries to parse the resulting `NaN` as an integer.
+
+ikigai-xslt now tracks expression result kinds while parsing numeric operands.
+Known boolean numeric conversions use an internal conditional returning `1` or `0`;
+explicit `string()` of a boolean similarly returns `true` or `false`. Conditions
+are evaluated once in their original context. This uses xrust's existing conditional
+expression support internally; the adapter's accepted caller grammar remains XPath 1.0.
+The literal strings `'true'` and `'false'` still convert to `NaN`, as XPath 1.0 requires.
+Variable aliases and template-local parameters share case 12's bounded type analysis;
+ambiguous boolean/nonboolean conversions are refused as typed `InvalidArgument`
+naming `stylesheet`, including global boolean-default parameters that request strings
+can override. Other implicit boolean string conversions, such as `concat('[', true(), ']')`,
+remain an upstream limitation; use explicit `string()`.
+
+Relational comparisons map each operand's items to numbers with internal `for`
+expressions, then use xrust's general comparison on the numeric sequences. This
+preserves the existential semantics over all pairs of nodes, including empty sets,
+rather than incorrectly applying the first-node rule of `number(node-set)` to a
+comparison. Temporary variable names avoid caller names and loops preserve the
+original focus. Oversized digit-only literals become `number('digits')`, which
+uses xrust's floating-point fallback. Unary signs use multiplication by a signed
+factor, preserving negative zero and avoiding xrust's unimplemented `unary_expr`
+evaluator. Generated nesting still obeys `MAX_EXPR_DEPTH`.
