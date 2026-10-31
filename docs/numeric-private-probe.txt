@@ -1,0 +1,44 @@
+xrust 2.3.0, rustc 1.99.0; cargo check --example numeric-private-probe
+The intentionally non-compiling temporary example was removed after this probe.
+
+use xrust::{
+    transform::{context::Context, template::Template},
+    trees::smite::RNode,
+};
+fn main() {
+    let context = Context::<RNode>::new();
+    let _ = context.templates;
+    let _ = context.pre_vars;
+    let _ = context.keys;
+}
+fn edit_template(template: &mut Template<RNode>) {
+    let _ = &mut template.body;
+}
+
+Compiler output (expected exit 101):
+error[E0616]: field `templates` of struct `xrust::Context` is private
+ --> examples/numeric-private-probe.rs:7:21
+  |
+7 |     let _ = context.templates;
+  |                     ^^^^^^^^^ private field
+
+error[E0616]: field `pre_vars` of struct `xrust::Context` is private
+ --> examples/numeric-private-probe.rs:8:21
+  |
+8 |     let _ = context.pre_vars;
+  |                     ^^^^^^^^ private field
+
+error[E0616]: field `keys` of struct `xrust::Context` is private
+ --> examples/numeric-private-probe.rs:9:21
+  |
+9 |     let _ = context.keys;
+  |                     ^^^^ private field
+
+error[E0616]: field `body` of struct `Template` is private
+  --> examples/numeric-private-probe.rs:12:27
+   |
+12 |     let _ = &mut template.body;
+   |                           ^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `ikigai-xslt` (example "numeric-private-probe") due to 4 previous errors

@@ -1,0 +1,43 @@
+1000 points, 11908 source bytes, 386 raw / 926 wrapped stylesheet bytes
+18 operand wrappers/point; 18000 wrapper evaluations/transform
+identical stock raw / stock wrapped / crate output: 46946 bytes
+stock raw compile          run 0:    30.293 ms
+stock raw compile          run 1:    28.751 ms
+stock raw compile          run 2:    29.126 ms
+stock raw compile          run 3:    29.094 ms
+stock raw compile          run 4:    29.489 ms
+stock raw evaluate         run 0:   927.342 ms
+stock raw evaluate         run 1:   925.735 ms
+stock raw evaluate         run 2:   932.733 ms
+stock raw evaluate         run 3:   926.292 ms
+stock raw evaluate         run 4:   926.161 ms
+stock raw transform        run 0:   963.292 ms
+stock raw transform        run 1:   959.742 ms
+stock raw transform        run 2:   958.223 ms
+stock raw transform        run 3:   957.888 ms
+stock raw transform        run 4:   957.503 ms
+stock wrapped compile      run 0:   165.126 ms
+stock wrapped compile      run 1:   165.108 ms
+stock wrapped compile      run 2:   165.316 ms
+stock wrapped compile      run 3:   165.051 ms
+stock wrapped compile      run 4:   173.874 ms
+stock wrapped evaluate     run 0:   980.659 ms
+stock wrapped evaluate     run 1:   980.056 ms
+stock wrapped evaluate     run 2:   983.843 ms
+stock wrapped evaluate     run 3:   990.919 ms
+stock wrapped evaluate     run 4:   984.302 ms
+stock wrapped transform    run 0:  1016.350 ms
+stock wrapped transform    run 1:  1009.315 ms
+stock wrapped transform    run 2:  1012.764 ms
+stock wrapped transform    run 3:  1014.093 ms
+stock wrapped transform    run 4:  1010.998 ms
+crate compile              run 0:   188.853 ms
+crate compile              run 1:   188.091 ms
+crate compile              run 2:   188.236 ms
+crate compile              run 3:   187.321 ms
+crate compile              run 4:   187.848 ms
+crate reused transform     run 0:  1020.754 ms
+crate reused transform     run 1:  1022.076 ms
+crate reused transform     run 2:  1023.534 ms
+crate reused transform     run 3:  1021.209 ms
+crate reused transform     run 4:  1020.279 ms
