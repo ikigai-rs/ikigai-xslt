@@ -521,6 +521,12 @@ cargo build --release --lib --features module --target wasm32-unknown-unknown
 The feature is off by default and its deps (wasm-bindgen et al.) are optional, so a normal
 (native/linked) consumer of the library never pulls them.
 
+## Accessibility
+
+[ACCESSIBILITY.md](ACCESSIBILITY.md) says what this crate emits that people read (a stylesheet's
+result, HTML included, and its own error messages), the rules that output follows, what is
+tested, the known limitations, and how to report a barrier.
+
 ## License
 
 Licensed under either of MIT or Apache-2.0, at your option (`MIT OR Apache-2.0`).
