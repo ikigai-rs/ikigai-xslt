@@ -24,8 +24,8 @@
 //!    and xrust allows [`XRUST_MAX_DEPTH`] calls whatever the text says, so the result can
 //!    be [`XRUST_MAX_DEPTH`] times deeper than the stylesheet. No lexical bound refuses that
 //!    without refusing ordinary recursive templates; the thread is where that budget lives.
-//!    The threads are pooled and kept, because a compiled stylesheet is memoized per thread
-//!    (ledger #453) and a fresh thread per call would recompile every time.
+//!    A transform through a stylesheet runs on THAT stylesheet's thread, which compiled it
+//!    once and keeps it (ledger #453, #2826); see [`MAX_STYLESHEET_THREADS`].
 //!
 //! ## Declarations (`<!`)
 //!
@@ -633,9 +633,39 @@ pub const fn xslt_stack_size() -> usize {
         + STACK_PER_RESULT_LEVEL * (XRUST_MAX_DEPTH + 1) * MAX_XML_DEPTH
 }
 
-/// How many idle [`on_xslt_stack`] threads are kept for the next call. Each holds its own
-/// memo of compiled stylesheets (see `transform_xml`), so a kept thread is a warm one.
+/// How many idle [`on_xslt_stack`] threads are kept for the next call. Since 0.5.1 these run
+/// no stylesheet compiles of this crate's own (those run on [`MAX_STYLESHEET_THREADS`]); they
+/// are kept because starting a thread with [`xslt_stack_size`] of stack is not free.
 pub const MAX_IDLE_THREADS: usize = 8;
+
+/// How many stylesheets keep a thread of their own — **8**, the most recently used.
+///
+/// `transform_xml` and the endpoint run every transform through a stylesheet on that
+/// stylesheet's one thread, which compiled it once, in arrival order (ledger #2826). Through
+/// 0.5.0 each concurrent call took its own pooled thread and compiled the stylesheet again,
+/// because a compiled stylesheet is `Rc` and cannot move between threads; and the compiles
+/// and the runs all queued on one process-wide lock anyway, inside xrust's name interner
+/// (`qualname` 0.0.2, a single `RwLock` taken for writing on every clone and drop of a name).
+/// Measured with gonk's 140 KB stylesheet (`examples/concurrent-cost.rs`, release, 18 cores,
+/// load average about 5): through 0.5.0 eight calls at once took 8.8 s for all and eight
+/// compiles, against about 1.1 s for one cold call; eight warm calls at once took 1.06 s
+/// against 0.11 s one after another, so the lock made concurrency nine times SLOWER than
+/// taking turns. Since 0.5.1 the same eight cold calls take 1.14 s and one compile, and eight
+/// warm ones 0.11 s. So running a
+/// stylesheet's transforms one at a time costs no parallelism there was any of: while that
+/// lock exists, transforms do not run in parallel, and this removes the recompiles and the
+/// convoy, not the lock. Different stylesheets still run on different threads.
+///
+/// Past this many, the least recently used stylesheet's thread finishes what it was given and
+/// exits, taking its compile with it; its next transform compiles again. A stylesheet's text
+/// is its identity: an edited one is a different stylesheet and compiles once, and the old
+/// one's thread ages out like any other.
+pub const MAX_STYLESHEET_THREADS: usize = 8;
+
+/// How many transforms may wait for one stylesheet's thread — **32**. One more is refused at
+/// once with a transient `Unavailable`, rather than queued past its time budget. At gonk's warm
+/// render (about 25 ms in release) a full queue is under a second of work.
+pub const MAX_QUEUED_PER_STYLESHEET: usize = 32;
 
 /// The time every transform this crate starts on its own gets: **5 seconds** — what
 /// `urn:xslt:transform` gives every request, and what `transform_xml` and
@@ -717,11 +747,10 @@ pub fn overdue_transforms() -> usize {
 /// hook still prints the panic's message to stderr: that hook is the host's, not this crate's.
 ///
 /// The threads are pooled: a call takes an idle one (or starts one) and gives it back, keeping
-/// at most [`MAX_IDLE_THREADS`]. That matters because a compiled stylesheet is memoized per
-/// THREAD (xrust's tree is `Rc`, so it cannot be shared): a fresh thread per call would
-/// recompile on every call, which on gonk's stylesheet is ~150 ms against ~4 ms for the run
-/// (ledger #453). A thread whose work panicked is not given back — its memo is dropped with
-/// it rather than trusted.
+/// at most [`MAX_IDLE_THREADS`]. A thread whose work panicked is not given back. This crate's
+/// own transforms do not run here but on their stylesheet's thread ([`MAX_STYLESHEET_THREADS`]),
+/// because a compiled stylesheet is memoized per THREAD (xrust's tree is `Rc`, so it cannot be
+/// shared) and an arbitrary pooled thread would compile it again (ledger #453, #2826).
 ///
 /// ⚠ On wasm there is no thread to start: `work` runs inline, on whatever stack the host gave
 /// the module, so only the bounds protect it there, and a panic is whatever the module's
@@ -789,11 +818,55 @@ where
     }
 }
 
-/// Let every idle [`on_xslt_stack`] thread go (each exits, dropping its memo of compiled
-/// stylesheets). The next call starts a fresh one. A no-op on wasm, which has none.
+/// Let every idle [`on_xslt_stack`] thread go (each exits). The next call starts a fresh one.
+/// A no-op on wasm, which has none. The stylesheet threads are let go by
+/// `clear_stylesheet_cache`.
 pub fn release_idle_threads() {
     #[cfg(not(target_family = "wasm"))]
     pool::release_idle();
+}
+
+/// Run `work` on `stylesheet`'s own thread (see [`MAX_STYLESHEET_THREADS`]), after the
+/// transforms of it already waiting, answered within `budget` from now — the wait counts.
+/// Everything [`on_xslt_stack_within`] says about the stack, panics and overdue work holds,
+/// with three differences:
+///
+/// * a call still waiting when its budget runs out is answered and skipped, never run, and is
+///   not counted overdue;
+/// * a call still RUNNING then is counted overdue as before, and the stylesheet gets a new
+///   thread: the calls queued behind it move there (and wait for one compile) rather than
+///   wait for work nobody is waiting for;
+/// * after a panic the thread stays, and `reset` runs on it first (the crate passes the
+///   function that forgets the thread's compiled stylesheet, so the next call recompiles
+///   rather than trust it).
+///
+/// On wasm there is no thread: `work` runs inline, to its end.
+pub(crate) fn on_stylesheet_thread_within<T, F>(
+    stylesheet: &str,
+    budget: Duration,
+    reset: fn(),
+    work: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        pool::run_keyed(&pool::HOMES, stylesheet, Some(budget), reset, work)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (stylesheet, budget, reset);
+        Ok(work())
+    }
+}
+
+/// Let every stylesheet thread go: each finishes what it was given, then exits with its
+/// compile. A no-op on wasm.
+pub(crate) fn release_stylesheet_threads() {
+    #[cfg(not(target_family = "wasm"))]
+    pool::HOMES.release();
 }
 
 /// The refusal a transform past its budget is answered with.
@@ -825,19 +898,27 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 mod pool {
     use super::{
         max_overdue_transforms, panic_message, timeout, xslt_stack_size, MAX_IDLE_THREADS,
+        MAX_QUEUED_PER_STYLESHEET, MAX_STYLESHEET_THREADS,
     };
     use ikigai_core::{Error, Result};
+    use std::collections::VecDeque;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc::{channel, sync_channel, RecvTimeoutError, Sender};
-    use std::sync::{Arc, Mutex};
+    use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
 
     /// One unit of work for a pooled thread; it answers whether the thread may be reused.
     type Job = Box<dyn FnOnce() -> bool + Send>;
 
+    /// What a job's work produced: its value, or the panic that ended it.
+    type Outcome<T> = std::thread::Result<T>;
+
     /// The idle threads, each reached through the sender of its job queue.
     static IDLE: Mutex<Vec<Sender<Job>>> = Mutex::new(Vec::new());
+
+    /// The stylesheet threads every transform of this crate's runs on.
+    pub(super) static HOMES: Homes = Homes::new();
 
     /// Transforms still running after their callers were answered with a timeout.
     static OVERDUE: AtomicUsize = AtomicUsize::new(0);
@@ -849,18 +930,134 @@ mod pool {
     /// Where one call stands, shared by its worker and the caller waiting for it.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum State {
+        /// Handed to a thread that has not started it: a caller that gives up now costs
+        /// nothing, because the thread skips it.
+        Queued,
         Running,
         /// The worker finished while the caller was still waiting: the caller takes its
         /// answer, whatever the clock says by the time it looks.
         Settled,
-        /// The caller gave up: the answer is discarded, and the finish uncounts it.
+        /// The caller gave up. If the work was running then, it was counted overdue, and its
+        /// finish uncounts it; if it was still queued, it is skipped.
         Abandoned,
     }
 
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-        // Both guarded values (a Vec of senders, a plain enum) are valid whatever a panic
-        // interrupted, so poisoning carries no meaning here.
+        // Every guarded value (vectors of senders and homes, a queue of boxed jobs, a plain
+        // enum) is valid whatever a panic interrupted, so poisoning carries no meaning here.
         m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A transient refusal when too many abandoned transforms are still running.
+    fn refuse_if_overdue() -> Result<()> {
+        let (running, most) = (overdue(), max_overdue_transforms());
+        if running >= most {
+            return Err(Error::Unavailable(format!(
+                "{running} XSLT transforms are still running after their callers' time \
+                 budgets ran out (the most allowed is {most}, a quarter of this machine's \
+                 cores); the engine cannot be stopped partway, so new transforms are \
+                 refused until one finishes, rather than letting each request hold \
+                 another core (ledger #1040). Retry shortly"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Wrap `work` as a job, with the state its caller and its worker share and the channel
+    /// its outcome comes back on. `on_panic` runs on the worker after `work` panicked.
+    fn wrap<T, F>(work: F, on_panic: Option<fn()>) -> (Job, Arc<Mutex<State>>, Receiver<Outcome<T>>)
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let state = Arc::new(Mutex::new(State::Queued));
+        let (answer, reply) = sync_channel(1);
+        let worker_state = Arc::clone(&state);
+        let job: Job = Box::new(move || {
+            {
+                let mut state = lock(&worker_state);
+                if *state == State::Abandoned {
+                    // Its caller gave up before it started: nothing to run, nothing counted.
+                    return false;
+                }
+                *state = State::Running;
+            }
+            let outcome = catch_unwind(AssertUnwindSafe(work));
+            let abandoned = {
+                let mut state = lock(&worker_state);
+                if *state == State::Abandoned {
+                    true
+                } else {
+                    *state = State::Settled;
+                    false
+                }
+            };
+            if abandoned {
+                // Uncounted only now that it has actually finished.
+                OVERDUE.fetch_sub(1, Ordering::SeqCst);
+                return false;
+            }
+            let reusable = outcome.is_ok();
+            if !reusable {
+                if let Some(reset) = on_panic {
+                    reset();
+                }
+            }
+            let _ = answer.send(outcome);
+            reusable
+        });
+        (job, state, reply)
+    }
+
+    /// Wait for a job's outcome, within `budget` if there is one. A job abandoned while it
+    /// runs is counted overdue and `overdue_hook` runs (after the state's lock is let go).
+    fn wait<T>(
+        budget: Option<Duration>,
+        state: &Mutex<State>,
+        reply: &Receiver<Outcome<T>>,
+        overdue_hook: impl FnOnce(),
+    ) -> Result<Outcome<T>> {
+        let lost = || Error::Unavailable("the XSLT thread exited without an answer".to_string());
+        let Some(budget) = budget else {
+            return reply.recv().map_err(|_| lost());
+        };
+        match reply.recv_timeout(budget) {
+            Ok(outcome) => Ok(outcome),
+            Err(RecvTimeoutError::Timeout) => {
+                let was = {
+                    let mut state = lock(state);
+                    let was = *state;
+                    if matches!(was, State::Queued | State::Running) {
+                        *state = State::Abandoned;
+                    }
+                    was
+                };
+                match was {
+                    State::Queued => Err(timeout(budget)),
+                    State::Running => {
+                        OVERDUE.fetch_add(1, Ordering::SeqCst);
+                        overdue_hook();
+                        Err(timeout(budget))
+                    }
+                    // Settled: it finished in time and its answer is on the way.
+                    State::Settled | State::Abandoned => reply.recv().map_err(|_| lost()),
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(lost()),
+        }
+    }
+
+    /// A job's outcome as the caller's answer: a panic becomes an `Endpoint` error.
+    fn answer<T>(outcome: Outcome<T>) -> Result<T> {
+        outcome.map_err(|panic| {
+            Error::Endpoint(format!(
+                "the XSLT engine (xrust) panicked on this input instead of answering: {}. \
+                 It is an input the engine cannot run — for example copying the document \
+                 node or an attribute to the top of the result, or an xsl:sort key that \
+                 fails to evaluate — and nothing was produced",
+                panic_message(&*panic)
+            ))
+        })
     }
 
     fn start() -> Result<Sender<Job>> {
@@ -895,41 +1092,9 @@ mod pool {
         F: FnOnce() -> T + Send + 'static,
     {
         if budget.is_some() {
-            let (running, most) = (overdue(), max_overdue_transforms());
-            if running >= most {
-                return Err(Error::Unavailable(format!(
-                    "{running} XSLT transforms are still running after their callers' time \
-                     budgets ran out (the most allowed is {most}, a quarter of this machine's \
-                     cores); the engine cannot be stopped partway, so new transforms are \
-                     refused until one finishes, rather than letting each request hold \
-                     another core (ledger #1040). Retry shortly"
-                )));
-            }
+            refuse_if_overdue()?;
         }
-        let state = Arc::new(Mutex::new(State::Running));
-        let (answer, reply) = sync_channel(1);
-        let worker_state = Arc::clone(&state);
-        let mut job: Job = Box::new(move || {
-            let outcome = catch_unwind(AssertUnwindSafe(work));
-            let abandoned = {
-                let mut state = lock(&worker_state);
-                if *state == State::Abandoned {
-                    true
-                } else {
-                    *state = State::Settled;
-                    false
-                }
-            };
-            if abandoned {
-                // Uncounted only now that it has actually finished. The thread is not given
-                // back (its caller dropped the queue's sender), so it exits.
-                OVERDUE.fetch_sub(1, Ordering::SeqCst);
-                return false;
-            }
-            let reusable = outcome.is_ok();
-            let _ = answer.send(outcome);
-            reusable
-        });
+        let (mut job, state, reply) = wrap(work, None);
         // An idle thread can have exited (its queue then refuses the job and hands it back);
         // fall through to a fresh one rather than fail the call.
         let worker = loop {
@@ -947,43 +1112,194 @@ mod pool {
                 Err(refused) => job = refused.0,
             }
         };
-        let lost = || Error::Unavailable("the XSLT thread exited without an answer".to_string());
-        let outcome = match budget {
-            None => reply.recv().map_err(|_| lost())?,
-            Some(budget) => match reply.recv_timeout(budget) {
-                Ok(outcome) => outcome,
-                Err(RecvTimeoutError::Timeout) => {
-                    {
-                        let mut state = lock(&state);
-                        if *state == State::Running {
-                            *state = State::Abandoned;
-                            OVERDUE.fetch_add(1, Ordering::SeqCst);
-                            // `worker` drops here: the thread exits after this job.
-                            return Err(timeout(budget));
+        // On a timeout `worker` drops when this returns, so the thread exits after this job.
+        let outcome = wait(budget, &state, &reply, || {})?;
+        if outcome.is_ok() {
+            let mut idle = lock(&IDLE);
+            if idle.len() < MAX_IDLE_THREADS {
+                idle.push(worker);
+            }
+        }
+        answer(outcome)
+    }
+
+    /// One stylesheet's thread: it compiles the stylesheet once (in its memo) and runs every
+    /// transform through it, one after another, in the order they arrived (ledger #2826).
+    struct Home {
+        /// The stylesheet's full text: the compile is a pure function of it.
+        key: Arc<str>,
+        queue: Mutex<Queue>,
+        ready: Condvar,
+    }
+
+    struct Queue {
+        jobs: VecDeque<Job>,
+        /// No new work comes here: the thread finishes what is queued and exits.
+        retired: bool,
+    }
+
+    fn start_home(key: &str) -> Result<Arc<Home>> {
+        let home = Arc::new(Home {
+            key: Arc::from(key),
+            queue: Mutex::new(Queue {
+                jobs: VecDeque::new(),
+                retired: false,
+            }),
+            ready: Condvar::new(),
+        });
+        let thread_home = Arc::clone(&home);
+        std::thread::Builder::new()
+            .name("ikigai-xslt-stylesheet".to_string())
+            .stack_size(xslt_stack_size())
+            .spawn(move || loop {
+                let job = {
+                    let mut queue = lock(&thread_home.queue);
+                    loop {
+                        if let Some(job) = queue.jobs.pop_front() {
+                            break job;
+                        }
+                        if queue.retired {
+                            // Its memo, and the compiled stylesheet in it, go with the thread.
+                            return;
+                        }
+                        queue = thread_home
+                            .ready
+                            .wait(queue)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                };
+                // A panic was caught inside the job, which reset the memo; the thread stays.
+                job();
+            })
+            .map_err(|e| {
+                Error::Unavailable(format!(
+                    "could not start a {} MiB thread to run this XSLT stylesheet on: {e}",
+                    xslt_stack_size() >> 20
+                ))
+            })?;
+        Ok(home)
+    }
+
+    /// Mark `home` retired and wake its thread; with `take`, hand back what it had queued.
+    fn retire(home: &Home, take: bool) -> VecDeque<Job> {
+        let pending = {
+            let mut queue = lock(&home.queue);
+            queue.retired = true;
+            if take {
+                std::mem::take(&mut queue.jobs)
+            } else {
+                VecDeque::new()
+            }
+        };
+        home.ready.notify_all();
+        pending
+    }
+
+    /// Stylesheet threads, most recently used first, at most [`MAX_STYLESHEET_THREADS`]. A
+    /// value rather than only the one static so a test can have a set no other test touches.
+    /// Lock order: this, then a home's queue; a home's thread takes only its queue.
+    pub(super) struct Homes(Mutex<Vec<Arc<Home>>>);
+
+    impl Homes {
+        pub(super) const fn new() -> Self {
+            Homes(Mutex::new(Vec::new()))
+        }
+
+        /// Queue `job` on `key`'s home, starting one (and retiring the least recently used
+        /// past [`MAX_STYLESHEET_THREADS`]) if there is none.
+        fn enqueue(&self, key: &str, job: Job) -> Result<Arc<Home>> {
+            Self::enqueue_in(&mut lock(&self.0), key, job)
+        }
+
+        fn enqueue_in(homes: &mut Vec<Arc<Home>>, key: &str, job: Job) -> Result<Arc<Home>> {
+            let home = match homes.iter().position(|h| &*h.key == key) {
+                Some(i) => {
+                    let home = homes.remove(i);
+                    homes.insert(0, Arc::clone(&home));
+                    home
+                }
+                None => {
+                    let home = start_home(key)?;
+                    homes.insert(0, Arc::clone(&home));
+                    if homes.len() > MAX_STYLESHEET_THREADS {
+                        for evicted in homes.split_off(MAX_STYLESHEET_THREADS) {
+                            // It finishes what it was given, then exits.
+                            retire(&evicted, false);
                         }
                     }
-                    // Settled: it finished in time and its answer is on the way.
-                    reply.recv().map_err(|_| lost())?
+                    home
                 }
-                Err(RecvTimeoutError::Disconnected) => return Err(lost()),
-            },
-        };
-        match outcome {
-            Ok(value) => {
-                let mut idle = lock(&IDLE);
-                if idle.len() < MAX_IDLE_THREADS {
-                    idle.push(worker);
+            };
+            {
+                let mut queue = lock(&home.queue);
+                if queue.jobs.len() >= MAX_QUEUED_PER_STYLESHEET {
+                    return Err(Error::Unavailable(format!(
+                        "{} XSLT transforms of this stylesheet are already waiting their turn \
+                         (the most allowed is {MAX_QUEUED_PER_STYLESHEET}); transforms of one \
+                         stylesheet run one at a time on the thread that compiled it (ledger \
+                         #2826), so this one is refused rather than queued past its time \
+                         budget. Retry shortly",
+                        queue.jobs.len()
+                    )));
                 }
-                Ok(value)
+                queue.jobs.push_back(job);
             }
-            Err(panic) => Err(Error::Endpoint(format!(
-                "the XSLT engine (xrust) panicked on this input instead of answering: {}. \
-                 It is an input the engine cannot run — for example copying the document \
-                 node or an attribute to the top of the result, or an xsl:sort key that \
-                 fails to evaluate — and nothing was produced",
-                panic_message(&*panic)
-            ))),
+            home.ready.notify_one();
+            Ok(home)
         }
+
+        /// A transform outlived its caller on `home`: give the stylesheet a new home, and move
+        /// every call queued behind the overdue one there, so they wait for a compile rather
+        /// than for work nobody is waiting for. The old thread finishes that work and exits.
+        /// Done whether or not `home` is still listed: one already let go (evicted or
+        /// released) is still draining its queue, and the calls in it should not wait either.
+        fn rehome(&self, home: &Arc<Home>) {
+            let mut homes = lock(&self.0);
+            if let Some(i) = homes.iter().position(|h| Arc::ptr_eq(h, home)) {
+                homes.remove(i);
+            }
+            for job in retire(home, true) {
+                // A job that cannot be placed is dropped, and its caller is answered that the
+                // thread exited without an answer.
+                let _ = Self::enqueue_in(&mut homes, &home.key, job);
+            }
+        }
+
+        /// Let every thread go: each finishes what it was given, then exits.
+        pub(super) fn release(&self) {
+            for home in lock(&self.0).drain(..) {
+                retire(&home, false);
+            }
+        }
+
+        /// How many calls wait for `key`'s thread (not counting the one it is running).
+        #[cfg(test)]
+        pub(super) fn queued(&self, key: &str) -> usize {
+            lock(&self.0)
+                .iter()
+                .find(|h| &*h.key == key)
+                .map_or(0, |h| lock(&h.queue).jobs.len())
+        }
+    }
+
+    pub(super) fn run_keyed<T, F>(
+        homes: &'static Homes,
+        key: &str,
+        budget: Option<Duration>,
+        reset: fn(),
+        work: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        if budget.is_some() {
+            refuse_if_overdue()?;
+        }
+        let (job, state, reply) = wrap(work, Some(reset));
+        let home = homes.enqueue(key, job)?;
+        let outcome = wait(budget, &state, &reply, || homes.rehome(&home))?;
+        answer(outcome)
     }
 }
 
@@ -1128,5 +1444,184 @@ mod tests {
         assert_eq!(sum, (0..16).map(|i| i * 2).sum::<usize>());
         release_idle_threads();
         assert_eq!(on_xslt_stack(|| 3).unwrap(), 3);
+    }
+
+    /// The stylesheet threads (ledger #2826), on a set of their own so no other test's
+    /// stylesheets can evict these mid-test.
+    #[test]
+    fn a_stylesheet_thread_runs_its_calls_in_turn_and_drops_what_nobody_waits_for() {
+        use super::pool::{run_keyed, Homes};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        use std::sync::{mpsc, Arc};
+        use std::thread::{self, JoinHandle, ThreadId};
+        use std::time::Instant;
+
+        static HOMES: Homes = Homes::new();
+        static RESETS: AtomicUsize = AtomicUsize::new(0);
+        fn reset() {
+            RESETS.fetch_add(1, SeqCst);
+        }
+        fn me() -> ThreadId {
+            thread::current().id()
+        }
+        fn call<T: Send + 'static>(
+            key: &'static str,
+            budget: Duration,
+            work: impl FnOnce() -> T + Send + 'static,
+        ) -> JoinHandle<Result<T>> {
+            thread::spawn(move || run_keyed(&HOMES, key, Some(budget), reset, work))
+        }
+        fn until(what: &str, done: impl Fn() -> bool) {
+            let start = Instant::now();
+            while !done() {
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "waited for {what}"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        /// A flag for a call's work to raise when it starts: one handle to read, one to raise.
+        fn flag() -> (Arc<AtomicBool>, Arc<AtomicBool>) {
+            let f = Arc::new(AtomicBool::new(false));
+            (Arc::clone(&f), f)
+        }
+        let long = Duration::from_secs(30);
+
+        // 1. Every call of one stylesheet runs on its one thread, never two at once.
+        let inside = Arc::new(AtomicUsize::new(0));
+        let calls: Vec<_> = (0..8)
+            .map(|_| {
+                let inside = Arc::clone(&inside);
+                call("one", long, move || {
+                    assert_eq!(inside.fetch_add(1, SeqCst), 0, "two calls ran at once");
+                    thread::sleep(Duration::from_millis(10));
+                    inside.fetch_sub(1, SeqCst);
+                    me()
+                })
+            })
+            .collect();
+        let threads: Vec<ThreadId> = calls
+            .into_iter()
+            .map(|c| c.join().unwrap().unwrap())
+            .collect();
+        assert!(threads.iter().all(|t| *t == threads[0]), "{threads:?}");
+
+        // 2. A call whose budget runs out while it WAITS is answered then, never run, and never
+        //    counted overdue.
+        let (started, raised) = flag();
+        let slow = call("two", long, move || {
+            raised.store(true, SeqCst);
+            thread::sleep(Duration::from_millis(600));
+        });
+        until("the slow call to start", || started.load(SeqCst));
+        let (ran, ran_flag) = flag();
+        let start = Instant::now();
+        let late = run_keyed(
+            &HOMES,
+            "two",
+            Some(Duration::from_millis(100)),
+            reset,
+            move || ran_flag.store(true, SeqCst),
+        );
+        assert!(matches!(late, Err(Error::Timeout(_))), "{late:?}");
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert_eq!(
+            overdue_transforms(),
+            0,
+            "a call that never started is not overdue"
+        );
+        slow.join().unwrap().unwrap();
+        assert_eq!(
+            run_keyed(&HOMES, "two", Some(long), reset, || 2).unwrap(),
+            2
+        );
+        assert!(!ran.load(SeqCst), "a call nobody waited for still ran");
+
+        // 3. A call still RUNNING at its budget is overdue, and the calls queued behind it move
+        //    to a new thread rather than wait for it.
+        let (started, raised) = flag();
+        let (tx, rx) = mpsc::channel();
+        let overdue = call("three", Duration::from_millis(300), move || {
+            tx.send(me()).unwrap();
+            raised.store(true, SeqCst);
+            thread::sleep(Duration::from_millis(2000));
+        });
+        until("the overdue call to start", || started.load(SeqCst));
+        let start = Instant::now();
+        let behind = call("three", long, me);
+        until("a call to queue behind it", || HOMES.queued("three") == 1);
+        let moved = behind.join().unwrap().unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(1500),
+            "the queued call waited {:?} for the overdue one",
+            start.elapsed()
+        );
+        assert_ne!(moved, rx.recv().unwrap(), "it ran on a new thread");
+        assert!(matches!(overdue.join().unwrap(), Err(Error::Timeout(_))));
+        assert_eq!(overdue_transforms(), 1);
+        until("the overdue work to finish", || overdue_transforms() == 0);
+
+        // 4. A panic is answered; the thread stays, forgets its compile (`reset`), and runs the
+        //    call queued behind it.
+        let (started, raised) = flag();
+        let (tx, rx) = mpsc::channel();
+        let panics = call("four", long, move || -> ThreadId {
+            tx.send(me()).unwrap();
+            raised.store(true, SeqCst);
+            thread::sleep(Duration::from_millis(200));
+            panic!("inside")
+        });
+        until("the panicking call to start", || started.load(SeqCst));
+        let next = call("four", long, me);
+        until("a call to queue behind it", || HOMES.queued("four") == 1);
+        let caught = panics.join().unwrap();
+        assert!(matches!(&caught, Err(Error::Endpoint(m)) if m.contains("inside")));
+        assert_eq!(RESETS.load(SeqCst), 1);
+        assert_eq!(next.join().unwrap().unwrap(), rx.recv().unwrap());
+
+        // 5. Past MAX_QUEUED_PER_STYLESHEET waiting, a call is refused at once.
+        let (started, raised) = flag();
+        let busy = call("five", long, move || {
+            raised.store(true, SeqCst);
+            thread::sleep(Duration::from_millis(800));
+        });
+        until("the busy call to start", || started.load(SeqCst));
+        let waiting: Vec<_> = (0..MAX_QUEUED_PER_STYLESHEET)
+            .map(|i| call("five", long, move || i))
+            .collect();
+        until("the queue to fill", || {
+            HOMES.queued("five") == MAX_QUEUED_PER_STYLESHEET
+        });
+        let refused = run_keyed(&HOMES, "five", Some(long), reset, || 0);
+        assert!(
+            matches!(&refused, Err(Error::Unavailable(m)) if m.contains("already waiting")),
+            "{refused:?}"
+        );
+        busy.join().unwrap().unwrap();
+        let answered: usize = waiting
+            .into_iter()
+            .map(|w| w.join().unwrap().unwrap())
+            .sum();
+        assert_eq!(answered, (0..MAX_QUEUED_PER_STYLESHEET).sum::<usize>());
+
+        // 6. Past MAX_STYLESHEET_THREADS stylesheets the least recently used one lets go, and
+        //    its next call starts a new thread.
+        let keys: Vec<&'static str> = (0..=MAX_STYLESHEET_THREADS)
+            .map(|i| &*Box::leak(format!("six-{i}").into_boxed_str()))
+            .collect();
+        let first = run_keyed(&HOMES, keys[0], Some(long), reset, me).unwrap();
+        assert_eq!(
+            run_keyed(&HOMES, keys[0], Some(long), reset, me).unwrap(),
+            first
+        );
+        for key in &keys[1..] {
+            run_keyed(&HOMES, key, Some(long), reset, me).unwrap();
+        }
+        assert_ne!(
+            run_keyed(&HOMES, keys[0], Some(long), reset, me).unwrap(),
+            first
+        );
+        HOMES.release();
     }
 }
