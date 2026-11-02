@@ -24,8 +24,9 @@
 //! to do with the document being styled: on gonk's 38 KB stylesheet, ~34 ms to parse and
 //! ~118 ms to compile against ~3.7 ms to run a page (ledger #453). [`CompiledStylesheet`]
 //! pays that once and runs many documents — ~12 µs to ready each run. [`transform_xml`]
-//! keeps its exact signature and memoizes the compile per thread on the stylesheet's full
-//! text, so existing callers get the same saving without changing a line.
+//! keeps its exact signature and compiles each stylesheet text once per process, on a thread
+//! of that stylesheet's own (ledger #2826), so existing callers get the same saving without
+//! changing a line.
 //!
 //! ## Caller XML is bounded, and runs on a stack sized for the bound
 //!
@@ -169,9 +170,14 @@ impl Endpoint for XsltEndpoint {
         // Within [`limits::DEFAULT_TIME_BUDGET`]: past it the caller is answered with a typed
         // `Timeout`, and the work — which xrust cannot be told to stop — is counted until it
         // ends (ledger #1040).
-        let (media, out) = limits::on_xslt_stack_within(limits::DEFAULT_TIME_BUDGET, move || {
-            render(&source, &stylesheet, as_media.as_deref(), &params)
-        })??;
+        // On the stylesheet's own thread, which compiled it once (ledger #2826).
+        let key = stylesheet.clone();
+        let (media, out) = limits::on_stylesheet_thread_within(
+            &key,
+            limits::DEFAULT_TIME_BUDGET,
+            forget_compiled,
+            move || render(&source, &stylesheet, as_media.as_deref(), &params),
+        )??;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
             out.into_bytes(),
@@ -407,6 +413,7 @@ impl CompiledStylesheet {
     /// `Endpoint` error.
     fn compile_typed(stylesheet_xml: &str) -> Result<Self> {
         limits::check_stylesheet(stylesheet_xml, "stylesheet")?;
+        COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let styledoc = parse_xml(stylesheet_xml)
             .map_err(|e| Error::Endpoint(format!("stylesheet parse error: {}", e.message)))?;
         // Read `xsl:output method` and scan for the silent constructs BEFORE compiling:
@@ -518,10 +525,35 @@ impl CompiledStylesheet {
     }
 }
 
-/// How many compiled stylesheets [`transform_xml`] keeps per thread (per pooled thread, see
-/// [`limits::on_xslt_stack`], so up to [`limits::MAX_IDLE_THREADS`] times this in all). Small on purpose: a
-/// compiled stylesheet measured ~369 KB for gonk's (38 KB, 56 templates), and this is
-/// per-thread storage in every host that links the crate.
+/// Every stylesheet compile this process has started (see [`stylesheet_compiles`]).
+static COMPILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many stylesheets this process has parsed and compiled, through any entry point —
+/// [`CompiledStylesheet::compile`], [`transform_xml`] and the endpoint alike — counting every
+/// compile a bound did not refuse first, whether xrust then accepted it or not.
+///
+/// A compile is the expensive part of a transform and runs under xrust's process-wide name
+/// interner lock, so a count that rises while a host re-renders the same stylesheets is a
+/// recompile the host is paying for. Since 0.5.1 [`transform_xml`] and the endpoint compile a
+/// stylesheet once per process however many calls arrive at once (ledger #2826).
+///
+/// ```
+/// let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:output method="text"/>
+///   <xsl:template match="/">counted</xsl:template>
+/// </xsl:stylesheet>"#;
+/// let before = ikigai_xslt::stylesheet_compiles();
+/// ikigai_xslt::CompiledStylesheet::compile(style).unwrap();
+/// assert!(ikigai_xslt::stylesheet_compiles() > before);
+/// ```
+pub fn stylesheet_compiles() -> u64 {
+    COMPILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many compiled stylesheets [`transform_xml`] keeps per thread. Since 0.5.1 each
+/// stylesheet has a thread of its own ([`limits::MAX_STYLESHEET_THREADS`]), so in practice a
+/// thread holds one. Small on purpose: a compiled stylesheet measured ~369 KB for gonk's
+/// (38 KB, 56 templates).
 const STYLESHEET_CACHE_ENTRIES: usize = 4;
 
 thread_local! {
@@ -558,14 +590,23 @@ fn compiled_for(stylesheet_xml: &str) -> Result<Rc<CompiledStylesheet>> {
     Ok(compiled)
 }
 
-/// Drop the compiled stylesheets of this thread and of every IDLE pooled thread — the ones
-/// [`transform_xml`] and the endpoint run on (see [`limits::on_xslt_stack`]): the idle
-/// threads are let go, and their memos with them. A thread busy with a call keeps its memo.
-/// Only memory is at stake — every entry is a pure function of its key, so dropping one
-/// costs the next call a recompile and changes no answer. A host that has finished with one
-/// set of stylesheets can call this; nothing needs to.
-pub fn clear_stylesheet_cache() {
+/// Forget this thread's compiled stylesheets: after a panic on a stylesheet's thread, so the
+/// next transform compiles again rather than trust what the panic interrupted.
+fn forget_compiled() {
     COMPILED.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Drop the compiled stylesheets of this thread and let every stylesheet's thread go — the
+/// threads [`transform_xml`] and the endpoint run on (see [`limits::MAX_STYLESHEET_THREADS`]) —
+/// and the idle pooled threads with them. A stylesheet thread busy with calls finishes them
+/// first, then exits with its compile; the next transform of that stylesheet starts a new
+/// thread and compiles it once. Only memory is at stake — every compile is a pure function
+/// of the stylesheet's text, so dropping one costs the next call a recompile and changes no
+/// answer. A host that has finished with one set of stylesheets can call this; nothing needs
+/// to.
+pub fn clear_stylesheet_cache() {
+    forget_compiled();
+    limits::release_stylesheet_threads();
     limits::release_idle_threads();
 }
 
@@ -577,9 +618,11 @@ pub fn clear_stylesheet_cache() {
 /// strings so the function carries no ikigai-core types — which lets a standalone
 /// **wasm module** wrapper expose it directly. (The endpoint above wraps it.)
 ///
-/// The compile is memoized per thread on the stylesheet's full text (see
-/// [`clear_stylesheet_cache`]), so a caller that transforms many documents through one
-/// stylesheet pays the ~150 ms compile once rather than on every call. The answer is
+/// The compile happens once per process for each stylesheet text, however many calls arrive
+/// at once: every transform through a stylesheet runs on that stylesheet's own thread, one
+/// after another (see [`limits::MAX_STYLESHEET_THREADS`] for why that costs no parallelism
+/// and what the measurements were; ledger #2826). So a caller that transforms many documents
+/// through one stylesheet pays the compile once rather than on every call. The answer is
 /// unchanged either way; hold a [`CompiledStylesheet`] instead when you want the reuse to
 /// be explicit rather than inferred from the bytes.
 ///
@@ -588,9 +631,11 @@ pub fn clear_stylesheet_cache() {
 /// source document's, because the stylesheet is what gets looked at first.
 ///
 /// Both arguments are checked against [`limits`]' bounds before xrust sees either, and the
-/// transform runs on [`limits::on_xslt_stack_within`] — a pooled thread with the stack those
-/// bounds need — so the memo above lives on those threads, and this is safe to call from any
-/// thread, a 2 MiB async worker included. Each call copies both arguments to hand them over.
+/// transform runs on the stylesheet's thread, which has the stack those bounds need (the
+/// same as [`limits::on_xslt_stack_within`]'s), so this is safe to call from any thread, a
+/// 2 MiB async worker included. Each call copies both arguments to hand them over. The time
+/// budget counts from the call, so a transform waiting its turn behind others of the same
+/// stylesheet spends it waiting.
 ///
 /// ⚠ **Since 0.2.1 it is answered within [`limits::DEFAULT_TIME_BUDGET`]** (5 s): past it the
 /// answer is an error beginning `timeout:`, never a partial result, and the work — which
@@ -635,8 +680,9 @@ pub fn transform_xml_within(
 ) -> std::result::Result<String, String> {
     limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
     limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
+    let key = stylesheet_xml;
     let (src_xml, stylesheet_xml) = (src_xml.to_string(), stylesheet_xml.to_string());
-    limits::on_xslt_stack_within(budget, move || {
+    limits::on_stylesheet_thread_within(key, budget, forget_compiled, move || {
         compiled_for(&stylesheet_xml)
             .map_err(plain)?
             .run(&src_xml, text_output)
@@ -647,7 +693,7 @@ pub fn transform_xml_within(
 /// Compile (or reuse) the stylesheet, settle the result's media type, and run the
 /// transform — the endpoint's whole synchronous half, in one non-`async` function so that
 /// the `!Send` compiled stylesheet can never be live across an `await`. The endpoint checks
-/// both inputs and calls this on [`limits::on_xslt_stack`]; it checks nothing itself.
+/// both inputs and calls this on the stylesheet's own thread; it checks nothing itself.
 fn render(
     source: &str,
     stylesheet: &str,

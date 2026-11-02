@@ -317,13 +317,14 @@ becomes markup), a parameter entity, and an external entity are refused, because
 expands entities as content and the tag scan cannot see what they build. The declaration
 RDF/XML uses — a name for a namespace IRI — is admitted. No external DTD is ever fetched.
 
-Then the transform runs on a **pooled thread whose stack holds anything the bounds admit**
+Then the transform runs on a **thread whose stack holds anything the bounds admit**
 in that build (`limits::xslt_stack_size()`: ~45 MiB release, ~338 MiB debug — reserved
 address space, committed only as it is touched), so a call from a 2 MiB async worker is as
 safe as any other. That covers what no lexical bound can: a template that calls itself
-nests its result once a call, up to xrust's own 200 calls. The threads are kept (up to 8
-idle) because the compiled-stylesheet memo below lives on them. On wasm there is no thread,
-so only the bounds apply there.
+nests its result once a call, up to xrust's own 200 calls. Each stylesheet's transforms run
+on that stylesheet's own thread (see [Concurrent transforms](#concurrent-transforms-take-turns-per-stylesheet)),
+because its compiled form lives there. On wasm there is no thread, so only the bounds apply
+there.
 
 Real input is far inside the bounds: gonk's 98 KB stylesheet nests 14 elements, the reading
 room's stylesheets 5 to 9, and their expressions two or three brackets. Neither layer bounds
@@ -390,15 +391,18 @@ warm-up between calls. From 0.1.3:
   `.transform(src, text_output)` runs any number of documents against it, each run
   independent of the last. It also carries `.output_method()`, so labelling a result no
   longer costs a second parse of the stylesheet.
-* **`transform_xml` keeps its exact signature** and memoizes the compile per thread
-  (since 0.2.1, per pooled transform thread), keyed on the stylesheet's full text. Existing callers get the saving with no change:
-  the empty document goes 157 ms → **0.14 ms**, a real gonk page 163 ms → **3.7 ms**.
+* **`transform_xml` keeps its exact signature** and compiles each stylesheet once per
+  process (since 0.5.1; per pooled thread before that), keyed on the stylesheet's full text.
+  Existing callers get the saving with no change: the empty document goes 157 ms →
+  **0.14 ms**, a real gonk page 163 ms → **3.7 ms**.
 
-The memo is keyed on the bytes the caller just passed — not on a path, an IRI or a
+The compile is keyed on the bytes the caller just passed — not on a path, an IRI or a
 timestamp — so an edited stylesheet is simply a different key and there is nothing that
-can go stale under the kernel's golden threads. It holds four entries per thread
-(~369 KB each for a stylesheet this size); `clear_stylesheet_cache()` drops them (and lets
-the idle pooled threads go), and changes no answer.
+can go stale under the kernel's golden threads: when a stylesheet resource changes, its
+thread is cut, the cached transform recomputes, and the new text compiles once.
+`clear_stylesheet_cache()` lets every compiled stylesheet go (~369 KB each for a stylesheet
+this size) and changes no answer. `stylesheet_compiles()` counts the compiles this process
+has run, so a host can see whether it is paying for recompiles.
 
 ⚠ A compiled stylesheet is **`!Send` and `!Sync`**, and cannot be otherwise: xrust's tree
 is `Rc`-based. A multi-threaded host holds one per thread (which is what `transform_xml`
@@ -406,6 +410,62 @@ does for you), per connection or per task — never in shared state. And it runs
 caller's thread: `compile` and `transform` enforce the bounds, but the stack they need is
 the caller's to provide (`limits::xslt_stack_size()`, or run inside
 `limits::on_xslt_stack`). `transform_xml` does that for you too.
+
+### Concurrent transforms take turns, per stylesheet
+
+**While xrust's name interner holds one process-wide lock, transforms do not run in
+parallel**, and nothing in this crate changes that. xrust 2.3 interns every XML name through
+`qualname` 0.0.2, whose interner is a single `RwLock` taken **for writing** on every clone
+and every drop of a name, and a transform clones and drops names constantly. Through 0.5.0
+each concurrent call also took its own pooled thread and **compiled the stylesheet again**
+there, under that same lock (ledger #2826).
+
+Since 0.5.1 every transform through a stylesheet (`transform_xml`, `transform_xml_within`
+and the endpoint) runs on **that stylesheet's own thread**, which compiled it once, one call
+after another in arrival order. Different stylesheets still have different threads. What this
+removes is the recompiles and the convoy's worst case; it does not remove the lock, so the
+throughput of one process is still about one transform at a time. Measured with gonk's 140 KB
+stylesheet and a ledger page, eight calls released together (`cargo run --release --example
+concurrent-cost`, 18 cores, load average about 5):
+
+| | 0.5.0 | 0.5.1 |
+| --- | --- | --- |
+| release: eight cold calls at once | 8.8 s for all, **8 compiles** | 1.14 s, **1 compile** |
+| release: eight warm calls at once | 1.06 s | 0.11 s |
+| release: eight warm calls one after another | 0.11 s | 0.11 s |
+| debug: eight cold calls at once | 16.8 s, **8 compiles** | 4.3 s, **1 compile** |
+| debug: eight warm calls at once | 1.76 s | 0.59 s |
+| debug: eight warm calls one after another | 0.60 s | 0.59 s |
+
+The warm rows are the evidence that taking turns costs nothing: before, eight calls at once
+were slower than the same eight one after another (nine times, in release), because they
+fought over the lock. `tests/concurrent_compile.rs` pins one compile for eight concurrent
+calls of gonk's stylesheet, a separate compile for a second stylesheet, and exactly one for
+an edited one.
+
+What taking turns means for a host:
+
+* **The time budget counts from the call**, so a call waiting behind others of the same
+  stylesheet spends its budget waiting. One whose budget runs out while it waits is answered
+  with `Timeout` and never run.
+* **A call still running at its budget** is abandoned as before (counted by
+  `limits::overdue_transforms()`), and the stylesheet gets a new thread: the calls queued
+  behind the overdue one move there and wait for one compile, not for work nobody is
+  waiting for.
+* **At most `limits::MAX_QUEUED_PER_STYLESHEET` (32) calls wait** for one stylesheet; one more
+  is refused at once with a transient `Unavailable`.
+* **At most `limits::MAX_STYLESHEET_THREADS` (8) stylesheets keep a thread**; past that the
+  least recently used one finishes its work and lets go, and its next call compiles again.
+* After a panic inside xrust the call is answered with an `Endpoint` error as before, and the
+  thread forgets its compiled stylesheet, so the next call compiles it afresh.
+
+`CompiledStylesheet`, held by the host on its own threads, is unchanged and does not take
+turns: the interner lock is still the ceiling there.
+
+The interner also scans every slot on every new name and never reuses a freed slot, so it
+grows, and grows slower to search, for as long as the process lives. Compiling once per
+process removes the largest repeated source of that growth, not the growth. Both belong
+upstream, in `qualname`.
 
 ### Large RSS sources and the 5 s budget
 
