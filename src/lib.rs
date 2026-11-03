@@ -18,6 +18,11 @@
 //! stylesheet. Built on `xrust` (pure-Rust XPath 1.0 / XSLT 1.0), so it runs natively
 //! and in the browser (wasm) alike.
 //!
+//! Static `xsl:import` and `xsl:include` modules are also kernel dependencies. Relative
+//! hrefs resolve against each stylesheet's own IRI; inline stylesheets require absolute
+//! hrefs. Cycles and paths beyond 16 module edges are refused. For an I/O-free call with
+//! pre-fetched modules, use [`transform_xml_with_modules`].
+//!
 //! ## Compiling the stylesheet is the cost, and it is reusable
 //!
 //! Almost all of an XSLT call is parsing and compiling the *stylesheet*, which has nothing
@@ -76,6 +81,7 @@
 mod boolean_values;
 mod html;
 pub mod limits;
+mod modules;
 mod node_id;
 mod numeric_values;
 mod parameters;
@@ -128,6 +134,13 @@ impl Endpoint for XsltEndpoint {
             utf8(resolve_ref(inv, style_ref).await?, "stylesheet")?
         };
 
+        let modules = modules::fetch(
+            inv,
+            (!is_inline_xml(style_ref)).then_some(style_ref),
+            &stylesheet,
+        )
+        .await?;
+
         // The source document. `src` is either a resource IRI to resolve, or — when the
         // document is piped in (the engine routes a piped value to the first input) — the
         // inline XML itself. XML always starts with `<`, an IRI never does, so that's the
@@ -159,7 +172,7 @@ impl Endpoint for XsltEndpoint {
         // is load-bearing rather than tidy: a compiled stylesheet holds `Rc`s, so it is
         // `!Send`, and it lives and dies on that thread — which is also what lets the
         // endpoint's future stay `Send`. Cacheable — the result inherits the src +
-        // stylesheet threads.
+        // stylesheet and all imported/included module threads.
         let as_media = inv.inline_str("as").ok().map(str::to_string);
         let mut params = BTreeMap::new();
         for name in inv.request.args.keys() {
@@ -171,12 +184,12 @@ impl Endpoint for XsltEndpoint {
         // `Timeout`, and the work — which xrust cannot be told to stop — is counted until it
         // ends (ledger #1040).
         // On the stylesheet's own thread, which compiled it once (ledger #2826).
-        let key = stylesheet.clone();
+        let key = modules.key(&stylesheet);
         let (media, out) = limits::on_stylesheet_thread_within(
             &key,
             limits::DEFAULT_TIME_BUDGET,
             forget_compiled,
-            move || render(&source, &stylesheet, as_media.as_deref(), &params),
+            move || render(&source, &stylesheet, as_media.as_deref(), &params, &modules),
         )??;
         Ok(Representation::new(
             ReprType::new(media).with_param("charset", "utf-8"),
@@ -213,7 +226,7 @@ impl Endpoint for XsltEndpoint {
                 ArgSpec::new("stylesheet")
                     .summary(
                         "the XSLT stylesheet: a resolvable resource IRI, or the stylesheet \
-                         itself",
+                         itself; import/include hrefs resolve against its IRI (inline XML requires absolute hrefs)",
                     )
                     .class(XSD_STRING),
             )
@@ -412,10 +425,13 @@ impl CompiledStylesheet {
     /// construct is an `InvalidArgument` naming `stylesheet`, anything xrust refuses is an
     /// `Endpoint` error.
     fn compile_typed(stylesheet_xml: &str) -> Result<Self> {
+        Self::compile_modules(stylesheet_xml, &modules::Modules::default())
+    }
+
+    fn compile_modules(stylesheet_xml: &str, modules: &modules::Modules) -> Result<Self> {
         limits::check_stylesheet(stylesheet_xml, "stylesheet")?;
         COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let styledoc = parse_xml(stylesheet_xml)
-            .map_err(|e| Error::Endpoint(format!("stylesheet parse error: {}", e.message)))?;
+        let styledoc = modules.assemble(stylesheet_xml)?;
         // Read `xsl:output method` and scan for the silent constructs BEFORE compiling:
         // `from_document` strips whitespace destructively and the tree is shared through
         // `Rc`, so afterwards the document is no longer the one that was parsed.
@@ -424,8 +440,18 @@ impl CompiledStylesheet {
         boolean_values::prepare(&styledoc)?;
         numeric_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
-        let ctxt = from_document(styledoc, None, parse_xml, |_| Ok(String::new()))
-            .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
+        // Module assembly has already expanded static edges so the guards above see
+        // imported code too. Keep xrust's fetcher strictly on that same pre-fetched map:
+        // an unexpected lookup can never perform I/O or substitute an empty document.
+        let ctxt = from_document(styledoc, None, parse_xml, |url| {
+            modules.texts.get(url.as_str()).cloned().ok_or_else(|| {
+                XsltError::new(
+                    XsltErrorKind::Unknown,
+                    format!("stylesheet module `{url}` was not supplied"),
+                )
+            })
+        })
+        .map_err(|e| Error::Endpoint(format!("stylesheet compile error: {}", e.message)))?;
         Ok(CompiledStylesheet {
             ctxt,
             output_method,
@@ -570,9 +596,19 @@ thread_local! {
 /// The compiled form of this exact stylesheet text, from the per-thread memo if it is
 /// there and compiled (and remembered) if it is not.
 fn compiled_for(stylesheet_xml: &str) -> Result<Rc<CompiledStylesheet>> {
+    compiled_for_modules(stylesheet_xml, &modules::Modules::default())
+}
+
+fn compiled_for_modules(
+    stylesheet_xml: &str,
+    modules: &modules::Modules,
+) -> Result<Rc<CompiledStylesheet>> {
+    let key = modules.key(stylesheet_xml);
     let hit = COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let found = cache.iter().position(|(key, _)| &**key == stylesheet_xml)?;
+        let found = cache
+            .iter()
+            .position(|(cached_key, _)| &**cached_key == key.as_str())?;
         let entry = cache.remove(found);
         let compiled = Rc::clone(&entry.1);
         cache.insert(0, entry);
@@ -581,10 +617,13 @@ fn compiled_for(stylesheet_xml: &str) -> Result<Rc<CompiledStylesheet>> {
     if let Some(compiled) = hit {
         return Ok(compiled);
     }
-    let compiled = Rc::new(CompiledStylesheet::compile_typed(stylesheet_xml)?);
+    let compiled = Rc::new(CompiledStylesheet::compile_modules(
+        stylesheet_xml,
+        modules,
+    )?);
     COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
-        cache.insert(0, (Rc::from(stylesheet_xml), Rc::clone(&compiled)));
+        cache.insert(0, (Rc::from(key.as_str()), Rc::clone(&compiled)));
         cache.truncate(STYLESHEET_CACHE_ENTRIES);
     });
     Ok(compiled)
@@ -606,6 +645,7 @@ fn forget_compiled() {
 /// to.
 pub fn clear_stylesheet_cache() {
     forget_compiled();
+    modules::clear_cache();
     limits::release_stylesheet_threads();
     limits::release_idle_threads();
 }
@@ -656,6 +696,50 @@ pub fn transform_xml(
     )
 }
 
+/// Transform with pre-fetched stylesheet modules, without performing I/O. Keys are
+/// absolute href IRIs and values are XML texts. The main stylesheet has no base IRI,
+/// so its hrefs must be absolute; nested relative hrefs resolve against their module's
+/// key. Missing modules are errors naming the href. All modules participate in the
+/// compile cache key and receive the same bounds and subset checks as the main sheet.
+///
+/// ```
+/// use std::collections::BTreeMap;
+/// let main = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:import href="urn:file:/shared.xsl"/>
+/// </xsl:stylesheet>"#;
+/// let shared = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+///   <xsl:template match="/">imported</xsl:template>
+/// </xsl:stylesheet>"#;
+/// let modules = BTreeMap::from([("urn:file:/shared.xsl".into(), shared.into())]);
+/// assert_eq!(ikigai_xslt::transform_xml_with_modules("<doc/>", main, &modules, true).unwrap(), "imported");
+/// ```
+pub fn transform_xml_with_modules(
+    src_xml: &str,
+    stylesheet_xml: &str,
+    modules: &BTreeMap<String, String>,
+    text_output: bool,
+) -> std::result::Result<String, String> {
+    limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
+    limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
+    let modules = modules::Modules {
+        base: None,
+        texts: modules.clone(),
+    };
+    let key = modules.key(stylesheet_xml);
+    let (src, style) = (src_xml.to_string(), stylesheet_xml.to_string());
+    limits::on_stylesheet_thread_within(
+        &key,
+        limits::DEFAULT_TIME_BUDGET,
+        forget_compiled,
+        move || {
+            compiled_for_modules(&style, &modules)
+                .map_err(plain)?
+                .run(&src, text_output)
+        },
+    )
+    .map_err(|e| e.to_string())?
+}
+
 /// [`transform_xml`] answered within `budget` rather than [`limits::DEFAULT_TIME_BUDGET`]:
 /// for a host that knows its own documents need more (or should get less). The caller is
 /// the host here, so the budget is not clamped; see [`limits::on_xslt_stack_within`] for what
@@ -680,9 +764,9 @@ pub fn transform_xml_within(
 ) -> std::result::Result<String, String> {
     limits::check_stylesheet(stylesheet_xml, "stylesheet").map_err(|e| e.to_string())?;
     limits::check_source(src_xml, "src").map_err(|e| e.to_string())?;
-    let key = stylesheet_xml;
+    let key = modules::Modules::default().key(stylesheet_xml);
     let (src_xml, stylesheet_xml) = (src_xml.to_string(), stylesheet_xml.to_string());
-    limits::on_stylesheet_thread_within(key, budget, forget_compiled, move || {
+    limits::on_stylesheet_thread_within(&key, budget, forget_compiled, move || {
         compiled_for(&stylesheet_xml)
             .map_err(plain)?
             .run(&src_xml, text_output)
@@ -699,10 +783,11 @@ fn render(
     stylesheet: &str,
     as_media: Option<&str>,
     params: &BTreeMap<String, String>,
+    modules: &modules::Modules,
 ) -> Result<(String, String)> {
     // A refused construct stays the typed `InvalidArgument` it is; anything xrust refuses
     // is an `Endpoint` error.
-    let compiled = compiled_for(stylesheet)?;
+    let compiled = compiled_for_modules(stylesheet, modules)?;
     parameters::validate(&compiled.parameters, params)?;
     // The output media type: what `as=` names, else what the stylesheet's `xsl:output
     // method` implies (html is the default, as in XSLT itself — the common case here is
@@ -774,7 +859,14 @@ mod tests {
     fn reports_a_stylesheet_error() {
         // Through `render`, which is the endpoint's half: it is what maps a plain-string
         // failure into an ikigai error, and the only caller that still does.
-        let err = render("<a/>", "not a stylesheet", None, &BTreeMap::new()).unwrap_err();
+        let err = render(
+            "<a/>",
+            "not a stylesheet",
+            None,
+            &BTreeMap::new(),
+            &modules::Modules::default(),
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Endpoint(_)));
     }
 

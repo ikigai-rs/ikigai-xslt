@@ -110,7 +110,7 @@ the refusal and update this table. The measured release is a record
 (`ikigai_xslt::subset::XRUST_MEASURED_ON`), not a gate: a newer xrust on crates.io is a
 warning in the ecosystem's daily scan, not a red build.
 
-**Works**: `xsl:if`, `xsl:choose`, `xsl:attribute` (prefixed names included),
+**Works**: `xsl:import`, `xsl:include` (including nested modules; see below), `xsl:if`, `xsl:choose`, `xsl:attribute` (prefixed names included),
 `call-template`, modes, `apply-templates` with `xsl:sort`, `count()`, `string-length()`, a
 `[@attr = '…']`, `[position() = n]` or literal `[n]` filter on a `select` path (`item[2]`,
 `(…)[2]`, `item[@k='1'][2]`), attribute value templates, prefixed names included (`{@id}`,
@@ -119,6 +119,28 @@ absolute `/doc/…` path from inside a nested template, `xsl:variable` at the to
 inside a template, `xsl:key` over unprefixed and prefixed names, `xsl:comment`, and a
 stylesheet document that begins with a comment. `{@rdf:about}` resolves the prefixed
 **name**; prefixed attribute **values** with uppercase letters are refused as described below.
+
+**Added in 0.6.0**: imports and includes are fetched through the kernel under the
+caller's capability. Relative hrefs resolve against each stylesheet module's own IRI
+using RFC 3986, including `urn:file:` bases and `../` paths. An inline `stylesheet=`
+has no base IRI and requires absolute hrefs. Missing modules produce a typed `NotFound`
+naming the href. Cycles and paths beyond 16 module edges are refused with a typed
+`InvalidArgument` naming the chain; more than 128 module occurrences (including repeated
+includes) are also refused. The result inherits every fetched module's golden thread:
+cutting an edited module's thread recomputes the transform, and changed module bytes
+produce a fresh compile.
+
+Module assembly preserves include order and import precedence for matched templates,
+named templates, global variables/parameters, and `xsl:output`. Every module receives
+the same XML bounds, subset checks, and boolean/numeric/parameter adaptations as the
+main stylesheet. `xsl:apply-imports` is refused when imports are present because xrust
+cannot apply the assembled import hierarchy; use distinct modes or named templates.
+This remains the measured XSLT subset, not full XSLT conformance.
+
+For an I/O-free native or wasm call, `transform_xml_with_modules` takes a
+`BTreeMap<String, String>` from absolute module href IRIs to XML texts. The main sheet
+has no base and uses absolute hrefs; nested relative references resolve against their
+module's map key. Missing pre-fetched modules are errors, never empty documents.
 
 **Changed in 0.3.1, with xrust 2.3.0** (ledger #1492): a literal `[n]` predicate, a prefixed
 name in an attribute value template, `xsl:variable` inside a template, `string-length()`,
@@ -399,7 +421,9 @@ warm-up between calls. From 0.1.3:
 The compile is keyed on the bytes the caller just passed — not on a path, an IRI or a
 timestamp — so an edited stylesheet is simply a different key and there is nothing that
 can go stale under the kernel's golden threads: when a stylesheet resource changes, its
-thread is cut, the cached transform recomputes, and the new text compiles once.
+thread is cut, the cached transform recomputes, and the new text compiles once. Since
+0.6.0 the key also includes the stylesheet base IRI and every imported/included module
+IRI and its bytes, so changing a nested module cannot reuse a stale compile.
 `clear_stylesheet_cache()` lets every compiled stylesheet go (~369 KB each for a stylesheet
 this size) and changes no answer. `stylesheet_compiles()` counts the compiles this process
 has run, so a host can see whether it is paying for recompiles.

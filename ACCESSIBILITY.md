@@ -21,7 +21,7 @@ report a barrier. It is not a conformance claim. Adapted from the
   call void keeps its end tag (`<script src='a.js'></script>`, `<div></div>`), so a browser does
   not misnest the rest of the page.
 - **Errors and refusals** (`src/lib.rs`, `src/limits.rs`, `src/subset.rs`,
-  `src/parameters.rs`, `src/boolean_values.rs`, `src/numeric_values.rs`): a missing input names
+  `src/parameters.rs`, `src/boolean_values.rs`, `src/numeric_values.rs`, `src/modules.rs`): a missing input names
   it (`src` or `stylesheet`); a bound past its limit names the input, the depth found, the limit
   and why (`the document nests 70 elements deep, deeper than 64 …`); an unsupported construct is
   refused by name; a transform past its time budget, a refusal while too many transforms are
@@ -56,7 +56,9 @@ host that serves the result owns the page around it.
   `tests/xrust_subset.rs` (`unsupported_constructs_are_refused_by_name`) and
   `tests/parameters.rs` (`only_declared_top_level_parameters_are_accepted`,
   `malformed_parameter_declarations_are_refused`) pin which input is named and that a refusal is
-  typed; the doctests in `src/limits.rs` pin that a depth refusal names its input and its limit.
+  typed; `tests/modules.rs` pins hrefs in missing-module and relative-href refusals,
+  and full chains in cycle and depth refusals; the doctests in `src/limits.rs` pin that a
+  depth refusal names its input and its limit.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.**
 
