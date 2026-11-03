@@ -465,3 +465,224 @@ fn a_module_directive_requires_a_nonempty_href() {
         );
     }
 }
+
+#[test]
+fn a_stylesheet_passed_by_reference_keeps_its_base_iri() {
+    let kernel = kernel(&[
+        (
+            "urn:file:/site/main.xsl",
+            style("<xsl:include href='shared.xsl'/>"),
+        ),
+        ("urn:file:/site/shared.xsl", answer("referenced")),
+    ]);
+    let req = request("").with_arg(
+        "stylesheet",
+        ArgRef::Reference(Iri::parse("urn:file:/site/main.xsl").unwrap()),
+    );
+    let result = futures::executor::block_on(kernel.issue(req, &Capability::root())).unwrap();
+    assert_eq!(
+        String::from_utf8(result.bytes).unwrap(),
+        "<answer>referenced</answer>"
+    );
+}
+
+#[test]
+fn repeated_modules_have_a_byte_budget() {
+    let main = style(&"<xsl:include href='urn:file:large'/>".repeat(128));
+    let large = style(&format!("<!--{}-->", "x".repeat(70_000)));
+    let modules = BTreeMap::from([("urn:file:large".into(), large)]);
+    let error =
+        ikigai_xslt::transform_xml_with_modules("<doc/>", &main, &modules, true).unwrap_err();
+    assert!(
+        error.contains("assembled stylesheet") && error.contains("bytes"),
+        "{error}"
+    );
+}
+
+#[test]
+fn union_alternatives_have_independent_default_priorities() {
+    let modules = BTreeMap::from([("urn:file:base".into(), style(""))]);
+    for imports in ["", "<xsl:import href='urn:file:base'/>"] {
+        for pattern in ["item|@b", "@b|item"] {
+            let main = style(&format!("{imports}<xsl:template match='/'><xsl:apply-templates select='doc/item|doc/@b'/></xsl:template><xsl:template match='{pattern}'>union</xsl:template><xsl:template match='*' priority='-0.25'>element</xsl:template><xsl:template match='@*' priority='-0.25'>attribute</xsl:template>"));
+            assert_eq!(
+                ikigai_xslt::transform_xml_with_modules(
+                    "<doc b='v'><item/></doc>",
+                    &main,
+                    &modules,
+                    true
+                )
+                .unwrap(),
+                "unionunion",
+                "{imports} {pattern}"
+            );
+        }
+    }
+}
+
+#[test]
+fn imports_must_precede_other_declarations_in_each_module() {
+    for body in [
+        "<xsl:template match='/'>main</xsl:template><xsl:import href='urn:file:base'/>",
+        "<xsl:include href='urn:file:empty'/><xsl:import href='urn:file:base'/>",
+    ] {
+        let main = style(body);
+        let kernel = kernel(&[
+            ("urn:file:base", answer("base")),
+            ("urn:file:empty", style("")),
+        ]);
+        let error = issue(&kernel, &main).unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidArgument { name, detail } if name == "stylesheet" && detail.contains("xsl:import") && detail.contains("precede")),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_names_at_the_same_precedence_are_refused() {
+    for declarations in [
+        "<xsl:template name='same'>one</xsl:template><xsl:template name='same'>two</xsl:template>",
+        "<xsl:variable name='same' select='1'/><xsl:variable name='same' select='2'/>",
+        "<xsl:param name='same' select='1'/><xsl:variable name='same' select='2'/>",
+    ] {
+        for prefix in ["", "<xsl:import href='urn:file:empty'/>"] {
+            let main = style(&format!(
+                "{prefix}{declarations}<xsl:template match='/'>ok</xsl:template>"
+            ));
+            let error = issue(&kernel(&[("urn:file:empty", style(""))]), &main).unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidArgument { name, detail } if name == "stylesheet" && detail.contains("duplicate") && detail.contains("same")),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn union_wildcards_and_names_keep_different_priorities() {
+    let modules = BTreeMap::from([("urn:file:base".into(), style(""))]);
+    for imports in ["", "<xsl:import href='urn:file:base'/>"] {
+        for (pattern, selected, expected) in [
+            ("*|@b", "doc/item", "competing"),
+            ("*|@b", "doc/@b", "union"),
+            ("@b|*", "doc/item", "competing"),
+            ("@b|*", "doc/@b", "union"),
+            ("item|@*", "doc/item", "union"),
+            ("item|@*", "doc/@b", "competing"),
+        ] {
+            let main = style(&format!("{imports}<xsl:template match='/'><xsl:apply-templates select='{selected}'/></xsl:template><xsl:template match='{pattern}'>union</xsl:template><xsl:template match='node()|@*' priority='-0.25'>competing</xsl:template>"));
+            assert_eq!(
+                ikigai_xslt::transform_xml_with_modules(
+                    "<doc b='v'><item/></doc>",
+                    &main,
+                    &modules,
+                    true
+                )
+                .unwrap(),
+                expected,
+                "{imports} {pattern} {selected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn split_union_templates_preserve_names_modes_namespaces_and_body_attributes() {
+    let module = "<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform' xmlns:d='urn:data'><xsl:template name='both' match='d:a|d:b' mode='special'><xsl:value-of select='name()'/></xsl:template></xsl:stylesheet>";
+    let main = style("<xsl:import href='urn:file:union'/><xsl:template match='/'><xsl:call-template name='both'/><xsl:apply-templates select='doc/*' mode='special'/></xsl:template>");
+    let modules = BTreeMap::from([("urn:file:union".into(), module.into())]);
+    assert_eq!(
+        ikigai_xslt::transform_xml_with_modules(
+            "<doc xmlns:d='urn:data'><d:a/><d:b/></doc>",
+            &main,
+            &modules,
+            true
+        )
+        .unwrap(),
+        "d:ad:b"
+    );
+}
+
+#[test]
+fn includes_share_their_parents_name_precedence() {
+    for (local, included) in [
+        (
+            "<xsl:template name='same'>main</xsl:template>",
+            "<xsl:template name='same'>included</xsl:template>",
+        ),
+        (
+            "<xsl:variable name='same' select='1'/>",
+            "<xsl:param name='same' select='2'/>",
+        ),
+    ] {
+        let main = style(&format!("<xsl:include href='urn:file:included'/>{local}<xsl:template match='/'>ok</xsl:template>"));
+        let error = issue(&kernel(&[("urn:file:included", style(included))]), &main).unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidArgument { name, detail } if name == "stylesheet" && detail.contains("duplicate") && detail.contains("same")),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_named_templates_are_compared_by_expanded_qname() {
+    let main = "<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform' xmlns:a='urn:names' xmlns:b='urn:names'><xsl:template name='a:same'>a</xsl:template><xsl:template name='b:same'>b</xsl:template><xsl:template match='/'>ok</xsl:template></xsl:stylesheet>";
+    let error = issue(&kernel(&[]), main).unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidArgument { detail, .. } if detail.contains("duplicate") && detail.contains("{urn:names}same")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn nested_module_import_order_is_checked_but_included_imports_are_hoisted() {
+    let main =
+        style("<xsl:template match='/'>main</xsl:template><xsl:include href='urn:file:included'/>");
+    let kernel = kernel(&[
+        (
+            "urn:file:included",
+            style("<!--allowed before import--><xsl:import href='urn:file:base'/>"),
+        ),
+        ("urn:file:base", answer("base")),
+    ]);
+    assert_eq!(
+        String::from_utf8(issue(&kernel, &main).unwrap().bytes).unwrap(),
+        "main"
+    );
+    let bad = style("<xsl:template name='early'/><xsl:import href='urn:file:base'/>");
+    let main = style("<xsl:include href='urn:file:bad'/>");
+    let error = issue(
+        &self::kernel(&[("urn:file:bad", bad), ("urn:file:base", answer("base"))]),
+        &main,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidArgument { detail, .. } if detail.contains("xsl:import") && detail.contains("precede")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn the_endpoint_refuses_module_bytes_with_a_typed_actionable_sentence() {
+    let main = style(&"<xsl:include href='urn:file:large'/>".repeat(128));
+    let large = style(&format!("<!--{}-->", "x".repeat(70_000)));
+    let error = issue(&kernel(&[("urn:file:large", large)]), &main).unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidArgument { name, detail } if name == "stylesheet" && detail.contains("8388608 bytes") && detail.contains("reduce") && detail.ends_with('.')),
+        "{error:?}"
+    );
+    let main = style(&format!(
+        "{}<xsl:template match='/'>small</xsl:template>",
+        "<xsl:include href='urn:file:small'/>".repeat(128)
+    ));
+    assert_eq!(
+        String::from_utf8(
+            issue(&kernel(&[("urn:file:small", style("<!--small-->"))]), &main)
+                .unwrap()
+                .bytes
+        )
+        .unwrap(),
+        "small"
+    );
+}

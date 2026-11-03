@@ -127,16 +127,41 @@ impl Endpoint for XsltEndpoint {
         // Refused TYPED (`MissingArgument`, or `InvalidArgument` for a value that is not
         // inline UTF-8), so a caller can tell its own omission from a failure here
         // (conformance REQUIRED).
-        let style_ref = inv.inline_str("stylesheet")?;
-        let stylesheet = if is_inline_xml(style_ref) {
+        // Keep reference arguments intact until this endpoint can retain their IRI.
+        // `reads_body` also permits stored or attached XML bodies, which have no base.
+        let mut style_ref = match inv.request.args.get("stylesheet") {
+            Some(ArgRef::Reference(iri)) => iri.as_str().to_string(),
+            Some(ArgRef::Content(_)) => {
+                let body = inv.content_body("stylesheet").await?;
+                String::from_utf8(inv.collect(body).await?.to_vec()).map_err(|_| {
+                    Error::InvalidArgument {
+                        name: "stylesheet".into(),
+                        detail: "not valid UTF-8".into(),
+                    }
+                })?
+            }
+            _ => inv.inline_str("stylesheet")?.to_string(),
+        };
+        let mut stylesheet = if is_inline_xml(&style_ref) {
             style_ref.to_string()
         } else {
-            utf8(resolve_ref(inv, style_ref).await?, "stylesheet")?
+            utf8(resolve_ref(inv, &style_ref).await?, "stylesheet")?
         };
+
+        // Preserve the existing by-value contract when the referent itself contains
+        // an IRI rather than XML. The actual stylesheet resource supplies the base.
+        if matches!(
+            inv.request.args.get("stylesheet"),
+            Some(ArgRef::Reference(_))
+        ) && !is_inline_xml(&stylesheet)
+        {
+            style_ref = stylesheet;
+            stylesheet = utf8(resolve_ref(inv, &style_ref).await?, "stylesheet")?;
+        }
 
         let modules = modules::fetch(
             inv,
-            (!is_inline_xml(style_ref)).then_some(style_ref),
+            (!is_inline_xml(&style_ref)).then_some(style_ref.as_str()),
             &stylesheet,
         )
         .await?;
@@ -228,7 +253,8 @@ impl Endpoint for XsltEndpoint {
                         "the XSLT stylesheet: a resolvable resource IRI, or the stylesheet \
                          itself; import/include hrefs resolve against its IRI (inline XML requires absolute hrefs)",
                     )
-                    .class(XSD_STRING),
+                    .class(XSD_STRING)
+                    .reads_body(),
             )
             .input(
                 ArgSpec::new("content")

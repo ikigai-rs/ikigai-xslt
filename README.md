@@ -123,15 +123,23 @@ stylesheet document that begins with a comment. `{@rdf:about}` resolves the pref
 **Added in 0.6.0**: imports and includes are fetched through the kernel under the
 caller's capability. Relative hrefs resolve against each stylesheet module's own IRI
 using RFC 3986, including `urn:file:` bases and `../` paths. An inline `stylesheet=`
-has no base IRI and requires absolute hrefs. Missing modules produce a typed `NotFound`
+containing XML has no base IRI and requires absolute hrefs. A `stylesheet` passed
+by reference retains its resource IRI as the base, including through nested modules. Missing modules produce a typed `NotFound`
 naming the href. Cycles and paths beyond 16 module edges are refused with a typed
 `InvalidArgument` naming the chain; more than 128 module occurrences (including repeated
-includes) are also refused. The result inherits every fetched module's golden thread:
+includes) are also refused. The assembled stylesheet has an 8 MiB byte budget,
+counting the main source, every module source occurrence (including wrappers and
+comments), and extra template copies for union alternatives. Oversized assembly is
+refused with an `InvalidArgument` naming `stylesheet` and suggesting a smaller input. The result inherits every fetched module's golden thread:
 cutting an edited module's thread recomputes the transform, and changed module bytes
 produce a fresh compile.
 
 Module assembly preserves include order and import precedence for matched templates,
-named templates, global variables/parameters, and `xsl:output`. Every module receives
+named templates, global variables/parameters, and `xsl:output`. Union match alternatives
+receive their own XSLT 1.0 default priorities. Imports must precede all other top-level
+elements within each module; duplicate named templates or global bindings at the same
+import precedence are refused, including duplicates introduced through includes.
+Every module receives
 the same XML bounds, subset checks, and boolean/numeric/parameter adaptations as the
 main stylesheet. `xsl:apply-imports` is refused when imports are present because xrust
 cannot apply the assembled import hierarchy; use distinct modes or named templates.
