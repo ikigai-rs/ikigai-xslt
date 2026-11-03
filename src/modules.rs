@@ -3,7 +3,7 @@
 
 use crate::{limits, node_id::IdNode, parse_xml, resolve_ref, utf8, XSL_NS};
 use ikigai_core::{Error, Invocation, Result};
-use qualname::QName;
+use qualname::{NamespacePrefix, NcName, QName};
 use std::collections::BTreeMap;
 use xrust::item::Node;
 
@@ -46,6 +46,16 @@ fn root(doc: &IdNode) -> Result<IdNode> {
         return Err(invalid(
             "stylesheet module requires an xsl:stylesheet or xsl:transform document element",
         ));
+    }
+    let mut seen_declaration = false;
+    for child in root.child_iter().filter(Node::is_element) {
+        if named(&child, "import") {
+            if seen_declaration {
+                return Err(invalid("xsl:import must precede all other top-level elements in each stylesheet module; move imports to the beginning."));
+            }
+        } else {
+            seen_declaration = true;
+        }
     }
     Ok(root)
 }
@@ -143,6 +153,8 @@ pub(crate) async fn fetch(
     base: Option<&str>,
     stylesheet: &str,
 ) -> Result<Modules> {
+    let mut bytes = 0;
+    charge_bytes(&mut bytes, stylesheet.len())?;
     let mut modules = Modules {
         base: base.map(str::to_string),
         texts: BTreeMap::new(),
@@ -161,6 +173,7 @@ pub(crate) async fn fetch(
                 return Err(invalid(format!("stylesheet has more than {MAX_MODULE_OCCURRENCES} module occurrences; reduce repeated imports/includes")));
             }
             let text = if let Some(text) = modules.texts.get(&iri) {
+                charge_bytes(&mut bytes, text.len())?;
                 text.clone()
             } else {
                 let repr = resolve_ref(inv, &iri).await.map_err(|error| match error {
@@ -171,6 +184,7 @@ pub(crate) async fn fetch(
                     other => other,
                 })?;
                 let text = utf8(repr, &format!("stylesheet module `{href}` (`{iri}`)"))?;
+                charge_bytes(&mut bytes, text.len())?;
                 limits::check_stylesheet(&text, "stylesheet")?;
                 modules.texts.insert(iri.clone(), text.clone());
                 text
@@ -208,22 +222,26 @@ impl Modules {
         // xrust expands only the outermost modules, after reading xsl:output and
         // without applying this crate's guards to imported code. Assemble first so
         // every declaration is checked and adapted together before compilation.
+        charge_bytes(&mut 0, stylesheet.len())?;
         let doc = parse(stylesheet)?;
         let mut root = root(&doc)?;
-        if references(&doc)?.is_empty() {
-            return Ok(doc);
-        }
         let chain = vec![self
             .base
             .clone()
             .unwrap_or_else(|| "inline stylesheet".into())];
         let mut assembly = Assembly::default();
-        let mut declarations =
-            self.collect(stylesheet, self.base.as_deref(), &chain, 0, &mut assembly)?;
+        let mut declarations = if references(&doc)?.is_empty() {
+            assembly.bytes = stylesheet.len();
+            root.child_iter()
+                .map(|node| Declaration { node, group: 0 })
+                .collect()
+        } else {
+            self.collect(stylesheet, self.base.as_deref(), &chain, 0, &mut assembly)?
+        };
         assembly.finish(0);
-        if assembly.precedence.len() > 1 {
-            prepare_precedence(&mut declarations, &assembly.precedence)?;
-        }
+        check_duplicate_names(&declarations)?;
+        declarations = split_union_templates(declarations, &mut assembly.bytes)?;
+        prepare_precedence(&mut declarations, &assembly.precedence)?;
         let children: Vec<_> = root.child_iter().collect();
         for mut child in children {
             child.pop().map_err(engine)?;
@@ -242,6 +260,7 @@ impl Modules {
         group: usize,
         assembly: &mut Assembly,
     ) -> Result<Vec<Declaration>> {
+        charge_bytes(&mut assembly.bytes, text.len())?;
         let doc = parse(text)?;
         let root = root(&doc)?;
         assembly.documents.push(doc);
@@ -289,6 +308,149 @@ impl Modules {
     }
 }
 
+// Count expanded source occurrences before allocating their trees. This deliberately
+// includes module wrappers and comments, making the module budget conservative.
+fn charge_bytes(total: &mut usize, amount: usize) -> Result<()> {
+    let limit = limits::MAX_ASSEMBLED_STYLESHEET_BYTES;
+    if amount > limit.saturating_sub(*total) {
+        return Err(invalid(format!("The assembled stylesheet exceeds the limit of {limit} bytes; reduce stylesheet size or repeated imports/includes.")));
+    }
+    *total += amount;
+    Ok(())
+}
+
+// Names in declarations are expanded QNames; the default namespace does not apply.
+fn declaration_name(node: &IdNode) -> Result<String> {
+    if !(named(node, "template") || named(node, "variable") || named(node, "param")) {
+        return Ok(String::new());
+    }
+    let name = attribute(node, "name");
+    if name.is_empty() {
+        return Ok(name);
+    }
+    if let Some((prefix, local)) = name.split_once(':') {
+        let prefix = NamespacePrefix::try_from(prefix)
+            .map_err(|_| invalid(format!("declaration name `{name}` is not a QName")))?;
+        let local = NcName::try_from(local)
+            .map_err(|_| invalid(format!("declaration name `{name}` is not a QName")))?;
+        let namespace = node.to_namespace_uri(&Some(prefix)).map_err(|_| {
+            invalid(format!(
+                "declaration name `{name}` uses an undeclared namespace prefix"
+            ))
+        })?;
+        Ok(format!(
+            "{{{}}}{}",
+            namespace.to_string(),
+            local.to_string()
+        ))
+    } else {
+        NcName::try_from(name.as_str())
+            .map_err(|_| invalid(format!("declaration name `{name}` is not a QName")))?;
+        Ok(name)
+    }
+}
+
+fn check_duplicate_names(declarations: &[Declaration]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for declaration in declarations {
+        let node = &declaration.node;
+        let name = declaration_name(node)?;
+        if !name.is_empty()
+            && !seen.insert((named(node, "template"), declaration.group, name.clone()))
+        {
+            let kind = if named(node, "template") {
+                "named template"
+            } else {
+                "global variable or parameter"
+            };
+            return Err(invalid(format!("duplicate {kind} `{name}` at the same import precedence; keep only one declaration.")));
+        }
+    }
+    Ok(())
+}
+
+// Split only union separators outside literals and nested expressions. A pipe in
+// a processing-instruction target or predicate literal belongs to that expression.
+fn alternatives(pattern: &str) -> Vec<&str> {
+    let mut quote = None;
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut parts = Vec::new();
+    for (index, ch) in pattern.char_indices() {
+        if let Some(delimiter) = quote {
+            if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                parts.push(pattern[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(pattern[start..].trim());
+    parts
+}
+
+// xrust's attribute deep_copy retains the old parent, so adding that copy
+// removes the original attribute. Recreate attributes to preserve every union rule.
+fn copy_template(node: &IdNode) -> Result<IdNode> {
+    let mut copy = node.shallow_copy().map_err(engine)?;
+    for attr in node.attribute_iter() {
+        copy.add_attribute(
+            copy.new_attribute(attr.name().unwrap(), attr.value())
+                .map_err(engine)?,
+        )
+        .map_err(engine)?;
+    }
+    for child in node.child_iter() {
+        copy.push(copy_template(&child)?).map_err(engine)?;
+    }
+    Ok(copy)
+}
+
+fn split_union_templates(
+    declarations: Vec<Declaration>,
+    bytes: &mut usize,
+) -> Result<Vec<Declaration>> {
+    let mut expanded = Vec::new();
+    for declaration in declarations {
+        let node = &declaration.node;
+        let pattern = attribute(node, "match");
+        let parts = alternatives(&pattern);
+        if !named(node, "template") || !attribute(node, "priority").is_empty() || parts.len() == 1 {
+            expanded.push(declaration);
+            continue;
+        }
+        let copy_bytes = node.to_xml().len();
+        for (index, part) in parts.iter().enumerate() {
+            let copy = if index == 0 {
+                node.clone()
+            } else {
+                charge_bytes(bytes, copy_bytes)?;
+                let copy = copy_template(node)?;
+                // A union template with a name still declares that name only once.
+                if let Some(mut name) = copy.get_attribute_node(&QName::try_from("name").unwrap()) {
+                    name.pop().map_err(engine)?;
+                }
+                copy
+            };
+            set_attribute(&copy, "match", part)?;
+            expanded.push(Declaration {
+                node: copy,
+                group: declaration.group,
+            });
+        }
+    }
+    Ok(expanded)
+}
+
 struct Declaration {
     node: IdNode,
     group: usize,
@@ -298,6 +460,7 @@ struct Assembly {
     // xrust parent/owner links are weak until declarations are attached.
     documents: Vec<IdNode>,
     occurrences: usize,
+    bytes: usize,
     precedence: Vec<usize>,
     next_precedence: usize,
 }
@@ -307,6 +470,7 @@ impl Default for Assembly {
         Self {
             documents: Vec::new(),
             occurrences: 0,
+            bytes: 0,
             precedence: vec![0],
             next_precedence: 0,
         }
@@ -343,6 +507,10 @@ fn set_attribute(node: &IdNode, name: &str, value: &str) -> Result<()> {
 /// Encode the pair as a finite ordinal, preserving default priorities within a level.
 /// Named templates and global bindings instead discard shadowed declarations.
 fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize]) -> Result<()> {
+    let declaration_names: Vec<_> = declarations
+        .iter()
+        .map(|declaration| declaration_name(&declaration.node))
+        .collect::<Result<_>>()?;
     let mut bindings = BTreeMap::<String, usize>::new();
     let mut names = BTreeMap::<String, usize>::new();
     let mut outputs = Vec::new();
@@ -351,14 +519,15 @@ fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize])
         let node = &declaration.node;
         let rank = precedence[declaration.group];
         if named(node, "param") || named(node, "variable") {
-            let name = attribute(node, "name");
-            let entry = bindings.entry(name).or_insert(rank);
+            let entry = bindings
+                .entry(declaration_names[index].clone())
+                .or_insert(rank);
             *entry = (*entry).max(rank);
         }
         if named(node, "template") {
-            let name = attribute(node, "name");
+            let name = &declaration_names[index];
             if !name.is_empty() {
-                let entry = names.entry(name).or_insert(rank);
+                let entry = names.entry(name.clone()).or_insert(rank);
                 *entry = (*entry).max(rank);
             }
             if !attribute(node, "match").is_empty() {
@@ -366,10 +535,10 @@ fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize])
                 priorities.push((index, rank, priority));
             }
         }
-        if named(node, "output") {
+        if named(node, "output") && precedence.len() > 1 {
             outputs.push((index, rank));
         }
-        if contains_apply_imports(node) {
+        if precedence.len() > 1 && contains_apply_imports(node) {
             return Err(invalid("xsl:apply-imports is not supported by the module compiler; use distinct modes or named templates"));
         }
     }
@@ -400,8 +569,8 @@ fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize])
         let node = &declaration.node;
         let rank = precedence[declaration.group];
         let keep = if named(node, "param") || named(node, "variable") {
-            bindings.get(&attribute(node, "name")) == Some(&rank)
-        } else if named(node, "output") {
+            bindings.get(&declaration_names[index]) == Some(&rank)
+        } else if named(node, "output") && first_output.is_some() {
             Some(index) == first_output
         } else {
             true
@@ -424,7 +593,7 @@ fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize])
             }
         }
         if named(node, "template") {
-            let name = attribute(node, "name");
+            let name = declaration_name(node)?;
             if !name.is_empty() && names.get(&name) != Some(&precedence[declaration.group]) {
                 // A template can have both a name and a match. Shadow only its name.
                 if let Some(mut attr) = node.get_attribute_node(&QName::try_from("name").unwrap()) {
@@ -443,11 +612,10 @@ fn contains_apply_imports(node: &IdNode) -> bool {
             .any(|child| contains_apply_imports(&child))
 }
 
-// The same default-priority calculation as xrust 2.3.0's compiler, on its parsed
-// pattern rather than a second lexical interpretation of XPath.
+// XSLT 1.0 section 5.5: union alternatives have already become separate rules.
+// Validate with xrust, then classify a single pattern, rather than using its
+// terminal node test (which loses both path steps and union alternatives).
 fn default_priority(node: &IdNode) -> Result<f64> {
-    use xrust::pattern::{Branch, Pattern};
-    use xrust::transform::{Axis, NameTest, NodeTest, Transform};
     let explicit = attribute(node, "priority");
     if !explicit.is_empty() {
         return explicit
@@ -460,25 +628,94 @@ fn default_priority(node: &IdNode) -> Result<f64> {
                 ))
             });
     }
-    let pattern: Pattern<IdNode> =
-        Pattern::try_from((attribute(node, "match"), node.clone())).map_err(engine)?;
-    Ok(match pattern {
-        Pattern::Predicate(Transform::Empty) => -1.0,
-        Pattern::Predicate(_) => 1.0,
-        Pattern::Selection(Branch::Error(error)) => return Err(engine(error)),
-        Pattern::Selection(branch) => {
-            let (axis, parent, test) = branch.terminal_node_test();
-            match (axis, parent) {
-                (Axis::SelfAttribute, _) => -0.5,
-                (Axis::SelfAxis, Axis::Parent | Axis::Ancestor | Axis::AncestorOrSelf) => {
-                    match test {
-                        NodeTest::Name(NameTest::Wildcard(_, _)) | NodeTest::Kind(_) => -0.5,
-                        _ => 0.0,
-                    }
+    let pattern = attribute(node, "match");
+    let parsed: xrust::pattern::Pattern<IdNode> =
+        xrust::pattern::Pattern::try_from((pattern.clone(), node.clone())).map_err(engine)?;
+    if let Some(error) = parsed.get_err() {
+        return Err(engine(error));
+    }
+    let mut quote = None;
+    let compact: String = pattern
+        .chars()
+        .filter(|&ch| {
+            if let Some(delimiter) = quote {
+                if ch == delimiter {
+                    quote = None;
                 }
-                _ => 0.5,
+                true
+            } else {
+                if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                }
+                !matches!(ch, ' ' | '\t' | '\n' | '\r')
             }
+        })
+        .collect();
+    let step = compact.as_str();
+    let step = step
+        .strip_prefix("child::")
+        .or_else(|| step.strip_prefix("attribute::"))
+        .or_else(|| step.strip_prefix('@'))
+        .unwrap_or(step)
+        .trim();
+    if matches!(
+        step,
+        "*" | "node()" | "text()" | "comment()" | "processing-instruction()"
+    ) {
+        return Ok(-0.5);
+    }
+    if let Some(prefix) = step.strip_suffix(":*") {
+        if NcName::try_from(prefix).is_ok() {
+            return Ok(-0.25);
         }
-        _ => -1.0,
-    })
+    }
+    if NcName::try_from(step).is_ok()
+        || step.split_once(':').is_some_and(|(prefix, local)| {
+            NcName::try_from(prefix).is_ok() && NcName::try_from(local).is_ok()
+        })
+    {
+        return Ok(0.0);
+    }
+    if let Some(target) = step
+        .strip_prefix("processing-instruction(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let target = target.trim();
+        if target.len() >= 2
+            && ((target.starts_with('\'')
+                && target.ends_with('\'')
+                && !target[1..target.len() - 1].contains('\''))
+                || (target.starts_with('"')
+                    && target.ends_with('"')
+                    && !target[1..target.len() - 1].contains('"')))
+        {
+            return Ok(0.0);
+        }
+    }
+    Ok(0.5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_byte_budget_accepts_its_boundary_and_refuses_overflow() {
+        let mut bytes = limits::MAX_ASSEMBLED_STYLESHEET_BYTES - 1;
+        charge_bytes(&mut bytes, 1).unwrap();
+        assert!(matches!(
+            charge_bytes(&mut bytes, 1),
+            Err(Error::InvalidArgument { .. })
+        ));
+        assert!(charge_bytes(&mut 1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn union_separators_inside_literals_and_predicates_are_not_split() {
+        assert_eq!(
+            alternatives("a|processing-instruction('a|b')|b"),
+            vec!["a", "processing-instruction('a|b')", "b"]
+        );
+        assert_eq!(alternatives("a[@b='x|y']|@c"), vec!["a[@b='x|y']", "@c"]);
+    }
 }

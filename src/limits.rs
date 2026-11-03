@@ -92,6 +92,12 @@ use std::time::Duration;
 /// both.
 pub const MAX_XML_DEPTH: usize = 64;
 
+/// Byte budget for an assembled stylesheet: **8 MiB**. Counts the main source and
+/// every imported/included source occurrence (including wrappers and comments),
+/// plus template copies needed to give union alternatives separate priorities.
+/// Checked before each occurrence is parsed or copied; repeated modules each count.
+pub const MAX_ASSEMBLED_STYLESHEET_BYTES: usize = 8 * 1024 * 1024;
+
 /// The deepest the brackets `(`, `[` and `{` may nest inside any one attribute value of a
 /// stylesheet — **32**. That is where XPath lives (`select`, `test`, `match`, and the `{…}`
 /// of an attribute value template), and xrust's XPath parser is the costliest recursion per

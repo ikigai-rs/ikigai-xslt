@@ -62,10 +62,10 @@
 //! same `Arc` to `Suite::body_space`, and the clean walks assert nothing is unprobed
 //! (`Expected::nothing_unprobed`), so the wiring cannot fall off silently. Over live
 //! files the answers are uncacheable and BODIES leaves them unprobed for that reason,
-//! which [`over_a_live_stylesheet_nothing_is_cached`] pins. BODY-INPUTS has nothing to
-//! probe: the transform reads `src` and `stylesheet` as inline strings (an IRI or the
-//! XML) and resolves a reference itself, so no argument is declared `reads_body`
-//! ([`no_argument_reads_a_body`]), and no content store is wired.
+//! which [`over_a_live_stylesheet_nothing_is_cached`] pins. For BODY-INPUTS,
+//! `stylesheet` is declared `reads_body` so a reference keeps its base IRI.
+//! Each walk supplies a shared content store and compares inline, reference,
+//! stored-content, and attached-body stylesheet inputs.
 //!
 //! No opt-outs on the module's endpoint (the two threaded stand-in files are waived
 //! from CACHEABLE, see `WATCHER_CUT`), no module namespace, and NAMES runs: the id
@@ -74,7 +74,7 @@
 use ikigai_conformance::{Check, Expected, Fixture, Report, Suite};
 use ikigai_core::{
     ArgRef, Capability, Description, EndpointSpace, Error, Exact, FnEndpoint, Invocation, Iri,
-    Kernel, ReprType, Representation, Request, Verb,
+    Kernel, MemoryContentStore, ReprType, Representation, Request, Verb,
 };
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -132,7 +132,12 @@ const NET_SCOPE: &str = "urn:cap:net:example.org";
 /// The suite with one fixture for the one action: `src` and `stylesheet` as the
 /// kernel under test wants them — inline XML, or IRIs it binds — and `space`, the
 /// same `Arc` the kernel was built from, for BODIES.
-fn suite(space: &Arc<EndpointSpace>, src: &str, stylesheet: &str) -> Suite {
+fn suite(
+    space: &Arc<EndpointSpace>,
+    store: &Arc<MemoryContentStore>,
+    src: &str,
+    stylesheet: &str,
+) -> Suite {
     Suite::new()
         .fixture(
             Fixture::new(TRANSFORM, Verb::Source)
@@ -140,6 +145,7 @@ fn suite(space: &Arc<EndpointSpace>, src: &str, stylesheet: &str) -> Suite {
                 .arg("stylesheet", stylesheet),
         )
         .body_space(Arc::clone(space))
+        .body_input_store(Arc::clone(store))
 }
 
 /// Why the threaded stand-ins are waived from `CACHEABLE`: they cache on their own
@@ -183,7 +189,10 @@ fn file_resource(
 /// [`DOCUMENT_IRI`], the space the kernel was built from (for BODIES), and a handle
 /// to change the stylesheet in place. `threaded` selects the store's kind (see the
 /// file docs).
-fn with_files(threaded: bool) -> (Kernel, Arc<EndpointSpace>, Arc<RwLock<&'static str>>) {
+fn with_files(
+    threaded: bool,
+    store: &Arc<MemoryContentStore>,
+) -> (Kernel, Arc<EndpointSpace>, Arc<RwLock<&'static str>>) {
     let stylesheet = Arc::new(RwLock::new(STYLE_HTML));
     let document = Arc::new(RwLock::new(DOC));
     let space = ikigai_xslt::space()
@@ -201,7 +210,11 @@ fn with_files(threaded: bool) -> (Kernel, Arc<EndpointSpace>, Arc<RwLock<&'stati
             file_resource("brian-rdf", "application/rdf+xml", document, threaded),
         );
     let space = Arc::new(space);
-    (Kernel::new(space.clone()), space, stylesheet)
+    (
+        Kernel::new(space.clone()).with_content_store(store.clone()),
+        space,
+        stylesheet,
+    )
 }
 
 fn request(args: &[(&str, &str)]) -> Request {
@@ -229,6 +242,19 @@ fn issue(kernel: &Kernel, request: Request, capability: &Capability) -> Result<S
 /// the file docs). A second module endpoint bound without a
 /// line here would be held to a weaker standard.
 fn assert_shape(report: &Report, extra: usize) {
+    let transports: BTreeSet<_> = report
+        .declared
+        .evidence
+        .body_inputs
+        .iter()
+        .filter(|comparison| comparison.endpoint == TRANSFORM && comparison.input == "stylesheet")
+        .map(|comparison| comparison.transport.as_str())
+        .collect();
+    assert_eq!(
+        transports,
+        BTreeSet::from(["reference", "stored content id", "one-shot attached body"]),
+        "{report}"
+    );
     assert_eq!(report.endpoints, 1 + extra, "{report}");
     assert_eq!(
         report.actions,
@@ -245,8 +271,9 @@ fn assert_shape(report: &Report, extra: usize) {
 #[test]
 fn conforms() {
     let space = Arc::new(ikigai_xslt::space());
-    let kernel = Kernel::new(space.clone());
-    let report = suite(&space, DOC, STYLE_HTML)
+    let store = Arc::new(MemoryContentStore::new(1024 * 1024));
+    let kernel = Kernel::new(space.clone()).with_content_store(store.clone());
+    let report = suite(&space, &store, DOC, STYLE_HTML)
         .pure(TRANSFORM)
         .cacheable(TRANSFORM)
         .self_named_space("xslt", ikigai_xslt::space)
@@ -271,9 +298,10 @@ fn conforms() {
 /// set is its inputs', non-empty.
 #[test]
 fn a_stylesheet_by_reference_inherits_its_thread() {
-    let (kernel, space, stylesheet) = with_files(true);
+    let store = Arc::new(MemoryContentStore::new(1024 * 1024));
+    let (kernel, space, stylesheet) = with_files(true, &store);
 
-    let report = suite(&space, DOCUMENT_IRI, STYLESHEET_IRI)
+    let report = suite(&space, &store, DOCUMENT_IRI, STYLESHEET_IRI)
         .cacheable(TRANSFORM)
         .opt_out_check("foaf-xsl", Check::Cacheable, WATCHER_CUT)
         .opt_out_check("brian-rdf", Check::Cacheable, WATCHER_CUT)
@@ -328,9 +356,10 @@ fn a_stylesheet_by_reference_inherits_its_thread() {
 /// visible — the types are identical either way.
 #[test]
 fn over_a_live_stylesheet_nothing_is_cached() {
-    let (kernel, space, _) = with_files(false);
+    let store = Arc::new(MemoryContentStore::new(1024 * 1024));
+    let (kernel, space, _) = with_files(false, &store);
 
-    let report = suite(&space, DOCUMENT_IRI, STYLESHEET_IRI).run_blocking(&kernel);
+    let report = suite(&space, &store, DOCUMENT_IRI, STYLESHEET_IRI).run_blocking(&kernel);
     eprintln!("[live files, undeclared]\n{report}");
     assert!(report.is_clean(), "{report}");
     assert_shape(&report, 2);
@@ -359,7 +388,7 @@ fn over_a_live_stylesheet_nothing_is_cached() {
         "a transform over an uncacheable input is not cached"
     );
 
-    let report = suite(&space, DOCUMENT_IRI, STYLESHEET_IRI)
+    let report = suite(&space, &store, DOCUMENT_IRI, STYLESHEET_IRI)
         .cacheable(TRANSFORM)
         .run_blocking(&kernel);
     eprintln!("[live files, transform declared cacheable]\n{report}");
@@ -376,25 +405,29 @@ fn over_a_live_stylesheet_nothing_is_cached() {
     assert_eq!(report.findings.len(), 1, "and nothing else: {report}");
 }
 
-/// BODY-INPUTS probes only arguments declared `reads_body`, and the transform
-/// declares none: it reads every argument as an inline string and resolves a
-/// reference itself. Pinned so that declaring one is a visible change, which then
-/// needs a content store wired into the walks (`Kernel::with_content_store`,
-/// `Suite::body_input_store`).
+/// The stylesheet retains reference identity, while ordinary string parameters
+/// continue receiving their referents' bytes from the kernel.
 #[test]
-fn no_argument_reads_a_body() {
+fn the_stylesheet_reads_a_body_to_preserve_reference_identity() {
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
     let description = kernel
         .describe_pattern(TRANSFORM_IRI)
         .expect("the transform describes itself");
     let reads_body: Vec<&str> = description
-        .actions
+        .inputs
         .iter()
-        .flat_map(|a| a.inputs.iter())
+        .chain(description.actions.iter().flat_map(|a| a.inputs.iter()))
         .filter(|i| i.reads_body)
         .map(|i| i.name.as_str())
         .collect();
-    assert!(reads_body.is_empty(), "{reads_body:?}");
+    assert!(
+        !reads_body.is_empty(),
+        "stylesheet must retain its reference IRI"
+    );
+    assert!(
+        reads_body.iter().all(|name| *name == "stylesheet"),
+        "{reads_body:?}"
+    );
 }
 
 /// What `ikigai-conformance` 0.1.0 does not check (its PENDING #11): a declared
