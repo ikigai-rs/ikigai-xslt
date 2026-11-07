@@ -23,7 +23,7 @@ cards).
 | `stylesheet` | yes      | The XSLT stylesheet — a resolvable resource IRI (`urn:`, `file:`, or `http(s)://`), or the **stylesheet itself** (any value beginning with `<`). |
 | `src`        | yes\*    | The source document. Either a resolvable resource IRI, **inline XML** (any value beginning with `<`), or the value piped in from a previous step. |
 | `content`    | no       | The source document by value — where a pipeline's upstream value arrives. `src` takes precedence when both are given. |
-| `as`         | no       | Output media type. Omitted, it follows the stylesheet's `xsl:output method` (see below). |
+| `as`         | no       | Output media type. Omitted, it follows `xsl:output media-type`, then the resolved output method (see below). |
 
 \* `src` may be omitted when the document is piped in — the engine routes a piped value
 to the first input. An explicit `content=` argument is also accepted. So it slots into a
@@ -74,19 +74,24 @@ naming `stylesheet`, as are missing, invalid or duplicate parameter names.
 
 ## Output media type
 
-The result is labeled by `as=` when given; otherwise by what the stylesheet's top-level
-`xsl:output method` implies — the three declared outputs:
+The result is labeled by `as=` when given, then by the stylesheet's top-level
+`xsl:output media-type` when declared (for example, `application/n-triples` with
+`method="text"`). Otherwise, the resolved output method implies one of three types:
 
 | `xsl:output method` | media type | serialization |
 | ------------------- | ---------- | ------------- |
-| `html` (or no `xsl:output`) | `text/html` | HTML (since 0.3.0; see [below](#methodhtml-is-serialized-as-html)) |
+| `html` | `text/html` | HTML (since 0.3.0; see [below](#methodhtml-is-serialized-as-html)) |
 | `xml` | `application/xml` | XML |
 | `text` | `text/plain` | the result's string value, whitespace preserved, nothing escaped |
+
+With no explicit method, the result uses HTML when its first element is `html` in no
+namespace with only whitespace before it; otherwise it uses XML. Its media type follows
+that choice. A declared `media-type` labels the result without changing serialization.
 
 A `method="text"` stylesheet is serialized as text whatever `as=` says, and `as=text/plain`
 selects text serialization for any stylesheet. `as=` may relabel the markup with a type the
 declaration does not list (`image/svg+xml` for an SVG-emitting stylesheet); the declared
-three are what the endpoint chooses by itself.
+three are the defaults when neither `as=` nor `media-type` supplies a label.
 
 `document()` is not supported: the transform runs synchronously and a kernel resolution
 does not, so the engine's fetcher refuses every URL. A stylesheet that calls it fails with

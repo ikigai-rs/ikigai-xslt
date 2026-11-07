@@ -92,9 +92,10 @@ const DOC: &str = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax
   <foaf:Person rdf:about="http://example.org/ada"><foaf:name>Ada</foaf:name></foaf:Person>
 </rdf:RDF>"#;
 
-/// A page stylesheet with no `xsl:output`: XSLT's default method, html.
+/// A page fragment explicitly requesting HTML (a non-html root otherwise implies XML).
 const STYLE_HTML: &str = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
   xmlns:foaf="http://xmlns.com/foaf/0.1/">
+  <xsl:output method="html"/>
   <xsl:template match="/"><h1 class="name"><xsl:value-of select="//foaf:name"/></h1></xsl:template>
 </xsl:stylesheet>"#;
 
@@ -102,6 +103,7 @@ const STYLE_HTML: &str = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.
 /// in the bytes.
 const STYLE_LABEL: &str = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
   xmlns:foaf="http://xmlns.com/foaf/0.1/">
+  <xsl:output method="html"/>
   <xsl:template match="/"><h1 class="label"><xsl:value-of select="//foaf:name"/></h1></xsl:template>
 </xsl:stylesheet>"#;
 
@@ -436,7 +438,7 @@ fn the_stylesheet_reads_a_body_to_preserve_reference_identity() {
 /// media type follows the stylesheet's `xsl:output method`, the three methods serve
 /// exactly the three declared outputs, and `method="text"` is the string value
 /// (unescaped) even though nobody asked for `text/plain`. Then the one documented
-/// exception: `as=` relabels the markup with a type the declaration does not list.
+/// overrides: `as=` or `xsl:output media-type` can supply a type the declaration does not list.
 #[test]
 fn declared_outputs_are_the_media_types_served() {
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
