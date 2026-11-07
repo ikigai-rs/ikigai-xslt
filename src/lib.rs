@@ -10,8 +10,9 @@
 //! beginning with `<` is the document itself, not a reference — and with both inline the
 //! transform is a pure function of its inputs.
 //!
-//! The result's media type follows the stylesheet's `xsl:output method` (`html` →
-//! `text/html`, `xml` → `application/xml`, `text` → `text/plain`) unless `as=` names one.
+//! The result's media type follows `as=`, then the stylesheet's `xsl:output media-type`,
+//! then its resolved output method (`html` → `text/html`, `xml` → `application/xml`,
+//! `text` → `text/plain`).
 //!
 //! This is a general styling mechanism for arbitrary XML — RDF/XML in particular — so
 //! the same cached graph can be rendered into different presentations by swapping the
@@ -268,16 +269,15 @@ impl Endpoint for XsltEndpoint {
             .input(
                 ArgSpec::new("as")
                     .summary(
-                        "output media type; omitted, it follows the stylesheet's xsl:output \
-                         method (html → text/html, xml → application/xml, text → text/plain)",
+                        "output media type; omitted, it follows xsl:output media-type, then the \
+                         resolved method (html → text/html, xml → application/xml, text → text/plain)",
                     )
                     .class(XSD_STRING)
                     .optional(),
             )
             .open_arguments("every other argument is a string value for a declared top-level xsl:param; undeclared names are refused")
-            // The three media types `xsl:output method` can imply. `as=` may relabel the
-            // markup with any type (`image/svg+xml` for an SVG-emitting stylesheet); the
-            // declared list is what the endpoint chooses by itself.
+            // The three media types the output method can imply. `as=` or xsl:output
+            // media-type may label the result with another type, such as image/svg+xml.
             .output("text/html;charset=utf-8")
             .output("application/xml;charset=utf-8")
             .output("text/plain;charset=utf-8")
@@ -308,16 +308,6 @@ const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 /// starts with `<` (after leading whitespace) and an IRI never does.
 fn is_inline_xml(value: &str) -> bool {
     value.trim_start().starts_with('<')
-}
-
-/// The media type an `xsl:output method` implies; `None` (no `xsl:output`) is XSLT's own
-/// default, which — for an engine whose job is styling into pages — is `html`.
-fn media_type_for(method: Option<&str>) -> &'static str {
-    match method {
-        Some("text") => "text/plain",
-        Some("xml") => "application/xml",
-        _ => "text/html",
-    }
 }
 
 /// The `method` of a stylesheet's top-level `xsl:output` element (`"html"`, `"xml"`,
@@ -354,6 +344,10 @@ pub fn stylesheet_output_method(
 /// to `from_document` — which strips whitespace *destructively*, through the `Rc` the tree
 /// is shared by — so the read happens first and the parse happens once.
 fn output_method_of(doc: &IdNode) -> Option<String> {
+    output_attribute_of(doc, "method")
+}
+
+fn output_attribute_of(doc: &IdNode, attribute: &str) -> Option<String> {
     let root = doc.child_iter().find(|c| c.is_element())?;
     let output_name = format!("{{{XSL_NS}}}output");
     root.child_iter()
@@ -362,7 +356,7 @@ fn output_method_of(doc: &IdNode) -> Option<String> {
         .find_map(|output| {
             output
                 .attribute_iter()
-                .find(|a| a.name().is_some_and(|n| n.to_string() == "method"))
+                .find(|a| a.name().is_some_and(|n| n.to_string() == attribute))
                 .map(|a| a.value().to_string())
         })
 }
@@ -432,6 +426,7 @@ pub struct CompiledStylesheet {
     /// 56-template stylesheet, five orders of magnitude under the compile it replaces.
     ctxt: Context<IdNode>,
     output_method: Option<String>,
+    output_media_type: Option<String>,
     parameters: Vec<parameters::Parameter>,
 }
 
@@ -462,6 +457,7 @@ impl CompiledStylesheet {
         // `from_document` strips whitespace destructively and the tree is shared through
         // `Rc`, so afterwards the document is no longer the one that was parsed.
         let output_method = output_method_of(&styledoc);
+        let output_media_type = output_attribute_of(&styledoc, "media-type");
         subset::check(&styledoc)?;
         boolean_values::prepare(&styledoc)?;
         numeric_values::prepare(&styledoc)?;
@@ -481,6 +477,7 @@ impl CompiledStylesheet {
         Ok(CompiledStylesheet {
             ctxt,
             output_method,
+            output_media_type,
             parameters,
         })
     }
@@ -527,6 +524,7 @@ impl CompiledStylesheet {
     /// [`CompiledStylesheet::transform`] without the check, for a caller that has made it.
     fn run(&self, src_xml: &str, text_output: bool) -> std::result::Result<String, String> {
         self.run_with_parameters(src_xml, text_output, &BTreeMap::new())
+            .map(|(out, _)| out)
     }
 
     fn run_with_parameters(
@@ -534,7 +532,7 @@ impl CompiledStylesheet {
         src_xml: &str,
         text_output: bool,
         params: &BTreeMap<String, String>,
-    ) -> std::result::Result<String, String> {
+    ) -> std::result::Result<(String, &'static str), String> {
         let srcdoc = parse_xml(src_xml)
             .map_err(|e| format!("source document parse error: {}", e.message))?;
 
@@ -568,12 +566,15 @@ impl CompiledStylesheet {
             .evaluate(&mut stctxt)
             .map_err(|e| format!("transform error: {}", e.message))?;
         if text_output {
-            return Ok(seq.to_string());
+            return Ok((seq.to_string(), "text/plain"));
         }
-        if html::is_html(self.output_method(), &seq) {
+        let media = if html::is_html(self.output_method(), &seq) {
             html::open_empty_elements(&seq)?;
-        }
-        Ok(seq.to_xml())
+            "text/html"
+        } else {
+            "application/xml"
+        };
+        Ok((seq.to_xml(), media))
     }
 }
 
@@ -815,23 +816,17 @@ fn render(
     // is an `Endpoint` error.
     let compiled = compiled_for_modules(stylesheet, modules)?;
     parameters::validate(&compiled.parameters, params)?;
-    // The output media type: what `as=` names, else what the stylesheet's `xsl:output
-    // method` implies (html is the default, as in XSLT itself — the common case here is
-    // styling RDF/XML into a page).
-    let method = compiled.output_method();
-    let media = match as_media {
-        Some(media) => media.to_string(),
-        None => media_type_for(method).to_string(),
-    };
-    // A `method="text"` stylesheet — or a caller asking for `text/plain` — wants the
-    // result's string value, whitespace preserved. Anything else is markup: HTML for the html
-    // method, XML otherwise (`CompiledStylesheet::run` decides).
-    let text_output =
-        method == Some("text") || media.split(';').next().unwrap_or(&media).trim() == "text/plain";
-    let out = compiled
+    // Explicit labels take precedence; otherwise use the method resolved from the result
+    // tree by the same run that serializes it (including the implicit HTML/XML choice).
+    let media = as_media.or(compiled.output_media_type.as_deref());
+    // Keep the existing text/plain label behavior, and always serialize method="text"
+    // as text even when its label is a more specific media type, such as N-Triples.
+    let text_output = compiled.output_method() == Some("text")
+        || as_media.is_some_and(|m| m.split(';').next().unwrap_or(m).trim() == "text/plain");
+    let (out, implied_media) = compiled
         .run_with_parameters(source, text_output, params)
         .map_err(Error::Endpoint)?;
-    Ok((media, out))
+    Ok((media.unwrap_or(implied_media).to_string(), out))
 }
 
 /// An error as the plain-string API spells it: an `Endpoint` error is its message alone (as
