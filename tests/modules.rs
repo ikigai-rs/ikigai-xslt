@@ -686,3 +686,23 @@ fn the_endpoint_refuses_module_bytes_with_a_typed_actionable_sentence() {
         "small"
     );
 }
+
+#[test]
+fn output_media_type_follows_import_precedence_and_inherits_method() {
+    let module = style("<xsl:output method='text' media-type='application/imported'/><xsl:template match='/'>text</xsl:template>");
+    let kernel = kernel(&[("urn:file:media-defaults", module)]);
+    for (output, expected) in [
+        ("", "application/imported"),
+        (
+            "<xsl:output media-type='application/n-triples'/>",
+            "application/n-triples",
+        ),
+    ] {
+        let main = style(&format!(
+            "<xsl:import href='urn:file:media-defaults'/>{output}"
+        ));
+        let rep = issue(&kernel, &main).expect("transforms imported stylesheet");
+        assert_eq!(rep.repr_type.media_type, expected);
+        assert_eq!(rep.bytes, b"text");
+    }
+}
