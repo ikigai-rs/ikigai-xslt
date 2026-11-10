@@ -625,3 +625,24 @@ fn xslt_boolean_number_value() {
         );
     }
 }
+
+#[test]
+fn xslt_node_on_the_left_of_a_comparison() {
+    for (test, answer) in [
+        ("/r/v &gt; 2", "yes"),
+        ("/r/v &lt; 2", "no"),
+        ("/r/v &gt;= 3", "yes"),
+        ("/r/v &lt;= 2", "no"),
+        ("2 &lt; /r/v", "yes"),
+        ("/r/v = 3", "yes"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="{test}">yes</xsl:when><xsl:otherwise>no</xsl:otherwise></xsl:choose></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<r><v>3</v></r>", &style),
+            format!("<out>{answer}</out>"),
+            "{test}"
+        );
+    }
+}

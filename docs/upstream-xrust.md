@@ -486,6 +486,8 @@ There are four interacting upstream causes:
   tests `2 > 3`, yielding false. Fixing conversion alone changed the two conditional
   examples from NaN/error to `0`/`[]`, exposing this separate cause. An `xsl:choose`
   in the stock test observes false directly, independently of boolean formatting.
+  **Fixed in `ikigai-xrust`** (ledger #3343;
+  [`upstream/xrust-node-comparison.md`](upstream/xrust-node-comparison.md)).
 * `integer_literal` in `src/parser/xpath/literals.rs` parses digits as `i64` and
   constructs `Transform::Error` on overflow. XPath 1.0 numbers are doubles, so
   this literal is valid. The arithmetic evaluation ends up answering `NaN`.
