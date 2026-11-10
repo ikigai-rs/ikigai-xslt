@@ -643,22 +643,18 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
     );
 }
 
-/// Ledger #2146: stylesheet whitespace stripping also removes xsl:text's explicit space.
-/// Keep this measured limitation visible until xrust preserves it; the workaround below
-/// pins a useful alternative without changing the caller's stylesheet here.
+/// Ledger #2146 (#1693): xrust 2.3.0's stylesheet whitespace stripping removed xsl:text's
+/// explicit space (`<out>MetaSource</out>`). The carried xrust preserves it (ledger #3343).
 #[test]
-fn silent_whitespace_only_xsl_text_is_dropped() {
+fn whitespace_only_xsl_text_is_preserved() {
     for text in [" ", "  ", "\t\n", "&#x20;"] {
         let templates = format!(
             r#"<xsl:template match="/"><out>Meta<xsl:text>{text}</xsl:text>Source</out></xsl:template>"#
         );
         let preserved = if text == "&#x20;" { " " } else { text };
-        pin_silent(
-            "<doc/>",
-            &templates,
-            "<out>MetaSource</out>",
-            &format!("<out>Meta{preserved}Source</out>"),
-        );
+        let correct = format!("<out>Meta{preserved}Source</out>");
+        assert_eq!(ours("<doc/>", &templates).unwrap(), correct);
+        assert_eq!(stock("<doc/>", &templates).unwrap(), correct);
     }
 }
 

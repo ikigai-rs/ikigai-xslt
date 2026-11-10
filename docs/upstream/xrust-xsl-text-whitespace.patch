@@ -1,0 +1,82 @@
+diff --git a/src/transform/whitespace.rs b/src/transform/whitespace.rs
+index 943dad4..1ccb985 100644
+--- a/src/transform/whitespace.rs
++++ b/src/transform/whitespace.rs
+@@ -72,15 +72,15 @@ fn strip_whitespace_node<N: Node>(
+                     NameTest::Wildcard(
+                         WildcardOrNamespaceUri::Wildcard,
+                         WildcardOrName::Name(_),
+-                    ) => ss = -0.25,
++                    ) => ps = -0.25,
+                     NameTest::Wildcard(
+                         WildcardOrNamespaceUri::NamespaceUri(_),
+                         WildcardOrName::Wildcard,
+-                    ) => ss = -0.25,
+-                    NameTest::Wildcard(_, _) => ss = -0.5,
++                    ) => ps = -0.25,
++                    NameTest::Wildcard(_, _) => ps = -0.5,
+                     NameTest::Name(qn) => {
+                         if *qn == n.name().unwrap() {
+-                            ss = 0.5
++                            ps = 0.5
+                         }
+                     }
+                 },
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index 577de86..f2ee28a 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -535,3 +535,53 @@ fn xslt_avt_1() {
+     )
+     .expect("test failed")
+ }
++
++/// Transform `src` with `style`, both XML text, as the `xslt` module documentation does,
++/// and serialize the result.
++fn transform_str(src: &str, style: &str) -> String {
++    use xrust::item::{Item, Node, SequenceTrait};
++    use xrust::transform::context::StaticContextBuilder;
++    use xrust::trees::smite::RNode;
++    use xrust::xdmerror::{Error, ErrorKind};
++    use xrust::xslt::from_document;
++
++    let srcdoc = smite::make_from_str(src).expect("unable to parse source");
++    let styledoc = smite::make_from_str(style).expect("unable to parse stylesheet");
++    let mut stctxt = StaticContextBuilder::new()
++        .message(|_| Ok(()))
++        .fetcher(|_| Err(Error::new(ErrorKind::NotImplemented, "no fetcher")))
++        .parser(|_| Err(Error::new(ErrorKind::NotImplemented, "no parser")))
++        .build();
++    let mut ctxt = from_document(styledoc, None, smite::make_from_str, |_| {
++        Err(Error::new(ErrorKind::NotImplemented, "no modules"))
++    })
++    .expect("unable to compile stylesheet");
++    ctxt.context(vec![Item::Node(srcdoc)], 0);
++    ctxt.result_document(RNode::new_document());
++    ctxt.evaluate(&mut stctxt)
++        .expect("unable to evaluate stylesheet")
++        .to_xml()
++}
++
++/// `templates` inside an XSLT 1.0 stylesheet with XML output.
++fn stylesheet(templates: &str) -> String {
++    format!(
++        r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:output method="xml"/>{templates}</xsl:stylesheet>"#
++    )
++}
++
++#[test]
++fn xslt_whitespace_only_text_is_preserved() {
++    for text in [" ", "  ", "\t\n", "&#x20;"] {
++        let style = stylesheet(&format!(
++            r#"<xsl:template match="/">
++  <out>Meta<xsl:text>{text}</xsl:text>Source</out>
++</xsl:template>"#
++        ));
++        let kept = if text == "&#x20;" { " " } else { text };
++        assert_eq!(
++            transform_str("<doc/>", &style),
++            format!("<out>Meta{kept}Source</out>")
++        );
++    }
++}

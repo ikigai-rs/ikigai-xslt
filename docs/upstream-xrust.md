@@ -228,7 +228,10 @@ in no namespace an empty text child before calling `to_xml`, so xrust's own seri
 the end tag (`src/html.rs`). Void elements stay `<br/>`, not §16.2's `<br>`, and script and
 style content is still escaped.
 
-## 9. Whitespace-only xsl:text is dropped
+## 9. Whitespace-only xsl:text is dropped (fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343), as diagnosed below; the issue text and
+patch for upstream are [`upstream/xrust-xsl-text-whitespace.md`](upstream/xrust-xsl-text-whitespace.md).
 
 Input: `<doc/>`.
 
@@ -238,22 +241,21 @@ Input: `<doc/>`.
 
 - **Expected** (XSLT 1.0 §3.4 and §7.2: whitespace inside `xsl:text` is preserved):
   `<out>Meta Source</out>`
-- **Actual**: `<out>MetaSource</out>`, without an error, through both stock xrust 2.3.0
-  and ikigai-xslt. Two spaces, a tab followed by a newline, and `&#x20;` are also lost.
+- **Actual**: `<out>MetaSource</out>`, without an error, through stock xrust 2.3.0 and
+  ikigai-xslt before 0.9.0. Two spaces, a tab followed by a newline, and `&#x20;` are also lost.
 
 Nonblank text such as `<xsl:text>Meta </xsl:text>` retains its trailing space. Both
 `<xsl:value-of select="' '"/>` and `<xsl:value-of select="concat(., ' ')"/>` preserve the
-space and are tested workarounds. ikigai-xslt records this limitation in its subset table;
-it does not rewrite or refuse these stylesheets.
+space and were the workarounds; ikigai-xslt never refused these stylesheets.
 
-Likely cause, from inspecting xrust 2.3.0: `xslt::from_document` calls
+Cause, confirmed by the fix: `xslt::from_document` calls
 `transform::whitespace::strip_whitespace` with a wildcard strip rule and a preserve rule
 for `xsl:text`. In `strip_whitespace_node`, the preserve-rule branch assigns matching
 scores to `ss` (the strip score), leaving `ps` (the preserve score) at -1. Therefore the
 `xsl:text` children are visited with `keep = false`, and whitespace-only text is removed
 before the instruction compiles. The upstream fix should assign preserve scores to `ps`
 and test that stylesheet indentation still strips while `xsl:text` whitespace survives.
-This is an upstream report draft; nothing has been filed.
+Nothing has been filed.
 
 ## 10. A prefixed attribute's value is lowercased by the XML parser
 

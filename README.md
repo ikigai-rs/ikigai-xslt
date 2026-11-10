@@ -263,16 +263,14 @@ templates are accepted when every call site supplies the namespace through a lit
 result ancestor (following at most `MAX_EXPR_DEPTH` template calls). A variable/parameter
 fragment can be emitted elsewhere, so the guard does not count its outer literal ancestors.
 
-⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;
-they are not refused here. Whether a path selects one node or several is a property of
+⚠ **Still silently wrong: an answer, no error.** This case is a recorded limitation;
+it is not refused here. Whether a path selects one node or several is a property of
 the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
-`item` often is not). Whitespace-only `xsl:text` is lost during stylesheet compilation,
-including a space written as `&#x20;`:
+`item` often is not).
 
 | construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
 | `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
-| `xsl:text` containing only whitespace: `Meta<xsl:text> </xsl:text>Source` | `Meta Source` | `MetaSource` (the explicit whitespace is dropped) | `<xsl:value-of select="' '"/>`, or append a space with `concat(., ' ')` |
 
 ### `method="html"` is serialized as HTML
 

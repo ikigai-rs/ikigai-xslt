@@ -72,15 +72,15 @@ fn strip_whitespace_node<N: Node>(
                     NameTest::Wildcard(
                         WildcardOrNamespaceUri::Wildcard,
                         WildcardOrName::Name(_),
-                    ) => ss = -0.25,
+                    ) => ps = -0.25,
                     NameTest::Wildcard(
                         WildcardOrNamespaceUri::NamespaceUri(_),
                         WildcardOrName::Wildcard,
-                    ) => ss = -0.25,
-                    NameTest::Wildcard(_, _) => ss = -0.5,
+                    ) => ps = -0.25,
+                    NameTest::Wildcard(_, _) => ps = -0.5,
                     NameTest::Name(qn) => {
                         if *qn == n.name().unwrap() {
-                            ss = 0.5
+                            ps = 0.5
                         }
                     }
                 },

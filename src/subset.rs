@@ -42,8 +42,8 @@
 //! DATA (`ik:title` is usually one node and may be three), so no lexical rule tells the two
 //! apart: refusing a multi-step path would refuse `../@title`, which is always one node, and
 //! still admit `item`, which is often several. It stays a README row with its workaround.
-//! Whitespace-only `xsl:text` is also a recorded limitation (ledger #2146), outside this
-//! XPath/pattern scan: it is not refused, and the README lists tested workarounds.
+//! Whitespace-only `xsl:text`, which xrust 2.3.0 dropped (ledger #2146), is kept by the
+//! xrust this crate carries (ledger #3343).
 //!
 //! ```
 //! let style = r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
