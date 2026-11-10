@@ -476,7 +476,9 @@ There are four interacting upstream causes:
 
 * `Value::to_double` in `src/value.rs` has no `Boolean` arm, so arithmetic and
   `number()` fall through to `NaN` instead of converting true to 1 and false to 0.
-* `ValueData::fmt` also has no `Boolean` arm (case 12), so `string(true())` and
+  **Fixed in `ikigai-xrust`** (ledger #3343;
+  [`upstream/xrust-boolean-number.md`](upstream/xrust-boolean-number.md)).
+* `ValueData::fmt` also has no `Boolean` arm (case 12, **fixed in `ikigai-xrust`**), so `string(true())` and
   `string(false())` both produce the empty string. The #2487 numeric adapter's
   `normalize-space(string((X)[1]))` therefore cannot recover boolean operands.
 * `Item::compare` in `src/item.rs` handles a node on the left by calling

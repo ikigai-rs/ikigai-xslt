@@ -327,6 +327,13 @@ impl Value {
             ValueData::Integer(i) => (*i) as f64,
             ValueData::Int(i) => (*i) as f64,
             ValueData::Double(d) => *d,
+            ValueData::Boolean(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             _ => f64::NAN,
         }
     }

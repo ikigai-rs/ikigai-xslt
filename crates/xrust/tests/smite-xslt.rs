@@ -606,3 +606,22 @@ fn xslt_boolean_string_value() {
         );
     }
 }
+
+#[test]
+fn xslt_boolean_number_value() {
+    for (expr, answer) in [
+        ("number(true())", "1"),
+        ("number(false())", "0"),
+        ("true() + 1", "2"),
+        ("number(1 &gt; 0) * 5", "5"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<doc/>", &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}

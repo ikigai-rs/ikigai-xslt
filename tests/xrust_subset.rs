@@ -1191,15 +1191,17 @@ fn numeric_conversion_is_adapted_over_stock_xrust_nan() {
     assert_eq!(ours(src, templates).unwrap(), "<out>2</out>");
 }
 
-/// #2668: keep the unadapted upstream defects visible beside the public fixes.
+/// #2668: keep the unadapted upstream defects visible beside the public fixes. xrust
+/// 2.3.0 also answered `NaN` for `number(true())`, `number(false())` and `true() + 1`; the
+/// carried xrust converts a boolean to 1 or 0 (ledger #3343).
 #[test]
 fn boolean_numeric_and_large_literal_upstream_causes() {
     let src = "<r><v>3</v></r>";
-    for (expression, wrong, correct) in [
-        ("number(true())", "NaN", "1"),
-        ("number(false())", "NaN", "0"),
-        ("true() + 1", "NaN", "2"),
-        ("number(/r/v &gt; 2) * 5", "NaN", "5"),
+    for (expression, stock_answer, correct) in [
+        ("number(true())", "1", "1"),
+        ("number(false())", "0", "0"),
+        ("true() + 1", "2", "2"),
+        ("number(/r/v &gt; 2) * 5", "0", "5"),
         ("100000000000000000000 + 1", "NaN", "100000000000000000000"),
     ] {
         let templates = format!(
@@ -1207,7 +1209,7 @@ fn boolean_numeric_and_large_literal_upstream_causes() {
         );
         assert_eq!(
             stock(src, &templates).unwrap(),
-            format!("<out>{wrong}</out>"),
+            format!("<out>{stock_answer}</out>"),
             "upstream changed: {expression}; remeasure #2668"
         );
         assert_eq!(
@@ -1217,7 +1219,8 @@ fn boolean_numeric_and_large_literal_upstream_causes() {
         );
     }
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', substring('yes', 1, number(/r/v &gt; 2) * 3), ']')"/></out></xsl:template>"#;
-    assert!(stock(src, templates).unwrap_err().contains("invalid digit"));
+    // 2.3.0 failed here ("invalid digit"); the comparison below still reverses.
+    assert_eq!(stock(src, templates).unwrap(), "<out>[]</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>[yes]</out>");
     // Observe the comparison itself without going through boolean formatting.
     let templates = r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="/r/v &gt; 2">true</xsl:when><xsl:otherwise>false</xsl:otherwise></xsl:choose></out></xsl:template>"#;
