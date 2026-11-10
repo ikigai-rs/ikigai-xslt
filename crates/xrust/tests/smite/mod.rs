@@ -1,0 +1,99 @@
+// Support functions for smite tests
+
+use std::rc::Rc;
+
+use qualname::{NamespaceMap, QName};
+use xrust::item::{Item, Node};
+use xrust::parser::ParseError;
+use xrust::parser::xml::{parse as xmlparse, parse_with_ns};
+use xrust::trees::smite::RNode;
+use xrust::value::Value;
+use xrust::xdmerror::Error;
+
+#[allow(dead_code)]
+pub fn make_empty_doc() -> RNode {
+    RNode::new_document()
+}
+#[allow(dead_code)]
+pub fn make_empty_doc_cooked() -> Result<RNode, Error> {
+    Ok(RNode::new_document())
+}
+
+#[allow(dead_code)]
+pub fn make_doc(n: QName, v: Value) -> RNode {
+    let mut d = RNode::new_document();
+    let mut child = d.new_element(n).expect("unable to create element");
+    d.push(child.clone()).expect("unable to add element node");
+    child
+        .push(
+            child
+                .new_text(Rc::new(v))
+                .expect("unable to create text node"),
+        )
+        .expect("unable to add text node");
+    d
+}
+
+#[allow(dead_code)]
+pub fn make_sd_raw() -> RNode {
+    let doc = RNode::new_document();
+    xmlparse(doc.clone(),
+             "<a id='a1'><b id='b1'><a id='a2'><b id='b2'/><b id='b3'/></a><a id='a3'><b id='b4'/><b id='b5'/></a></b><b id='b6'><a id='a4'><b id='b7'/><b id='b8'/></a><a id='a5'><b id='b9'/><b id='b10'/></a></b></a>",
+             Some(|_: &_| Err(ParseError::MissingNameSpace{prefix: None, nsuri: None, message: Some(String::from("smite test"))}))).expect("unable to parse XML");
+    doc
+}
+
+#[allow(dead_code)]
+pub fn make_sdns_raw() -> RNode {
+    let doc = RNode::new_document();
+    xmlparse(doc.clone(),
+             "<test:a xmlns:test='urn:test-org' id='a1'><test:b id='b1'><test:a id='a2'><test:b id='b2'/><test:b id='b3'/></test:a><test:a id='a3'><test:b id='b4'/><test:b id='b5'/></test:a></test:b><test:b id='b6'><test:a id='a4'><test:b id='b7'/><test:b id='b8'/></test:a><test:a id='a5'><test:b id='b9'/><test:b id='b10'/></test:a></test:b></test:a>",
+             Some(|_: &_| Err(ParseError::MissingNameSpace{prefix: None, nsuri: None, message: Some(String::from("smite test"))}))).expect("unable to parse XML");
+    doc
+}
+#[allow(dead_code)]
+pub fn make_sd_cooked() -> Result<RNode, Error> {
+    Ok(make_sd_raw())
+}
+#[allow(dead_code)]
+pub fn make_sd() -> Item<RNode> {
+    Item::Node(make_sd_raw())
+}
+#[allow(dead_code)]
+pub fn make_sdns() -> Item<RNode> {
+    Item::Node(make_sdns_raw())
+}
+
+#[allow(dead_code)]
+pub fn make_from_str(s: &str) -> Result<RNode, Error> {
+    let doc = RNode::new_document();
+    xmlparse(
+        doc.clone(),
+        s,
+        Some(|_: &_| {
+            Err(ParseError::MissingNameSpace {
+                prefix: None,
+                nsuri: None,
+                message: Some(String::from("smite test")),
+            })
+        }),
+    )?;
+    Ok(doc)
+}
+
+#[allow(dead_code)]
+pub fn make_from_str_with_ns(s: &str) -> Result<(RNode, Option<NamespaceMap>), Error> {
+    let doc = RNode::new_document();
+    let r = parse_with_ns(
+        doc.clone(),
+        s,
+        Some(|_: &_| {
+            Err(ParseError::MissingNameSpace {
+                prefix: None,
+                nsuri: None,
+                message: Some(String::from("smite test")),
+            })
+        }),
+    )?;
+    Ok(r)
+}

@@ -48,13 +48,12 @@
 //! ⚠ **On wasm there is no thread**: [`on_xslt_stack`] runs inline there, so only the first
 //! layer applies, on whatever stack the host gave the module.
 //!
-//! ## Prefixed attribute values (ledger #2519)
+//! ## Prefixed attribute values (ledger #2519, #3342)
 //!
-//! xrust 2.3.0 lowercases every prefixed attribute value while parsing XML. Until that is
-//! fixed, the same pre-parse scan refuses a value that would change under Unicode
-//! lowercasing, naming the attribute and the data-driven workaround. This applies to both
-//! inputs and includes numeric references and the internal entities admitted above.
-//! Namespace declarations are exempt: xrust processes their values without lowercasing.
+//! xrust 2.3.0 lowercases every prefixed attribute value while parsing XML, so 0.5.0 through
+//! 0.7.0 refused one whose case would change. Since 0.8.0 this crate builds on `ikigai-xrust`
+//! (`crates/xrust`), xrust 2.3.0 with that one defect fixed: those values come through as
+//! written, and nothing is refused for their case.
 //!
 //! ## Attribute whitespace references (ledger #2520)
 //!
@@ -131,8 +130,7 @@ pub struct Shape {
 }
 
 /// Refuse a source document that nests deeper than [`MAX_XML_DEPTH`] or carries a
-/// declaration [`scan`] refuses, or a prefixed attribute value xrust would lowercase
-/// (ledger #2519), naming the argument `arg`. Never truncates.
+/// declaration [`scan`] refuses, naming the argument `arg`. Never truncates.
 ///
 /// ```
 /// use ikigai_xslt::limits::{check_source, MAX_XML_DEPTH};
@@ -197,7 +195,7 @@ fn refuse(arg: &str, detail: String) -> Error {
 
 /// Read a document's [`Shape`] in one pass, with no recursion and no allocation beyond the
 /// declared entities' summaries — or refuse a declaration that could build what the pass
-/// cannot see, or a prefixed attribute value xrust would lowercase (see the module docs).
+/// cannot see, or an attribute character reference xrust would normalize (see the module docs).
 /// The pass is deliberately not a parser: it may count
 /// MORE nesting than xrust would (a malformed document xrust refuses anyway), never less.
 pub fn scan(text: &str) -> std::result::Result<Shape, String> {
@@ -279,7 +277,6 @@ struct Entity<'a> {
     name: &'a [u8],
     len: usize,
     opens: usize,
-    changes_case: bool,
 }
 
 /// Read the attribute name preceding an opening quote, allowing spaces around `=`.
@@ -300,43 +297,6 @@ fn attribute_before_quote(b: &[u8], quote: usize) -> &[u8] {
         start -= 1;
     }
     &b[start..end]
-}
-
-/// Would XML expansion followed by Unicode lowercasing change this value? Entity names
-/// themselves are not values: `&UpperName;` may expand to entirely lowercase text.
-fn changes_case(value: &[u8], entities: &[Entity<'_>]) -> bool {
-    let changes = |s: &[u8]| {
-        let s = String::from_utf8_lossy(s);
-        s.chars().ne(s.chars().flat_map(char::to_lowercase))
-    };
-    let mut rest = value;
-    while let Some(amp) = rest.iter().position(|&b| b == b'&') {
-        if changes(&rest[..amp]) {
-            return true;
-        }
-        rest = &rest[amp + 1..];
-        let Some(semi) = rest.iter().position(|&b| b == b';') else {
-            return changes(rest);
-        };
-        let name = &rest[..semi];
-        if let Some(num) = name.strip_prefix(b"#") {
-            let code = match num.strip_prefix(b"x") {
-                Some(hex) => std::str::from_utf8(hex)
-                    .ok()
-                    .and_then(|s| u32::from_str_radix(s, 16).ok()),
-                None => std::str::from_utf8(num).ok().and_then(|s| s.parse().ok()),
-            };
-            if let Some(c) = code.and_then(char::from_u32) {
-                if std::iter::once(c).ne(c.to_lowercase()) {
-                    return true;
-                }
-            }
-        } else if entities.iter().any(|e| e.name == name && e.changes_case) {
-            return true;
-        }
-        rest = &rest[semi + 1..];
-    }
-    changes(rest)
 }
 
 // Stop at the first non-digit rather than searching the remaining document for `;`.
@@ -376,7 +336,6 @@ fn start_tag(
             b'>' => return Ok((at + 1, at > from && b[at - 1] == b'/')),
             q @ (b'"' | b'\'') => {
                 let name = attribute_before_quote(b, at);
-                let value_start = at + 1;
                 let mut level = 0usize;
                 at += 1;
                 while at < b.len() && b[at] != q {
@@ -405,21 +364,6 @@ fn start_tag(
                         _ => {}
                     }
                     at += 1;
-                }
-                // `xml:lang` is exempt when it is a literal: a language tag is case-insensitive
-                // (BCP 47, section 2.1.1), so xrust's lowercased `en-us` means what `en-US` meant,
-                // and refusing it would turn away ordinary Atom feeds and XHTML. A value template
-                // there still lowercases its variable names, so `{` keeps it under the rule.
-                let case_insensitive = name == b"xml:lang" && !b[value_start..at].contains(&b'{');
-                if name.contains(&b':')
-                    && !name.starts_with(b"xmlns:")
-                    && !case_insensitive
-                    && changes_case(&b[value_start..at], entities)
-                {
-                    return Err(format!(
-                        "refused: prefixed attribute `{}` has a value whose case xrust 2.3.0's XML parser would lowercase (ledger #2519); compute the value from data instead (use an unprefixed attribute, element text, or a parameter, and a lowercase variable name in an attribute value template)",
-                        String::from_utf8_lossy(name)
-                    ));
                 }
                 at += 1;
             }
@@ -565,12 +509,7 @@ fn entity<'t>(
                 .iter()
                 .filter(|&&c| matches!(c, b'(' | b'[' | b'{'))
                 .count();
-            entities.push(Entity {
-                name,
-                len,
-                opens,
-                changes_case: changes_case(value, &[]),
-            });
+            entities.push(Entity { name, len, opens });
             Ok(tag_end(b, start + len + 1).0)
         }
         _ => Err(format!(

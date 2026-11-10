@@ -1,0 +1,149 @@
+//! # Callables
+//! Sequence constructors that are invoked by stylesheet code, such as named templates and functions.
+//! The difference between them is that named templates have named parameters,
+//! whereas functions have positional parameters.
+
+// TODO: tunneling parameters
+
+use crate::item::Node;
+use crate::transform::context::StaticContext;
+use crate::transform::{NamespaceMap, Transform};
+use crate::{Context, Error, ErrorKind, Sequence};
+use qualname::QName;
+use std::collections::HashMap;
+use url::Url;
+
+#[derive(Clone, Debug)]
+pub struct Callable<N: Node> {
+    pub body: Transform<N>,
+    pub parameters: FormalParameters<N>,
+    // TODO: return type
+}
+
+impl<N: Node> Callable<N> {
+    pub fn new(body: Transform<N>, parameters: FormalParameters<N>) -> Self {
+        Callable { body, parameters }
+    }
+}
+
+// TODO: parameter type ("as" attribute)
+#[derive(Clone, Debug)]
+pub enum FormalParameters<N: Node> {
+    Named(Vec<(QName, Option<Transform<N>>)>), // parameter name, default value
+    Positional(Vec<QName>),
+}
+#[derive(Clone, Debug)]
+pub enum ActualParameters<N: Node> {
+    Named(Vec<(QName, Transform<N>)>), // parameter name, value
+    Positional(Vec<Transform<N>>),
+}
+
+/// Invoke a callable component
+pub fn invoke<
+    N: Node,
+    F: FnMut(&str) -> Result<(), Error>,
+    G: FnMut(&str) -> Result<N, Error>,
+    H: FnMut(&Url) -> Result<String, Error>,
+>(
+    ctxt: &Context<N>,
+    stctxt: &mut StaticContext<N, F, G, H>,
+    qn: &QName,
+    a: &ActualParameters<N>,
+    _ns: &NamespaceMap,
+) -> Result<Sequence<N>, Error> {
+    match ctxt.callables.get(qn) {
+        Some(t) => {
+            match &t.parameters {
+                FormalParameters::Named(v) => {
+                    let mut newctxt = ctxt.clone();
+                    // Put the actual parameters in a HashMap for easy access
+                    let mut actuals = HashMap::new();
+                    if let ActualParameters::Named(av) = a {
+                        av.iter().try_for_each(|(a_name, a_value)| {
+                            actuals.insert(a_name, ctxt.dispatch(stctxt, a_value)?);
+                            Ok(())
+                        })?
+                    } else {
+                        return Err(Error::new(ErrorKind::TypeError, "argument mismatch"));
+                    }
+                    // Match each actual parameter to a formal parameter by name
+                    v.iter().try_for_each(|(name, dflt)| {
+                        match actuals.get(name) {
+                            Some(val) => {
+                                newctxt.var_push(name.to_string(), val.clone());
+                                Ok(())
+                            }
+                            None => {
+                                // Use default value
+                                if let Some(d) = dflt {
+                                    newctxt.var_push(name.to_string(), ctxt.dispatch(stctxt, d)?)
+                                } else {
+                                    newctxt.var_push(name.to_string(), vec![])
+                                }
+                                Ok(())
+                            }
+                        }
+                    })?;
+
+                    // Check that the maximum depth limit will not be exceeded,
+                    // if there is one set
+
+                    if let Some(md) = ctxt.max_depth {
+                        if md == ctxt.depth {
+                            return Err(Error::new(
+                                crate::ErrorKind::LimitExceeded,
+                                format!(
+                                    "exceeded evaluation depth ({}) (callable \"{}\")",
+                                    ctxt.depth,
+                                    qn.to_string()
+                                ),
+                            ));
+                        }
+                    }
+                    newctxt.depth = ctxt.depth + 1;
+
+                    newctxt.dispatch(stctxt, &t.body)
+                }
+                FormalParameters::Positional(v) => {
+                    if let ActualParameters::Positional(av) = a {
+                        // Make sure number of parameters are equal, then set up variables by position
+                        if v.len() == av.len() {
+                            let mut newctxt = ctxt.clone();
+                            v.iter().zip(av.iter()).try_for_each(|(qn, t)| {
+                                newctxt.var_push(qn.to_string(), ctxt.dispatch(stctxt, t)?);
+                                Ok(())
+                            })?;
+
+                            // Check that the maximum depth limit will not be exceeded,
+                            // if there is one set
+
+                            if let Some(md) = ctxt.max_depth {
+                                if md == ctxt.depth {
+                                    return Err(Error::new(
+                                        crate::ErrorKind::LimitExceeded,
+                                        format!(
+                                            "exceeded evaluation depth ({}) (callable \"{}\")",
+                                            ctxt.depth,
+                                            qn.to_string()
+                                        ),
+                                    ));
+                                }
+                            }
+                            newctxt.depth = ctxt.depth + 1;
+
+                            newctxt.dispatch(stctxt, &t.body)
+                        } else {
+                            Err(Error::new(ErrorKind::TypeError, "argument mismatch"))
+                        }
+                    } else {
+                        Err(Error::new(ErrorKind::TypeError, "argument mismatch"))
+                    }
+                }
+            }
+        }
+        None => Err(Error::new(
+            ErrorKind::Unknown,
+            format!("unknown callable \"{}\"", qn),
+        )),
+    }
+}

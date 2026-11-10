@@ -56,9 +56,9 @@
 //! no error. Since 0.3.0 a stylesheet holding one of those constructs is refused before xrust
 //! compiles it, as a typed `InvalidArgument` naming the construct ([`subset`]); and a
 //! `method="html"` result is serialized as HTML, with an end tag on every empty element HTML
-//! does not call void, rather than as XML (ledger #193). Both inputs are also refused before
-//! parsing if a prefixed attribute value would be lowercased by xrust's XML parser (ledger
-//! #2519); compute that value from data instead (see [`limits`]).
+//! does not call void, rather than as XML (ledger #193). Prefixed attribute values keep their
+//! case: this crate builds on `ikigai-xrust`, xrust 2.3.0 with its lowercasing of them fixed
+//! (ledger #3342; 0.5.0 through 0.7.0 refused such a value, ledger #2519).
 //!
 //! ## `generate-id()` is a position, not an address
 //!
@@ -897,8 +897,7 @@ mod tests {
     /// element RDF/XML plus descendant matching and `for-each`.
     #[test]
     fn renders_endpoint_cards_from_catalog_rdfxml() {
-        // The cards read element content, so use blank-node subjects. Mixed-case named
-        // IRIs in rdf:about are now refused (#2519), pinned in tests/xrust_subset.rs.
+        // The cards read element content, so use blank-node subjects.
         let rdfxml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <Endpoint xmlns="https://ikigai-rs.dev/ns#" rdf:nodeID="first">

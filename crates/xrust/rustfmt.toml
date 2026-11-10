@@ -1,0 +1,3 @@
+# ikigai: upstream's formatting, kept byte for byte, so `cargo fmt --all` leaves it alone and
+# the one change to the library stays a small diff against xrust 2.3.0.
+disable_all_formatting = true

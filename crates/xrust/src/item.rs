@@ -1,0 +1,650 @@
+/*! Sequences and Items.
+
+A [Sequence] is the fundamental data type in XPath. It is a series of zero or more [Item]s.
+
+An [Item] is a [Node], Function or atomic [Value].
+
+[Node]s are defined as a trait.
+*/
+
+use qualname::{NamespacePrefix, NamespaceUri, QName};
+
+use crate::item;
+use crate::output::OutputDefinition;
+use crate::validators::{Schema, ValidationError};
+use crate::value::{Operator, Value};
+use crate::xdmerror::{Error, ErrorKind};
+use crate::xmldecl::{DTD, XMLDecl};
+use std::cmp::Ordering;
+use std::fmt;
+use std::fmt::Formatter;
+use std::rc::Rc;
+
+/// In XPath, the Sequence is the fundamental data structure.
+/// It is an ordered collection of [Item]s.
+/// The Rust implementation is a Vector of reference counted [Item]s.
+///
+/// See [SequenceTrait] for methods.
+pub type Sequence<N> = Vec<Item<N>>;
+
+pub trait SequenceTrait<N: Node> {
+    /// Return the string value of the [Sequence].
+    fn to_string(&self) -> String;
+    /// Return a XML formatted representation of the [Sequence].
+    fn to_xml(&self) -> String;
+    /// Return a XML formatted representation of the [Sequence], controlled by the supplied output definition.
+    fn to_xml_with_options(&self, od: &OutputDefinition) -> String;
+    /// Return a JSON formatted representation of the [Sequence].
+    fn to_json(&self) -> String;
+    /// Return the Effective Boolean Value of the [Sequence].
+    fn to_bool(&self) -> bool;
+    /// Convert the [Sequence] to an integer. The [Sequence] must be a singleton value.
+    fn to_int(&self) -> Result<i64, Error>;
+    /// Push an [Node] to the [Sequence]
+    fn push_node(&mut self, n: &N);
+    /// Push a [Value] to the [Sequence]
+    fn push_value(&mut self, v: &Rc<Value>);
+    /// Push an [Item] to the [Sequence]. This clones the item.
+    fn push_item(&mut self, i: &Item<N>);
+}
+
+impl<N: Node> SequenceTrait<N> for Sequence<N> {
+    /// Returns the string value of the Sequence.
+    fn to_string(&self) -> String {
+        let mut r = String::new();
+        for i in self {
+            r.push_str(i.to_string().as_str())
+        }
+        r
+    }
+    /// Renders the Sequence as XML
+    fn to_xml(&self) -> String {
+        let mut r = String::new();
+        for i in self {
+            r.push_str(i.to_xml().as_str())
+        }
+        r
+    }
+    /// Renders the Sequence as XML
+    fn to_xml_with_options(&self, od: &OutputDefinition) -> String {
+        let mut r = String::new();
+        for i in self {
+            r.push_str(i.to_xml_with_options(od).as_str())
+        }
+        r
+    }
+    /// Renders the Sequence as JSON
+    fn to_json(&self) -> String {
+        let mut r = String::new();
+        for i in self {
+            r.push_str(i.to_json().as_str())
+        }
+        r
+    }
+    /// Push a document's [Node] on to the [Sequence]. This clones the node.
+    fn push_node(&mut self, n: &N) {
+        self.push(Item::Node(n.clone()));
+    }
+    /// Push a [Value] on to the [Sequence].
+    fn push_value(&mut self, v: &Rc<Value>) {
+        self.push(Item::Value(Rc::clone(v)));
+    }
+    //fn new_function(&self, f: Function) -> Sequence {
+    //}
+    /// Push an [Item] on to the [Sequence]. This clones the Item.
+    fn push_item(&mut self, i: &Item<N>) {
+        self.push(i.clone());
+    }
+
+    /// Calculate the effective boolean value of the Sequence
+    fn to_bool(&self) -> bool {
+        if self.is_empty() {
+            false
+        } else {
+            match self[0] {
+                Item::Node(..) => true,
+                _ => {
+                    if self.len() == 1 {
+                        self[0].to_bool()
+                    } else {
+                        false // should be a type error
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convenience routine for integer value of the [Sequence]. The Sequence must be a singleton; i.e. be a single item.
+    fn to_int(&self) -> Result<i64, Error> {
+        if self.len() == 1 {
+            self[0].to_int()
+        } else {
+            Err(Error::new(
+                ErrorKind::TypeError,
+                String::from("type error: sequence is not a singleton"),
+            ))
+        }
+    }
+}
+
+impl<N: Node> From<Value> for Sequence<N> {
+    fn from(v: Value) -> Self {
+        vec![Item::Value(Rc::new(v))]
+    }
+}
+impl<N: Node> From<Item<N>> for Sequence<N> {
+    fn from(i: Item<N>) -> Self {
+        vec![i]
+    }
+}
+
+/// All [Node]s have a type. The type of the [Node] determines what components are meaningful, such as name and content.
+///
+/// Every document must have a single node as it's toplevel node that is of type "Document".
+///
+/// Namespace nodes represent the declaration of an XML Namespace.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum NodeType {
+    Document,
+    Element,
+    Text,
+    Attribute,
+    Comment,
+    ProcessingInstruction,
+    Reference,
+    Namespace,
+    #[default]
+    Unknown,
+}
+
+impl NodeType {
+    /// Return a string representation of the node type.
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            NodeType::Document => "Document",
+            NodeType::Element => "Element",
+            NodeType::Attribute => "Attribute",
+            NodeType::Text => "Text",
+            NodeType::ProcessingInstruction => "Processing-Instruction",
+            NodeType::Comment => "Comment",
+            NodeType::Reference => "Reference",
+            NodeType::Namespace => "Namespace",
+            NodeType::Unknown => "--None--",
+        }
+    }
+}
+
+impl fmt::Display for NodeType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.to_string())
+    }
+}
+
+/// An Item in a [Sequence]. Can be a node, function or [Value].
+///
+/// Functions are not yet implemented.
+#[derive(Clone)]
+pub enum Item<N: Node> {
+    /// A [Node] in the source document.
+    Node(N),
+
+    /// Functions are not yet supported
+    Function,
+
+    /// A scalar value. These are in an Rc since they are frequently shared.
+    Value(Rc<Value>),
+}
+
+impl<N: item::Node> fmt::Display for Item<N> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // Gives the string value of an item. All items have a string value.
+        let result = match self {
+            Item::Node(n) => n.to_string(),
+            Item::Function => "".to_string(),
+            Item::Value(v) => v.to_string(),
+        };
+        f.write_str(result.as_str())
+    }
+}
+
+impl<N: Node> Item<N> {
+    /// Serialize as XML
+    pub fn to_xml(&self) -> String {
+        match self {
+            Item::Node(n) => n.to_xml(),
+            Item::Function => "".to_string(),
+            Item::Value(v) => v.to_string(),
+        }
+    }
+    /// Serialize as XML, with options
+    pub fn to_xml_with_options(&self, od: &OutputDefinition) -> String {
+        match self {
+            Item::Node(n) => n.to_xml_with_options(od),
+            Item::Function => "".to_string(),
+            Item::Value(v) => v.to_string(),
+        }
+    }
+    /// Serialize as JSON
+    pub fn to_json(&self) -> String {
+        match self {
+            Item::Node(n) => n.to_json(),
+            Item::Function => "".to_string(),
+            Item::Value(v) => v.to_string(),
+        }
+    }
+
+    /// Determine the effective boolean value of the item.
+    /// See XPath 2.4.3.
+    pub fn to_bool(&self) -> bool {
+        match self {
+            Item::Node(..) => true,
+            Item::Function => false,
+            Item::Value(v) => v.to_bool(),
+        }
+    }
+
+    /// Gives the integer value of the item, if possible.
+    pub fn to_int(&self) -> Result<i64, Error> {
+        match self {
+            Item::Node(..) => Result::Err(Error::new(
+                ErrorKind::TypeError,
+                String::from("type error: item is a node"),
+            )),
+            Item::Function => Result::Err(Error::new(
+                ErrorKind::TypeError,
+                String::from("type error: item is a function"),
+            )),
+            Item::Value(v) => match v.to_int() {
+                Ok(i) => Ok(i),
+                Err(e) => Result::Err(e),
+            },
+        }
+    }
+
+    /// Gives the double value of the item. Returns NaN if the value cannot be converted to a double.
+    pub fn to_double(&self) -> f64 {
+        match self {
+            Item::Node(..) => f64::NAN,
+            Item::Function => f64::NAN,
+            Item::Value(v) => v.to_double(),
+        }
+    }
+
+    /// Gives the name of the item. Certain types of Nodes have names, such as element-type nodes. If the item does not have a name returns an empty string.
+    pub fn name(&self) -> Option<QName> {
+        match self {
+            Item::Node(n) => n.name(),
+            _ => None,
+        }
+    }
+
+    // TODO: atomization
+    // fn atomize(&self);
+
+    /// Compare two items.
+    pub fn compare(&self, other: &Item<N>, op: Operator) -> Result<bool, Error> {
+        match self {
+            Item::Value(v) => match other {
+                Item::Value(w) => v.compare(w, op),
+                Item::Node(..) => v.compare(&Value::from(other.to_string()), op),
+                _ => Result::Err(Error::new(
+                    ErrorKind::TypeError,
+                    String::from("type error comparing items: incompatible item types"),
+                )),
+            },
+            Item::Node(..) => {
+                other.compare(&Item::Value(Rc::new(Value::from(self.to_string()))), op)
+            }
+            _ => Result::Err(Error::new(
+                ErrorKind::NotImplemented,
+                String::from("error comparing items: comparison not implemented"),
+            )),
+        }
+    }
+
+    /// Is this item a node?
+    pub fn is_node(&self) -> bool {
+        matches!(self, Item::Node(_))
+    }
+
+    /// Is this item an element-type node?
+    pub fn is_element_node(&self) -> bool {
+        match self {
+            Item::Node(n) => matches!(n.node_type(), NodeType::Element),
+            _ => false,
+        }
+    }
+
+    /// Convenience method to set an attribute for a Node-type item.
+    /// If the item is not an element-type node, then this method has no effect.
+    pub fn add_attribute(&self, a: N) -> Result<(), Error> {
+        match self {
+            Item::Node(n) => match n.node_type() {
+                NodeType::Element => n.add_attribute(a),
+                _ => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Gives the type of the item.
+    pub fn item_type(&self) -> &'static str {
+        match self {
+            Item::Node(..) => "Node",
+            Item::Function => "Function",
+            Item::Value(v) => v.value_type(),
+        }
+    }
+    /// Make a shallow copy of an item.
+    /// That is, the item is duplicated but not it's content, including attributes.
+    pub fn shallow_copy(&self) -> Result<Self, Error> {
+        match self {
+            Item::Value(v) => Ok(Item::Value(v.clone())),
+            Item::Node(n) => Ok(Item::Node(n.shallow_copy()?)),
+            _ => Result::Err(Error::new(
+                ErrorKind::NotImplemented,
+                "not implemented".to_string(),
+            )),
+        }
+    }
+    /// Make a deep copy of an item.
+    pub fn deep_copy(&self) -> Result<Self, Error> {
+        match self {
+            Item::Value(v) => Ok(Item::Value(v.clone())),
+            Item::Node(n) => Ok(Item::Node(n.deep_copy()?)),
+            _ => Result::Err(Error::new(
+                ErrorKind::NotImplemented,
+                "not implemented".to_string(),
+            )),
+        }
+    }
+}
+
+impl<N: Node> fmt::Debug for Item<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Item::Node(n) => {
+                write!(
+                    f,
+                    "node type item ({:?})",
+                    n //                    "node type item (node type {}, name \"{}\")",
+                      //                    n.node_type().to_string(),
+                      //                    n.name()
+                )
+            }
+            Item::Function => {
+                write!(f, "function type item")
+            }
+            Item::Value(v) => {
+                write!(f, "value type item ({})", v)
+            }
+        }
+    }
+}
+
+/// Nodes make up a document tree. Nodes must be fully navigable. The tree must be mutable but also stable (i.e. removing a node from the tree does not invalidate the remaining nodes).
+///
+/// Some nodes have names, such as elements. Some nodes have values, such as text or comments. Some have both a name and a value, such as attributes and processing instructions.
+///
+/// Element nodes have children and attributes.
+///
+/// Element nodes may have Namespace nodes attached. These are the declaration of XML Namespaces.
+/// An XML Namespace declaration consists of an optional prefix and a namespace URI.
+/// The namespace-iter() method iterates over all in-scope namespaces, which will include namespaces that are declared on ancestor elements.
+///
+/// Nodes must implement the PartialEq trait. This allows two (sub-)trees to be compared. The comparison is against the XML Infoset of each tree;
+/// i.e. do the trees contain the same information, but not necessarily the same string representation.
+/// For example, the order of attributes does not matter.
+pub trait Node: Clone + PartialEq + fmt::Debug {
+    type NodeIterator: Iterator<Item = Self>;
+
+    /// Create a Document-type node.
+    /// All other types of nodes are created using type-specific methods (new_element, new_text, etc).
+    fn new_document() -> Self;
+
+    /// Get the type of the node
+    fn node_type(&self) -> NodeType;
+    /// Get the name of the node, if it has one.
+    /// A namespace-type returns the prefix as a [QName] where the prefix is the local-part.
+    /// An unprefixed namespace node returns None.
+    fn name(&self) -> Option<QName>;
+    /// Get the value of the node.
+    /// If the node doesn't have a value, then returns a [Value] that is an empty string.
+    /// If the node is a namespace-type node, gives the namespace URI.
+    fn value(&self) -> Rc<Value>;
+
+    /// Resolve a name using the in-scope namespace declarations in the document,
+    /// resulting in a Qualified Name.
+    /// This will fail if the name is not a QName, or has a prefix that is unknown.
+    fn to_qname(&self, name: impl AsRef<str>) -> Result<QName, Error>;
+    /// Convert the node's qualified name to a prefixed name using the in-scope namespace declarations in the document.
+    fn to_prefixed_name(&self) -> String;
+    /// Find the prefix for the given namespace URI using the node's in-scope namespaces. If the namespace is the default, then None is returned.
+    /// If the namespace URI is not found in the in-scope namespaces returns an error.
+    fn to_namespace_prefix(&self, nsuri: &NamespaceUri) -> Result<Option<NamespacePrefix>, Error>;
+    /// Find the namespace URI for the given namespace prefix using the node's in-scope namespaces.
+    /// If the namespace prefix is not found in the in-scope namespaces returns an error.
+    fn to_namespace_uri(&self, prefix: &Option<NamespacePrefix>) -> Result<NamespaceUri, Error>;
+    /// For a namespace node give the prefix. If the namespace is the default namespace, then None is given.
+    /// If the node is not a namespace-type node then returns an error.
+    fn as_namespace_prefix(&self) -> Result<Option<&NamespacePrefix>, Error>;
+    /// For a namespace node give the namespace URI.
+    /// If the node is not a namespace-type node then returns an error.
+    fn as_namespace_uri(&self) -> Result<&NamespaceUri, Error>;
+    /// Is this namespace in scope, or is it a descoping declaration? See Namespaces in XML v1.1 s6.1.
+    /// This only applies to Namespace-type nodes. All other node types return false.
+    fn is_in_scope(&self) -> bool;
+
+    /// Get a unique identifier for this node.
+    fn get_id(&self) -> String;
+
+    /// Get the string value of the node. See XPath ???
+    fn to_string(&self) -> String;
+    /// Serialise the node as XML
+    fn to_xml(&self) -> String;
+    /// Serialise the node as XML, with options such as indentation.
+    fn to_xml_with_options(&self, od: &OutputDefinition) -> String;
+    /// Serialise the node as JSON
+    fn to_json(&self) -> String {
+        String::new()
+    }
+
+    /// Check if two Nodes are the same Node
+    fn is_same(&self, other: &Self) -> bool;
+
+    // Check if the node is attached to the tree
+    fn is_attached(&self) -> bool;
+
+    /// Get the document order of the node. The value returned is relative to the document containing the node.
+    /// Depending on the implementation, this value may be volatile;
+    /// adding or removing nodes to/from the document may invalidate the ordering.
+    fn document_order(&self) -> Vec<usize>;
+    /// Compare the document order of this node with another node in the same document.
+    fn cmp_document_order(&self, other: &Self) -> Ordering;
+
+    /// Check if a node is an element-type
+    fn is_element(&self) -> bool {
+        self.node_type() == NodeType::Element
+    }
+    /// Check if a node is unattached
+    fn is_unattached(&self) -> bool;
+
+    /// Check if a node is an XML ID
+    fn is_id(&self) -> bool;
+    /// Check if a node is an  XML IDREF or IDREFS
+    fn is_idrefs(&self) -> bool;
+
+    /// An iterator over the children of the node
+    fn child_iter(&self) -> Self::NodeIterator;
+    /// Get the first child of the node, if there is one
+    fn first_child(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        self.child_iter().next()
+    }
+    /// An iterator over the ancestors of the node
+    fn ancestor_iter(&self) -> Self::NodeIterator;
+    /// Get the parent of the node. Top-level nodes do not have parents, also nodes that have been detached from the tree.
+    fn parent(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        self.ancestor_iter().next()
+    }
+    /// Get the document node
+    fn owner_document(&self) -> Self;
+    /// An iterator over the descendants of the node
+    fn descend_iter(&self) -> Self::NodeIterator;
+    /// An iterator over the following siblings of the node
+    fn next_iter(&self) -> Self::NodeIterator;
+    /// An iterator over the preceding siblings of the node
+    fn prev_iter(&self) -> Self::NodeIterator;
+    /// An iterator over the attributes of an element
+    fn attribute_iter(&self) -> Self::NodeIterator;
+    /// Get an attribute of the node. Returns a copy of the attribute's value. If the node does not have an attribute of the given name, a value containing an empty string is returned.
+    fn get_attribute(&self, a: &QName) -> Rc<Value>;
+    /// Get an attribute of the node. If the node is not an element returns None. Otherwise returns the attribute node. If the node does not have an attribute of the given name, returns None.
+    fn get_attribute_node(&self, a: &QName) -> Option<Self>;
+
+    /// Create a new element-type node in the same document tree. The new node is not attached to the tree.
+    fn new_element(&self, qn: QName) -> Result<Self, Error>;
+    /// Create a new text-type node in the same document tree. The new node is not attached to the tree.
+    fn new_text(&self, v: Rc<Value>) -> Result<Self, Error>;
+    /// Create a new attribute-type node in the same document tree. The new node is not attached to the tree.
+    fn new_attribute(&self, qn: QName, v: Rc<Value>) -> Result<Self, Error>;
+    /// Create a new comment-type node in the same document tree. The new node is not attached to the tree.
+    fn new_comment(&self, v: Rc<Value>) -> Result<Self, Error>;
+    /// Create a new processing-instruction-type node in the same document tree. The new node is not attached to the tree.
+    fn new_processing_instruction(&self, qn: Rc<Value>, v: Rc<Value>) -> Result<Self, Error>;
+    /// Create a namespace node for an XML Namespace declaration.
+    /// A namespace may be descoped (see Namespace in XML v1.1). In this case, the prefix and namespace URI are given for the namespace being descoped, but with the in_scope argument 'false'.
+    fn new_namespace(
+        &self,
+        ns: NamespaceUri,
+        prefix: Option<NamespacePrefix>,
+        in_scope: bool,
+    ) -> Result<Self, Error>;
+
+    /// Append a node to the child list
+    fn push(&mut self, n: Self) -> Result<(), Error>;
+    /// Remove a node from the tree
+    fn pop(&mut self) -> Result<(), Error>;
+    /// Insert a node in the child list before the given node. The node will be detached from it's current position prior to insertion.
+    fn insert_before(&mut self, n: Self) -> Result<(), Error>;
+    /// Set an attribute. self must be an element-type node. att must be an attribute-type node.
+    /// Returns an error if an attribute with the same name is already attached to this element.
+    fn add_attribute(&self, att: Self) -> Result<(), Error>;
+
+    /// Shallow copy the node, i.e. copy only the node, but not it's attributes or content.
+    fn shallow_copy(&self) -> Result<Self, Error>;
+    /// Deep copy the node, i.e. the node itself and it's attributes and descendants. The resulting top-level node is unattached.
+    fn deep_copy(&self) -> Result<Self, Error>;
+    /// Canonical XML representation of the node.
+    fn get_canonical(&self) -> Result<Self, Error>;
+    /// Get the XML Declaration for the document.
+    fn xmldecl(&self) -> XMLDecl;
+    /// Set the XML Declaration for the document.
+    fn set_xmldecl(&mut self, d: XMLDecl) -> Result<(), Error>;
+    /// Add a namespace declaration to this element-type node.
+    /// NOTE: Does NOT assign a namespace to the element. The element's name defines its namespace.
+    fn add_namespace(&self, ns: Self) -> Result<(), Error>;
+    /// Compare two trees. If a non-document node is used, then the descendant subtrees are compared.
+    fn eq(&self, other: &Self) -> bool {
+        match self.node_type() {
+            NodeType::Document => {
+                if other.node_type() == NodeType::Document {
+                    self.child_iter()
+                        .zip(other.child_iter())
+                        .fold(true, |mut acc, (c, d)| {
+                            if acc {
+                                acc = Node::eq(&c, &d);
+                                acc
+                            } else {
+                                acc
+                            }
+                        })
+                    // TODO: use a method that terminates early on non-equality
+                } else {
+                    false
+                }
+            }
+            NodeType::Element => {
+                // names must match,
+                // attributes must match (order doesn't matter),
+                // content must match
+                if other.node_type() == NodeType::Element {
+                    if self.name() == other.name() {
+                        // Attributes
+                        let mut at_names: Vec<QName> =
+                            self.attribute_iter().map(|a| a.name().unwrap()).collect();
+                        if at_names.len() == other.attribute_iter().count() {
+                            at_names.sort();
+                            if at_names.iter().fold(true, |mut acc, qn| {
+                                if acc {
+                                    acc = self.get_attribute(qn) == other.get_attribute(qn);
+                                    acc
+                                } else {
+                                    acc
+                                }
+                            }) {
+                                // Content
+                                self.child_iter().zip(other.child_iter()).fold(
+                                    true,
+                                    |mut acc, (c, d)| {
+                                        if acc {
+                                            acc = Node::eq(&c, &d);
+                                            acc
+                                        } else {
+                                            acc
+                                        }
+                                    },
+                                )
+                                // TODO: use a method that terminates early on non-equality
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            NodeType::Text => {
+                if other.node_type() == NodeType::Text {
+                    self.value() == other.value()
+                } else {
+                    false
+                }
+            }
+            NodeType::ProcessingInstruction => {
+                if other.node_type() == NodeType::ProcessingInstruction {
+                    self.name() == other.name() && self.value() == other.value()
+                } else {
+                    false
+                }
+            }
+            _ => self.node_type() == other.node_type(), // Other types of node do not affect the equality
+        }
+    }
+    /// An iterator over the namespace nodes of an element.
+    /// Note: These nodes are calculated at the time the iterator is created.
+    /// It is not guaranteed that the namespace nodes returned
+    /// will specify the current element node as their parent.
+    fn namespace_iter(&self) -> Self::NodeIterator;
+
+    /// Retrieve the internal representation of the DTD, for use in validation functions.
+    fn get_dtd(&self) -> Option<DTD>;
+
+    /// Store an internal representation of the DTD. Does not keep a copy of the original text
+    fn set_dtd(&self, dtd: DTD) -> Result<(), Error>;
+
+    fn validate(&self, schema: Schema) -> Result<(), ValidationError>;
+
+    /// Return a list of nodes that are associated with this document, but are not attached.
+    fn unattached(&self) -> Vec<Self>;
+}

@@ -1,0 +1,67 @@
+--- a/src/parser/xml/attribute.rs
++++ b/src/parser/xml/attribute.rs
+@@ -227,15 +227,12 @@
+             attr_list
+                 .iter()
+                 .try_for_each(|((prefix, local_part), value)| {
+-                    match (
+-                        prefix.as_deref(),
+-                        local_part.as_str(),
+-                        value.to_lowercase().as_str(),
+-                    ) {
++                    // Only the xml:space comparison ignores case: every value is stored as written.
++                    match (prefix.as_deref(), local_part.as_str(), value.as_str()) {
+                         // Sanity checks
+                         // Check if the xml:space attribute is present and if so, does it have
+                         // "Preserved" or "Default" as its value. We'll actually handle in a future release.
+-                        (Some("xml"), "space", "default") => {
++                        (Some("xml"), "space", v) if v.to_lowercase() == "default" => {
+                             // Make the attribute
+                             attr_vec.push(
+                                 doc.new_attribute(
+@@ -255,7 +252,7 @@
+                             );
+                             Ok(())
+                         }
+-                        (Some("xml"), "space", "preserve") => {
++                        (Some("xml"), "space", v) if v.to_lowercase() == "preserve" => {
+                             // Make the attribute
+                             attr_vec.push(
+                                 doc.new_attribute(
+--- a/tests/parser.rs
++++ b/tests/parser.rs
+@@ -620,3 +620,34 @@
+ 
+     assert!(parseresult.is_ok());
+ }
++
++#[test]
++fn prefixed_attribute_values_keep_their_case() {
++    let doc = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Description rdf:about="https://Example.org/My-Post" dc:title="My Post" xml:id="Post-1" xml:space="Preserve"><rdf:seeAlso rdf:resource="urn:I:One"/></rdf:Description></rdf:RDF>"#;
++
++    let testxml = RNode::new_document();
++    let parseresult = xml::parse(
++        testxml.clone(),
++        doc,
++        Some(|_: &_| {
++            Err(ParseError::MissingNameSpace {
++                prefix: None,
++                nsuri: None,
++                message: Some(String::from("parser test")),
++            })
++        }),
++    );
++    assert!(parseresult.is_ok());
++
++    let out = testxml.to_xml();
++    for value in [
++        "rdf:about='https://Example.org/My-Post'",
++        "dc:title='My Post'",
++        "xml:id='Post-1'",
++        "rdf:resource='urn:I:One'",
++        // xml:space is still compared without regard to case
++        "xml:space='preserve'",
++    ] {
++        assert!(out.contains(value), "{} not in {}", value, out);
++    }
++}
