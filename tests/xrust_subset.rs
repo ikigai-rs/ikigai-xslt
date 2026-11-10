@@ -66,8 +66,9 @@ fn ours(src: &str, templates: &str) -> Result<String, String> {
 
 /// Through xrust directly, exactly as its own `xslt` module documentation drives it: the
 /// reproduction an upstream report would carry. "Stock" is xrust as this build carries it,
-/// `ikigai-xrust` (`crates/xrust`): xrust 2.3.0 with one fix, prefixed attribute values kept
-/// as written (ledger #3342). Every other answer pinned here is xrust 2.3.0's own.
+/// `ikigai-xrust` (`crates/xrust`): xrust 2.3.0 with the fixes its README lists (ledger #3342,
+/// #3343), the first of them prefixed attribute values kept
+/// as written. Every answer pinned here and not named as fixed is xrust 2.3.0's own.
 fn stock(src: &str, templates: &str) -> Result<String, String> {
     stock_stylesheet(src, &style(templates))
 }
@@ -151,7 +152,7 @@ fn pin_refused(src: &str, templates: &str, wrong: &str, correct: &str, row: &str
 }
 
 /// The xrust release this build carries, read from the lock file the build resolved:
-/// `ikigai-xrust` 2.3.0-ikigai.1 is xrust 2.3.0 plus the fix `crates/xrust/README.md` names.
+/// `ikigai-xrust` 2.3.0-ikigai.2 is xrust 2.3.0 plus the fixes `crates/xrust/README.md` names.
 fn xrust_in_this_build() -> String {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("cargo writes Cargo.lock before it builds a test");

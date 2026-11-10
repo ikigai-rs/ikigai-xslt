@@ -52,7 +52,7 @@
 //!
 //! xrust 2.3.0 lowercases every prefixed attribute value while parsing XML, so 0.5.0 through
 //! 0.7.0 refused one whose case would change. Since 0.8.0 this crate builds on `ikigai-xrust`
-//! (`crates/xrust`), xrust 2.3.0 with that one defect fixed: those values come through as
+//! (`crates/xrust`), xrust 2.3.0 with that defect fixed (among others): those values come through as
 //! written, and nothing is refused for their case.
 //!
 //! ## Attribute whitespace references (ledger #2520)

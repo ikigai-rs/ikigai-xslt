@@ -112,8 +112,8 @@ also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
 answers, so the day xrust fixes one, a test fails and says so: that is the signal to drop
 the refusal and update this table. "Stock" xrust is the xrust this crate carries,
-`ikigai-xrust` 2.3.0-ikigai.1: xrust 2.3.0 with one fix, prefixed attribute values kept as
-written (below); every other answer is xrust 2.3.0's own. The measured release is a record
+`ikigai-xrust` 2.3.0-ikigai.2: xrust 2.3.0 with the fixes [`crates/xrust/README.md`](crates/xrust/README.md) lists (since 0.9.0, ledger #3343), the first of them prefixed attribute values kept as
+written (below); every answer not named as fixed is xrust 2.3.0's own. The measured release is a record
 (`ikigai_xslt::subset::XRUST_MEASURED_ON`), not a gate: a newer xrust on crates.io is a
 warning in the ecosystem's daily scan, not a red build.
 
@@ -196,7 +196,7 @@ parser lowercases every prefixed attribute value (`rdf:about`, `rdf:resource`, `
 `rdf:datatype`, `xml:id`, `xml:base`, `xml:lang`, and the variable names inside a prefixed
 attribute's value template, `f:k="{$camelVar}"`), in the source and the stylesheet alike.
 0.5.0 through 0.7.0 refused such a value (ledger #2519). This crate now builds on
-`ikigai-xrust` ([`crates/xrust`](crates/xrust)), xrust 2.3.0 with that one defect fixed, so
+`ikigai-xrust` ([`crates/xrust`](crates/xrust)), xrust 2.3.0 with that defect fixed (among others), so
 those values come through exactly as written, and nothing is refused for their case.
 `xml:space` is still compared without regard to case, as xrust 2.3.0 compares it. The fix is
 written up for upstream in [`docs/upstream/xrust-attribute-case.md`](docs/upstream/xrust-attribute-case.md).

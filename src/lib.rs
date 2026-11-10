@@ -58,7 +58,10 @@
 //! `method="html"` result is serialized as HTML, with an end tag on every empty element HTML
 //! does not call void, rather than as XML (ledger #193). Prefixed attribute values keep their
 //! case: this crate builds on `ikigai-xrust`, xrust 2.3.0 with its lowercasing of them fixed
-//! (ledger #3342; 0.5.0 through 0.7.0 refused such a value, ledger #2519).
+//! (ledger #3342; 0.5.0 through 0.7.0 refused such a value, ledger #2519), and since 0.9.0
+//! with the other defects `crates/xrust/README.md` lists fixed too, so 0.8.0's refusals of
+//! attribute whitespace references, literal attributes in a namespace and boolean `value-of`
+//! results it could not type are gone (ledger #3343).
 //!
 //! ## `generate-id()` is a position, not an address
 //!

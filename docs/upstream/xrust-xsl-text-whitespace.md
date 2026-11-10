@@ -6,7 +6,8 @@ and merge requests go to GitLab; the GitHub mirror is read-only), with its patch
 filed**: filing is Brian's call (ledger #1715). ikigai-xslt carries the same fix in
 `crates/xrust` (`ikigai-xrust`, ledger #3343) until a release of xrust includes it.
 
-The patch applies with `git apply` to the xrust 2.3.0 source as published on crates.io. Its
+The patches in this directory are a series: see [README.md](README.md) for the order. This
+one applies with `git apply` to the xrust 2.3.0 source as published on crates.io. Its
 test, added to `tests/smite-xslt.rs`, fails there (`<out>MetaSource</out>`) and passes with
 the fix, and the rest of `tests/smite-xslt.rs` still passes (checked 2026-11-09). Check
 GitLab's `main` before filing.
