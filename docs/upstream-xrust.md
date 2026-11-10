@@ -348,7 +348,10 @@ and argument. An exact repair after parsing cannot distinguish a reference from 
 space. RSS workaround (tested with text output): declare a variable containing dot, literal
 newline, dot; obtain the LF with `substring($lf-holder, 2, 1)`.
 
-## 12. Boolean string conversion is empty (#2520)
+## 12. Boolean string conversion is empty (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) with the one-line patch below; the issue
+text and patch for upstream are [`upstream/xrust-boolean-string.md`](upstream/xrust-boolean-string.md).
 
 Source `<doc/>`; stylesheet body:
 
@@ -371,14 +374,11 @@ The obvious upstream patch, before the fallback in `ValueData::fmt`, is:
 ValueData::Boolean(b) => b.to_string(),
 ```
 
-ikigai-xslt adapts known boolean `value-of` results to `xsl:choose` with literal `true` and
-`false` text. It follows variable declarations; results whose type cannot safely be known,
-including global boolean-default parameters that may be overridden by a string, are typed refusals.
-Template-local parameters are classified using their default and incoming `with-param`
-expressions at named calls and, conservatively, all `apply-templates` with that parameter
-name. Nonboolean-only inputs are accepted, boolean-only inputs are adapted, and mixed
-or unknown input types are refused.
-The general upstream string conversion defect remains outside this direct-result adaptation.
+Through 0.8.0 ikigai-xslt adapted known boolean `value-of` results to `xsl:choose` with
+literal `true` and `false` text, and refused results whose type it could not establish
+(global boolean-default parameters, mixed template parameters). With the fix carried, that
+adaptation and its refusals are gone, and implicit conversions such as
+`concat('[', true(), ']')` are right too.
 
 ## 13. A literal prefixed attribute can panic in serialization (#2520)
 

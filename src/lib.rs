@@ -459,7 +459,6 @@ impl CompiledStylesheet {
         let output_method = output_method_of(&styledoc);
         let output_media_type = output_attribute_of(&styledoc, "media-type");
         subset::check(&styledoc)?;
-        boolean_values::prepare(&styledoc)?;
         numeric_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
         // Module assembly has already expanded static edges so the guards above see

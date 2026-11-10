@@ -912,8 +912,11 @@ fn newline_workaround_and_reference_boundaries() {
     assert_eq!(ours(src, t).unwrap(), "<out>a b</out>");
 }
 
+/// #2520: xrust 2.3.0 wrote a boolean's string value as empty; through 0.8.0 this crate
+/// rewrote known boolean results to xsl:choose and refused the rest. The carried xrust
+/// writes `true` and `false` (ledger #3343), so both paths answer and nothing is refused.
 #[test]
-fn boolean_value_of_is_corrected_here() {
+fn boolean_value_of_gives_true_and_false() {
     for (expr, expected) in [
         ("1 &gt; 0", "true"),
         ("1 &lt; 0", "false"),
@@ -929,20 +932,17 @@ fn boolean_value_of_is_corrected_here() {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
         );
-        assert_eq!(
-            stock(SRC, &templates).unwrap(),
-            "<out></out>",
-            "stock boolean conversion changed: remeasure #2520"
-        );
-        assert_eq!(
-            ours(SRC, &templates).unwrap(),
-            format!("<out>{expected}</out>"),
-            "{expr}"
-        );
+        for answer in [ours(SRC, &templates), stock(SRC, &templates)] {
+            assert_eq!(answer.unwrap(), format!("<out>{expected}</out>"), "{expr}");
+        }
     }
     let templates = r#"<xsl:variable name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/><xsl:variable name="v" select="true()"/><xsl:value-of select="$v"/></out></xsl:template>"#;
-    assert_eq!(stock(SRC, templates).unwrap(), "<out></out>");
+    assert_eq!(stock(SRC, templates).unwrap(), "<out>falsetrue</out>");
     assert_eq!(ours(SRC, templates).unwrap(), "<out>falsetrue</out>");
+    let explicit = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', string(true()), '][', string(false()), ']')"/></out></xsl:template>"#;
+    assert_eq!(stock(SRC, explicit).unwrap(), "<out>[true][false]</out>");
+    let implicit = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', true(), ']')"/></out></xsl:template>"#;
+    assert_eq!(ours(SRC, implicit).unwrap(), "<out>[true]</out>");
     let nested = r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:value-of select="@k = '1'"/></xsl:for-each></out></xsl:template>"#;
     assert_eq!(ours(SRC, nested).unwrap(), "<out>truefalsetrue</out>");
     // A comparison in a predicate or string is not the value-of result type.
@@ -951,17 +951,9 @@ fn boolean_value_of_is_corrected_here() {
 }
 
 #[test]
-fn boolean_parameter_value_of_is_refused_when_its_type_can_change() {
+fn boolean_parameter_value_of_is_admitted() {
     let t = r#"<xsl:param name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/></out></xsl:template>"#;
-    let error = ours(SRC, t).unwrap_err();
-    assert!(
-        error.starts_with("invalid argument `stylesheet`: refused:"),
-        "{error}"
-    );
-    assert!(
-        error.contains("boolean") && error.contains("xsl:choose"),
-        "{error}"
-    );
+    assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 }
 
 #[test]
@@ -1024,12 +1016,6 @@ fn refusals_2520_are_typed_at_the_endpoint() {
             r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#,
             "a literal attribute without a result namespace declaration",
         ),
-        (
-            "stylesheet",
-            SRC,
-            r#"<xsl:param name="v" select="true()"/><xsl:template match="/"><xsl:value-of select="$v"/></xsl:template>"#,
-            "boolean",
-        ),
     ] {
         let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
             .with_arg(
@@ -1046,7 +1032,7 @@ fn refusals_2520_are_typed_at_the_endpoint() {
 }
 
 #[test]
-fn boolean_variable_alias_analysis_is_bounded() {
+fn a_long_boolean_variable_alias_chain_is_admitted() {
     let mut templates = String::from(r#"<xsl:variable name="v0" select="true()"/>"#);
     for i in 1..=ikigai_xslt::limits::MAX_EXPR_DEPTH {
         templates.push_str(&format!(
@@ -1055,15 +1041,10 @@ fn boolean_variable_alias_analysis_is_bounded() {
         ));
     }
     templates.push_str(&format!(
-        r#"<xsl:template match="/"><xsl:value-of select="$v{}"/></xsl:template>"#,
+        r#"<xsl:template match="/"><out><xsl:value-of select="$v{}"/></out></xsl:template>"#,
         ikigai_xslt::limits::MAX_EXPR_DEPTH
     ));
-    let error = ours(SRC, &templates).unwrap_err();
-    assert!(
-        error.starts_with("invalid argument `stylesheet`: refused:"),
-        "{error}"
-    );
-    assert!(error.contains("boolean"), "{error}");
+    assert_eq!(ours(SRC, &templates).unwrap(), "<out>true</out>");
 }
 
 #[test]
@@ -1131,28 +1112,28 @@ fn template_local_parameter_types_follow_defaults_and_call_sites() {
     let t = r#"<xsl:template match="/"><out><xsl:variable name="v" select="false()"/><xsl:call-template name="first"><xsl:with-param name="p" select="$v"/></xsl:call-template></out></xsl:template><xsl:template name="first"><xsl:param name="p" select="true()"/><xsl:call-template name="second"><xsl:with-param name="q" select="$p"/></xsl:call-template></xsl:template><xsl:template name="second"><xsl:param name="q" select="true()"/><xsl:value-of select="$q"/></xsl:template>"#;
     assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 
-    for (default, supplied) in [("'text'", "true()"), ("false()", "'text'")] {
+    // Mixed boolean and string values, refused through 0.8.0 (#2520), are answered.
+    for (default, supplied, expected) in
+        [("'text'", "true()", "true"), ("false()", "'text'", "text")]
+    {
         let t = format!(
             r#"<xsl:template match="/"><out><xsl:call-template name="t"><xsl:with-param name="p" select="{supplied}"/></xsl:call-template></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
         );
-        assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean"));
+        assert_eq!(ours(SRC, &t).unwrap(), format!("<out>{expected}</out>"));
     }
 }
 
 #[test]
 fn template_local_parameters_consider_apply_templates_conservatively() {
     for (default, supplied, expected) in [
-        ("'default'", "'hello'", Some("<out>default</out>")),
-        ("false()", "true()", Some("<out>false</out>")),
-        ("'default'", "true()", None),
+        ("'default'", "'hello'", "<out>default</out>"),
+        ("false()", "true()", "<out>false</out>"),
+        ("'default'", "true()", "<out>default</out>"),
     ] {
         let t = format!(
             r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/missing"><xsl:with-param name="p" select="{supplied}"/></xsl:apply-templates><xsl:call-template name="t"/></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
         );
-        match expected {
-            Some(expected) => assert_eq!(ours(SRC, &t).unwrap(), expected),
-            None => assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean")),
-        }
+        assert_eq!(ours(SRC, &t).unwrap(), expected);
     }
 }
 
@@ -1220,11 +1201,6 @@ fn boolean_numeric_and_large_literal_upstream_causes() {
         ("true() + 1", "NaN", "2"),
         ("number(/r/v &gt; 2) * 5", "NaN", "5"),
         ("100000000000000000000 + 1", "NaN", "100000000000000000000"),
-        (
-            "concat('[', string(true()), '][', string(false()), ']')",
-            "[][]",
-            "[true][false]",
-        ),
     ] {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="{expression}"/></out></xsl:template>"#

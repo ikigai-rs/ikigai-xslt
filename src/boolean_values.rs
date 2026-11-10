@@ -1,17 +1,16 @@
-//! Work around xrust 2.3.0's missing Boolean arm in ValueData::fmt (#2520).
+//! The result kind of an XPath expression, for `numeric_values` (#2668).
 //! Inspect the parsed XPath result type, not comparison tokens in predicates or strings.
-//! Known boolean results become xsl:choose, evaluated once in the original context.
-//! Variable results that may change type (parameters, ambiguous bindings) are refused.
+//! Variable results that may change type (parameters, ambiguous bindings) are Unknown.
+//! (Through 0.8.0 this also adapted boolean `value-of` results, which xrust 2.3.0 wrote as
+//! empty strings, #2520; the carried xrust writes `true` and `false`, ledger #3343.)
 
 use crate::{node_id::IdNode, XSL_NS};
-use ikigai_core::{Error, Result};
-use qualname::{NamespaceUri, NcName, QName};
-use std::rc::Rc;
+use qualname::QName;
 use xrust::{
     item::{Item, Node},
     parser::xpath::parse,
     transform::Transform,
-    value::{Value, ValueData},
+    value::ValueData,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -200,66 +199,6 @@ fn local_parameter_kind(param: &IdNode, seen: &mut Vec<IdNode>, default: Kind) -
         }
     }
     result
-}
-
-pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
-    let mut stack = vec![doc.clone()];
-    let mut booleans = Vec::new();
-    while let Some(n) = stack.pop() {
-        stack.extend(n.child_iter());
-        if !is_xsl(&n, "value-of") {
-            continue;
-        }
-        // Preserve xrust's validation of disable-output-escaping. Both valid choices
-        // are equivalent for the plain ASCII words this adaptation emits.
-        let escaping = attr(&n, "disable-output-escaping");
-        if !matches!(escaping.as_str(), "" | "yes" | "no") {
-            continue;
-        }
-        let select = attr(&n, "select");
-        // Invalid XPath remains xrust's ordinary compile error.
-        let Ok(t) = parse(&select, Some(n.clone()), None) else {
-            continue;
-        };
-        match kind(&t, &n, &mut Vec::new()) {
-            Kind::Boolean => booleans.push((n, select)),
-            Kind::Other => {},
-            Kind::Unknown => return Err(Error::InvalidArgument {
-                name: "stylesheet".into(),
-                detail: format!("refused: xsl:value-of select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops (ledger #2520; README, The XSLT subset); use xsl:choose with explicit true/false text, or supply a string"),
-            }),
-        }
-    }
-    for (mut node, select) in booleans {
-        adapt(&mut node, &select).map_err(|e| Error::Endpoint(e.message))?;
-    }
-    Ok(())
-}
-
-fn element(doc: &IdNode, local: &str) -> std::result::Result<IdNode, xrust::xdmerror::Error> {
-    doc.new_element(QName::new_from_parts(
-        NcName::try_from(local).unwrap(),
-        Some(NamespaceUri::try_from(XSL_NS).unwrap()),
-    ))
-}
-
-fn adapt(node: &mut IdNode, select: &str) -> std::result::Result<(), xrust::xdmerror::Error> {
-    let mut choose = element(node, "choose")?;
-    for ns in node.namespace_iter() {
-        choose.add_namespace(ns.deep_copy()?)?;
-    }
-    let mut when = element(node, "when")?;
-    when.add_attribute(when.new_attribute(
-        QName::try_from("test").unwrap(),
-        Rc::new(Value::from(select)),
-    )?)?;
-    when.push(node.new_text(Rc::new(Value::from("true")))?)?;
-    let mut otherwise = element(node, "otherwise")?;
-    otherwise.push(node.new_text(Rc::new(Value::from("false")))?)?;
-    choose.push(when)?;
-    choose.push(otherwise)?;
-    node.insert_before(choose)?;
-    node.pop()
 }
 
 #[cfg(test)]

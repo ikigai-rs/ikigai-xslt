@@ -257,6 +257,7 @@ impl fmt::Display for ValueData {
                     acc
                 },
             ),
+            ValueData::Boolean(b) => b.to_string(),
             _ => "".to_string(),
         };
         f.write_str(result.as_str())

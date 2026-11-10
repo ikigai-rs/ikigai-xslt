@@ -105,8 +105,8 @@ refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's auth
 discover those from errors, so since 0.3.0 this crate **refuses** the constructs in the refusal table
 below, before xrust compiles the stylesheet. Every row below was measured on
 **xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193;
-whitespace-only `xsl:text` added 2026-10-23, ledger #2146; attribute whitespace references,
-boolean conversion and literal attribute namespaces added 2026-10-30, ledger #2520) by
+whitespace-only `xsl:text` added 2026-10-23, ledger #2146; attribute whitespace references
+and literal attribute namespaces added 2026-10-30, ledger #2520) by
 `tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
@@ -235,27 +235,16 @@ use the bounded analysis below; ambiguous boolean/nonboolean numeric or string c
 are refused as `InvalidArgument` naming `stylesheet`. `tests/numeric_conversion.rs` covers
 the public path; `tests/xrust_subset.rs` pins the unadapted upstream failures.
 
-**Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
-`true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
-once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
-not trigger this adaptation. Boolean variables are followed through their lexical declarations,
-up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused. A template-local
-parameter combines its default with every `with-param` from calls to its named template
-and, conservatively, every `apply-templates` passing that parameter name. String-only
-parameters remain accepted; consistently boolean parameters are adapted; mixed or unknown
-types are refused. Global parameters retain the request-argument rule: strings can override
-the default, so a boolean default is refused.
+**Boolean string values (#2520):** stock xrust 2.3.0 writes a boolean's string value as
+the empty string, so `<xsl:value-of select="1 &gt; 0"/>`, `string(true())` and
+`concat('[', true(), ']')` lost it. Through 0.8.0 this crate rewrote known boolean
+`value-of` results to `xsl:choose` and refused those whose type it could not establish
+(global boolean-default parameters, mixed template parameters, long alias chains). The xrust
+it carries writes `true` and `false` (ledger #3343), so every one of those is answered and
+none is refused. The fix is written up for upstream in
+[`docs/upstream/xrust-boolean-string.md`](docs/upstream/xrust-boolean-string.md).
 
-| construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
-| --- | --- | --- | --- |
-| `<xsl:value-of select="1 &gt; 0"/>` (also `false()`, comparisons and boolean functions) | `true` (or `false`) | empty string for either boolean | adapted before compilation |
-| `xsl:value-of` of a template-local parameter whose default and all call-site values are nonboolean | the supplied/default string or node value | correct | accepted; pinned with CMS links, gonk, and RSS stylesheet fixtures |
-| `xsl:value-of` of a template-local parameter whose default and all call-site values are boolean | `true` / `false` | empty string | adapted before compilation |
-| `xsl:value-of` of a global boolean-default parameter, a local parameter with mixed boolean/nonboolean incoming values, or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
-
-Direct boolean results of `value-of` and explicit `string()` conversions are adapted.
-Other implicit boolean-to-string conversions (for example `concat('[', true(), ']')`)
-remain defective; use `string(true())` explicitly. A literal attribute namespace
+A literal attribute namespace
 must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
 is written on that element: xrust does not copy that declaration by itself. The guard is
 conservative across dynamic element construction and matched-template dispatch. Named-only

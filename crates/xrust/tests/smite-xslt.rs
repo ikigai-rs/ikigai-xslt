@@ -585,3 +585,24 @@ fn xslt_whitespace_only_text_is_preserved() {
         );
     }
 }
+
+#[test]
+fn xslt_boolean_string_value() {
+    for (expr, answer) in [
+        ("1 &gt; 0", "true"),
+        ("1 &lt; 0", "false"),
+        ("true()", "true"),
+        ("not(true())", "false"),
+        ("string(true())", "true"),
+        ("concat('[', false(), ']')", "[false]"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<doc/>", &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}
