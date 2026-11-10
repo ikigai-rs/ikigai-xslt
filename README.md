@@ -184,7 +184,6 @@ a shell.
 | a [last()] predicate — `item[last()]`, `(…)[last()]`, `{item[last()]/@id}` | the last node | the **first** node, since `last()` is 1 | `item[count(../item)]` |
 | position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
 | a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
-| a literal attribute without a result namespace declaration: `<out><b rdf:datatype="x">1</b></out>`, with `rdf` declared on the stylesheet | a namespaced attribute | serialization panics: `unable to find namespace`; xrust only emits namespace declarations for element names | put the element or an enclosing literal result element in that namespace, e.g. `<rdf:RDF>` |
 
 "Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
 `xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
@@ -245,13 +244,13 @@ it carries writes `true` and `false` (ledger #3343), so every one of those is an
 none is refused. The fix is written up for upstream in
 [`docs/upstream/xrust-boolean-string.md`](docs/upstream/xrust-boolean-string.md).
 
-A literal attribute namespace
-must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
-is written on that element: xrust does not copy that declaration by itself. The guard is
-conservative across dynamic element construction and matched-template dispatch. Named-only
-templates are accepted when every call site supplies the namespace through a literal
-result ancestor (following at most `MAX_EXPR_DEPTH` template calls). A variable/parameter
-fragment can be emitted elsewhere, so the guard does not count its outer literal ancestors.
+**A literal attribute in a namespace** (#2520): stock xrust 2.3.0 declared namespaces only for
+a literal element's own name, so `<out><b rdf:datatype="x"/></out>` panicked in
+serialization (`unable to find namespace`), and 0.5.0 through 0.8.0 refused it unless a literal
+element in that namespace enclosed it on every path. The xrust this crate carries declares the
+attribute's namespace on its element (ledger #3343), so nothing is refused. The fix is written
+up for upstream in
+[`docs/upstream/xrust-literal-attribute-namespace.md`](docs/upstream/xrust-literal-attribute-namespace.md).
 
 ⚠ **Still silently wrong: an answer, no error.** This case is a recorded limitation;
 it is not refused here. Whether a path selects one node or several is a property of

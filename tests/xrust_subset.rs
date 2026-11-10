@@ -953,29 +953,18 @@ fn boolean_parameter_value_of_is_admitted() {
     assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 }
 
+/// #2520: xrust 2.3.0 panicked serializing a literal attribute whose namespace no literal
+/// element name declared, and 0.5.0 through 0.8.0 refused it. The carried xrust declares
+/// the attribute's namespace itself (ledger #3343).
 #[test]
-fn refused_literal_attribute_without_result_namespace() {
+fn literal_attribute_namespace_is_declared() {
     for templates in [
         r#"<xsl:template match="/"><out><b rdf:datatype="x">1</b></out></xsl:template>"#,
         r#"<xsl:template match="/"><out><b xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:datatype="x">1</b></out></xsl:template>"#,
     ] {
-        let panic = std::panic::catch_unwind(|| stock(SRC, templates))
-            .expect_err("stock xrust must still panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(message.contains("unable to find namespace"), "{message}");
-        let error = ours(SRC, templates).unwrap_err();
-        assert!(
-            error.starts_with("invalid argument `stylesheet`: refused:"),
-            "{error}"
-        );
-        assert!(
-            error.contains("a literal attribute without a result namespace declaration"),
-            "{error}"
-        );
+        let expected = "<out><b xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='x'>1</b></out>";
+        assert_eq!(stock(SRC, templates).unwrap(), expected);
+        assert_eq!(ours(SRC, templates).unwrap(), expected);
     }
     let t =
         r#"<xsl:template match="/"><rdf:RDF><b rdf:datatype="x">1</b></rdf:RDF></xsl:template>"#;
@@ -983,20 +972,34 @@ fn refused_literal_attribute_without_result_namespace() {
 }
 
 #[test]
-fn refusals_2520_are_typed_at_the_endpoint() {
+fn constructs_refused_through_0_8_are_answered_at_the_endpoint() {
     use futures::executor::block_on;
-    use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
+    use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
     use std::sync::Arc;
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
-    let templates = r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#;
-    let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
-        .with_arg("src", ArgRef::Inline(SRC.as_bytes().to_vec()))
-        .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
-    let error = block_on(kernel.issue(request, &Capability::root())).unwrap_err();
-    assert!(
-        matches!(&error, IkError::InvalidArgument { name, detail: d } if name == "stylesheet" && d.contains("a literal attribute without a result namespace declaration")),
-        "{error}"
-    );
+    for (src, templates, expected) in [
+        (
+            r#"<doc v="a&#10;b"/>"#,
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#,
+            "<out>a\nb</out>",
+        ),
+        (
+            SRC,
+            r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#,
+            "<out xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='x'/>",
+        ),
+        (
+            SRC,
+            r#"<xsl:param name="v" select="true()"/><xsl:template match="/"><out><xsl:value-of select="$v"/></out></xsl:template>"#,
+            "<out>true</out>",
+        ),
+    ] {
+        let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
+            .with_arg("src", ArgRef::Inline(src.as_bytes().to_vec()))
+            .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
+        let answer = block_on(kernel.issue(request, &Capability::root())).unwrap();
+        assert_eq!(String::from_utf8(answer.bytes).unwrap(), expected);
+    }
 }
 
 #[test]
@@ -1105,42 +1108,22 @@ fn template_local_parameters_consider_apply_templates_conservatively() {
     }
 }
 
+/// Refused through 0.8.0 unless every call site supplied the namespace (#2520).
 #[test]
-fn named_template_namespace_requires_every_call_site_to_supply_it() {
+fn a_named_template_literal_attribute_is_answered_from_any_call_site() {
     let callee = r#"<xsl:template name="typed"><b rdf:datatype="x">1</b></xsl:template>"#;
-    let safe = format!(
-        r#"<xsl:template match="/"><rdf:RDF><xsl:call-template name="typed"/></rdf:RDF></xsl:template>{callee}"#
-    );
-    let expected = stock(SRC, &safe).unwrap();
-    assert!(expected.contains("datatype='x'"), "{expected}");
-    assert_eq!(ours(SRC, &safe).unwrap(), expected);
-
-    // One unsafe caller is enough, even when other callers provide the namespace.
-    let unsafe_call = safe.replace(
-        "</rdf:RDF>",
-        r#"</rdf:RDF><out><xsl:call-template name="typed"/></out>"#,
-    );
-    assert!(ours(SRC, &unsafe_call)
-        .unwrap_err()
-        .contains("without a result namespace"));
-
-    // A fragment is constructed separately from its eventual result parent.
-    let fragment = format!(
-        r#"<xsl:template match="/"><rdf:RDF><xsl:variable name="v"><xsl:call-template name="typed"/></xsl:variable><xsl:copy-of select="$v"/></rdf:RDF></xsl:template>{callee}"#
-    );
-    assert!(ours(SRC, &fragment)
-        .unwrap_err()
-        .contains("without a result namespace"));
-
-    // Named-and-matched templates also have dispatch entry points with unknown scope.
-    let matched = safe.replace(r#"name="typed"><b"#, r#"name="typed" match="doc"><b"#);
-    assert!(ours(SRC, &matched)
-        .unwrap_err()
-        .contains("without a result namespace"));
+    for caller in [
+        r#"<rdf:RDF><xsl:call-template name="typed"/></rdf:RDF><out><xsl:call-template name="typed"/></out>"#,
+        r#"<rdf:RDF><xsl:variable name="v"><xsl:call-template name="typed"/></xsl:variable><xsl:copy-of select="$v"/></rdf:RDF>"#,
+    ] {
+        let t = format!(r#"<xsl:template match="/"><r>{caller}</r></xsl:template>{callee}"#);
+        let answer = ours(SRC, &t).unwrap();
+        assert_eq!(answer, stock(SRC, &t).unwrap());
+        assert!(answer.contains("rdf:datatype='x'"), "{answer}");
+    }
 }
 
-/// #2487: the numeric adapter earns its keep on stock xrust, independently of
-/// the public-path regression matrix in numeric_conversion.rs.
+/// #2487: node and `string-length()` operands, through stock xrust and this crate.
 #[test]
 fn numeric_conversion_is_adapted_over_stock_xrust_nan() {
     let src = r#"<r><b n="x"><l d="t">12.5</l></b></r>"#;

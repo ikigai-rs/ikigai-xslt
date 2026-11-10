@@ -381,7 +381,12 @@ literal `true` and `false` text, and refused results whose type it could not est
 adaptation and its refusals are gone, and implicit conversions such as
 `concat('[', true(), ']')` are right too.
 
-## 13. A literal prefixed attribute can panic in serialization (#2520)
+## 13. A literal prefixed attribute can panic in serialization (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) by the compiler patch suggested below; the
+serializer's panic on an unresolvable name is not changed (that needs an API change). The issue
+text and patch for upstream are
+[`upstream/xrust-literal-attribute-namespace.md`](upstream/xrust-literal-attribute-namespace.md).
 
 Source `<doc/>`; stylesheet declares `rdf` only on `xsl:stylesheet`:
 
@@ -404,13 +409,8 @@ for literal attributes' namespaces too (or copy the applicable in-scope namespac
 XSLT exclusion rules), rather than only the element namespace. The serializer should also
 return an error for an unresolvable QName instead of panicking; that needs an API change.
 
-ikigai-xslt refuses this before compilation as a typed `InvalidArgument` naming `stylesheet`.
-A literal element's own namespace, or an enclosing literal element in that namespace, satisfies
-the guard. Named-only templates are accepted when every call site supplies the namespace through
-a literal result ancestor, following at most `MAX_EXPR_DEPTH` calls. Matched-template
-dispatch, call cycles, and dynamically constructed namespace scopes remain conservative;
-the guard does not assume variable/parameter fragments are emitted at their declaration site. The stock panic
-and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.
+0.5.0 through 0.8.0 of ikigai-xslt refused this before compilation; with the fix carried,
+it is answered.
 
 ## 14. Numeric conversion rejects nodes and unsigned values (#2487; fixed in `ikigai-xrust`)
 

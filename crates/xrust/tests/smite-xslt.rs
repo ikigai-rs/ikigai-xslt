@@ -670,3 +670,24 @@ fn xslt_number_of_nodes_and_unsigned_results() {
         );
     }
 }
+#[test]
+fn xslt_literal_attribute_namespace_is_declared() {
+    use xrust::item::Node;
+    let rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+    for body in [
+        r#"<out><b rdf:datatype="x">1</b></out>"#,
+        r#"<out><b xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:datatype="x">1</b></out>"#,
+        r#"<out><b rdf:datatype="x" rdf:about="y" xml:lang="en">1</b></out>"#,
+    ] {
+        let style = format!(
+            r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:rdf="{rdf}"><xsl:template match="/">{body}</xsl:template></xsl:stylesheet>"#
+        );
+        let result = transform_str("<doc/>", &style);
+        assert!(
+            result.contains(&format!("xmlns:rdf='{rdf}'")) && result.contains("rdf:datatype='x'"),
+            "{body}: {result}"
+        );
+        let reparsed = smite::make_from_str(&result).expect("the result is namespace-well-formed");
+        assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
+    }
+}
