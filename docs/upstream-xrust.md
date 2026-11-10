@@ -321,7 +321,10 @@ stylesheet's author can see, so it is a feature request at most, and is not draf
 (`xsl:variable` inside a template, `string-length()`, `xsl:key` over prefixed names and a
 stylesheet whose first node is a comment were refused by 2.2.0 and work in 2.3.0.)
 
-## 11. Attribute whitespace character references normalize to spaces (#2520)
+## 11. Attribute whitespace character references normalize to spaces (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) as suggested below; the issue text and
+patch for upstream are [`upstream/xrust-attribute-references.md`](upstream/xrust-attribute-references.md).
 
 Measured on xrust 2.3.0, 2026-10-30. Source `<doc/>`; stylesheet body:
 
@@ -343,10 +346,8 @@ collapses and trims CDATA values. Suggested patch: normalize literal text chunks
 without the final whitespace replacement/collapse for CDATA attributes. Non-CDATA attribute
 normalization must remain a separate step. This needs XML parser conformance tests.
 
-ikigai-xslt refuses these references in **either input before parsing**, naming the attribute
-and argument. An exact repair after parsing cannot distinguish a reference from a literal
-space. RSS workaround (tested with text output): declare a variable containing dot, literal
-newline, dot; obtain the LF with `substring($lf-holder, 2, 1)`.
+0.5.0 through 0.8.0 of ikigai-xslt refused these references in either input before parsing;
+since the fix is carried, they are answered.
 
 ## 12. Boolean string conversion is empty (#2520; fixed in `ikigai-xrust`)
 

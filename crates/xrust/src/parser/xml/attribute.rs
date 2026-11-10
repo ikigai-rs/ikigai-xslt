@@ -397,12 +397,16 @@ where
             delimited(
                 tag("'"),
                 many0(alt3(
-                    map(chardata_unicode_codepoint(), |c| c.to_string()),
-                    textreference(),
-                    wellformed(
-                        take_while(|c| c != '&' && c != '\''),
-                        |c| !c.contains('<'),
-                        "'<' not allowed in attribute value",
+                    // A character reference is appended as the character it refers to.
+                    map(chardata_unicode_codepoint(), |c| (true, c.to_string())),
+                    map(textreference(), |s| (false, s)),
+                    map(
+                        wellformed(
+                            take_while(|c| c != '&' && c != '\''),
+                            |c| !c.contains('<'),
+                            "'<' not allowed in attribute value",
+                        ),
+                        |s| (false, s),
                     ),
                 )),
                 tag("'"),
@@ -410,12 +414,16 @@ where
             delimited(
                 tag("\""),
                 many0(alt3(
-                    map(chardata_unicode_codepoint(), |c| c.to_string()),
-                    textreference(),
-                    wellformed(
-                        take_while(|c| c != '&' && c != '\"'),
-                        |c| !c.contains('<'),
-                        "'<' not allowed in attribute value",
+                    // A character reference is appended as the character it refers to.
+                    map(chardata_unicode_codepoint(), |c| (true, c.to_string())),
+                    map(textreference(), |s| (false, s)),
+                    map(
+                        wellformed(
+                            take_while(|c| c != '&' && c != '\"'),
+                            |c| !c.contains('<'),
+                            "'<' not allowed in attribute value",
+                        ),
+                        |s| (false, s),
                     ),
                 )),
                 tag("\""),
@@ -433,20 +441,32 @@ where
                    For a white space character (#x20, #xD, #xA, #x9), append a space character (#x20) to the normalized value.
                    For another character, append the character to the normalized value.
                 */
-                let r = if state1.xmlversion.as_str() == "1.1" {
-                    rn.concat()
-                        .replace(['\u{85}', '\u{2028}', '\n', '\r', '\t', '\n'], " ")
-                        //.trim()
-                        .split_whitespace()
-                        .collect::<Vec<&str>>()
-                        .join(" ")
+                // Only the white space written in the value (a line end counting once), or in
+                // an entity's replacement text, becomes a space; a character reference keeps its character.
+                // Nothing is collapsed or trimmed: that is for attributes declared other
+                // than CDATA, not this parser.
+                let r: String = if state1.xmlversion.as_str() == "1.1" {
+                    rn.iter()
+                        .map(|(reference, s)| {
+                            if *reference {
+                                s.clone()
+                            } else {
+                                s.replace("\r\n", "\n")
+                                    .replace("\r\u{85}", "\n")
+                                    .replace(['\u{85}', '\u{2028}', '\n', '\r', '\t'], " ")
+                            }
+                        })
+                        .collect()
                 } else {
-                    rn.concat()
-                        .replace(['\n', '\r', '\t', '\n'], " ")
-                        //.trim()
-                        .split_whitespace()
-                        .collect::<Vec<&str>>()
-                        .join(" ")
+                    rn.iter()
+                        .map(|(reference, s)| {
+                            if *reference {
+                                s.clone()
+                            } else {
+                                s.replace("\r\n", "\n").replace(['\n', '\r', '\t'], " ")
+                            }
+                        })
+                        .collect()
                 };
                 //NEL character cannot be in attributes.
                 if state1.xmlversion.as_str() == "1.1" && r.find(|c| !is_char11(&c)).is_some() {

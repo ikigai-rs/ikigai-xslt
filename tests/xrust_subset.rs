@@ -857,34 +857,31 @@ fn prefixed_values_at_the_endpoint_keep_their_case() {
     }
 }
 
-// Ledger #2520: preserve the distinction between literal whitespace and references.
+// Ledger #2520: xrust 2.3.0 read a whitespace character reference in an attribute as a
+// space, and 0.5.0 through 0.8.0 refused one in either input. The carried xrust keeps the
+// referenced character (ledger #3343), in a stylesheet and in a source alike.
 #[test]
-fn refused_attribute_whitespace_character_references() {
-    for reference in ["&#10;", "&#xA;", "&#x0a;", "&#00010;", "&#9;", "&#xD;"] {
+fn attribute_whitespace_character_references_keep_their_characters() {
+    for (reference, character) in [
+        ("&#10;", "\n"),
+        ("&#xA;", "\n"),
+        ("&#x0a;", "\n"),
+        ("&#00010;", "\n"),
+        ("&#9;", "\t"),
+        ("&#xD;", "\r"),
+    ] {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="concat('a', '{reference}')"/></out></xsl:template>"#
         );
-        assert_eq!(stock(SRC, &templates).unwrap(), "<out>a </out>");
-        let error = ours(SRC, &templates).unwrap_err();
-        for detail in [
-            "invalid argument `stylesheet`",
-            "character reference",
-            "space",
-            "#2520",
-            "lf-holder",
-            "substring",
-        ] {
-            assert!(error.contains(detail), "{error}");
-        }
+        let expected = format!("<out>a{character}</out>");
+        assert_eq!(stock(SRC, &templates).unwrap(), expected, "{reference}");
+        assert_eq!(ours(SRC, &templates).unwrap(), expected, "{reference}");
         let src = format!(r#"<doc v="a{reference}b"/>"#);
         let read =
             r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#;
-        assert_eq!(stock(&src, read).unwrap(), "<out>a b</out>");
-        let error = ours(&src, read).unwrap_err();
-        assert!(
-            error.starts_with("invalid argument `src`: refused: character reference"),
-            "{error}"
-        );
+        let expected = format!("<out>a{character}b</out>");
+        assert_eq!(stock(&src, read).unwrap(), expected, "{reference}");
+        assert_eq!(ours(&src, read).unwrap(), expected, "{reference}");
     }
 }
 
@@ -991,44 +988,15 @@ fn refusals_2520_are_typed_at_the_endpoint() {
     use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
     use std::sync::Arc;
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
-    for (arg, src, templates, detail) in [
-        (
-            "src",
-            r#"<doc v="&#10;"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-            "character reference",
-        ),
-        (
-            "content",
-            r#"<doc v="&#10;"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-            "character reference",
-        ),
-        (
-            "stylesheet",
-            SRC,
-            r#"<xsl:template match="/"><xsl:value-of select="'&#10;'"/></xsl:template>"#,
-            "character reference",
-        ),
-        (
-            "stylesheet",
-            SRC,
-            r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#,
-            "a literal attribute without a result namespace declaration",
-        ),
-    ] {
-        let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
-            .with_arg(
-                if arg == "content" { "content" } else { "src" },
-                ArgRef::Inline(src.as_bytes().to_vec()),
-            )
-            .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
-        let error = block_on(kernel.issue(request, &Capability::root())).unwrap_err();
-        assert!(
-            matches!(&error, IkError::InvalidArgument { name, detail: d } if name == arg && d.contains(detail)),
-            "{error}"
-        );
-    }
+    let templates = r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#;
+    let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
+        .with_arg("src", ArgRef::Inline(SRC.as_bytes().to_vec()))
+        .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
+    let error = block_on(kernel.issue(request, &Capability::root())).unwrap_err();
+    assert!(
+        matches!(&error, IkError::InvalidArgument { name, detail: d } if name == "stylesheet" && d.contains("a literal attribute without a result namespace declaration")),
+        "{error}"
+    );
 }
 
 #[test]

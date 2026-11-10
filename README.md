@@ -202,19 +202,14 @@ those values come through exactly as written, and nothing is refused for their c
 `xml:space` is still compared without regard to case, as xrust 2.3.0 compares it. The fix is
 written up for upstream in [`docs/upstream/xrust-attribute-case.md`](docs/upstream/xrust-attribute-case.md).
 
-**Refused before parsing either input** (ledger #2520):
-
-| construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
-| --- | --- | --- | --- |
-| a tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`, `&#13;`, including hexadecimal and leading-zero forms) | retain the referenced character | replaces it with a space | for the RSS newline, declare `<xsl:variable name="lf-holder">.` followed by a literal newline and `.</xsl:variable>`, then use `substring($lf-holder, 2, 1)` |
-
-The whitespace-reference refusal (#2520) also applies to **unprefixed** attributes in either
-input, before parsing, and names the argument and attribute. There is no exact repair after
-parsing: a reference and a literal space have already become indistinguishable. Text-node
-references, escaped `&amp;#10;`, comments, CDATA and processing instructions are unaffected.
-The RSS workaround above produces one line per item with `method="text"` (tested).
-
-This guard also applies to `CompiledStylesheet::compile` and `transform`.
+**Attribute whitespace character references** (ledger #2520): stock xrust 2.3.0 reads a
+tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`,
+`&#13;`, hexadecimal and leading-zero forms too) as a space, and 0.5.0 through 0.8.0 refused
+one in either input before parsing. The xrust this crate carries keeps the referenced
+character, as XML 1.0 §3.3.3 says, and no longer collapses or trims runs of spaces in an
+attribute value (ledger #3343), so nothing is refused and `select="concat(., '&#10;')"` ends a
+line. The fix is written up for upstream in
+[`docs/upstream/xrust-attribute-references.md`](docs/upstream/xrust-attribute-references.md).
 
 **Numeric conversion (#2487, since 0.5.0):** `number(/r/v)` and arithmetic on
 selected nodes or `string-length()` results work through this crate, including in chart

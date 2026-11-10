@@ -57,10 +57,9 @@
 //!
 //! ## Attribute whitespace references (ledger #2520)
 //!
-//! xrust normalizes a referenced tab, LF or CR to a space after XML expansion, losing the
-//! distinction from literal whitespace. The scan refuses numeric references to these
-//! characters in any attribute of either input, including hexadecimal/leading-zero forms.
-//! Text, comments, CDATA and processing instructions are outside this attribute guard.
+//! xrust 2.3.0 normalizes a referenced tab, LF or CR in an attribute to a space, and 0.5.0
+//! through 0.8.0 refused such a reference in either input. The xrust this crate carries keeps
+//! the referenced character, as XML 1.0 §3.3.3 says (ledger #3343), so nothing is refused.
 //!
 //! ## Time (ledger #1040)
 //!
@@ -195,7 +194,7 @@ fn refuse(arg: &str, detail: String) -> Error {
 
 /// Read a document's [`Shape`] in one pass, with no recursion and no allocation beyond the
 /// declared entities' summaries — or refuse a declaration that could build what the pass
-/// cannot see, or an attribute character reference xrust would normalize (see the module docs).
+/// cannot see.
 /// The pass is deliberately not a parser: it may count
 /// MORE nesting than xrust would (a malformed document xrust refuses anyway), never less.
 pub fn scan(text: &str) -> std::result::Result<Shape, String> {
@@ -279,49 +278,6 @@ struct Entity<'a> {
     opens: usize,
 }
 
-/// Read the attribute name preceding an opening quote, allowing spaces around `=`.
-fn attribute_before_quote(b: &[u8], quote: usize) -> &[u8] {
-    let mut end = quote;
-    while end > 0 && b[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    if end == 0 || b[end - 1] != b'=' {
-        return &[];
-    }
-    end -= 1;
-    while end > 0 && b[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    let mut start = end;
-    while start > 0 && !b[start - 1].is_ascii_whitespace() && b[start - 1] != b'<' {
-        start -= 1;
-    }
-    &b[start..end]
-}
-
-// Stop at the first non-digit rather than searching the remaining document for `;`.
-// This keeps malformed inputs with many ampersands linear as well.
-fn whitespace_reference(reference: &[u8]) -> bool {
-    let Some(num) = reference.strip_prefix(b"&#") else {
-        return false;
-    };
-    let (digits, radix) = match num.strip_prefix(b"x") {
-        Some(hex) => (hex, 16),
-        None => (num, 10),
-    };
-    let end = digits
-        .iter()
-        .position(|c| !c.is_ascii_hexdigit())
-        .unwrap_or(digits.len());
-    digits.get(end) == Some(&b';')
-        && matches!(
-            std::str::from_utf8(&digits[..end])
-                .ok()
-                .and_then(|s| u32::from_str_radix(s, radix).ok()),
-            Some(9 | 10 | 13)
-        )
-}
-
 /// Read a start tag whose body starts at `from`, measuring the bracket nesting of each
 /// attribute value. Returns the index past its `>` and whether it closed itself.
 fn start_tag(
@@ -335,7 +291,6 @@ fn start_tag(
         match b[at] {
             b'>' => return Ok((at + 1, at > from && b[at - 1] == b'/')),
             q @ (b'"' | b'\'') => {
-                let name = attribute_before_quote(b, at);
                 let mut level = 0usize;
                 at += 1;
                 while at < b.len() && b[at] != q {
@@ -346,14 +301,6 @@ fn start_tag(
                         }
                         b')' | b']' | b'}' => level = level.saturating_sub(1),
                         b'&' => {
-                            // References retain these characters under XML 1.0 §3.3.3;
-                            // xrust instead normalizes them after expansion (#2520).
-                            if whitespace_reference(&b[at..]) {
-                                return Err(format!(
-                                    "refused: character reference in attribute `{}` would be normalized to a space by xrust 2.3.0 instead of preserving the tab, line feed or carriage return (ledger #2520; README, The XSLT subset); for a line feed use the RSS workaround: <xsl:variable name=\"lf-holder\">.\n.</xsl:variable> and substring($lf-holder, 2, 1)",
-                                    String::from_utf8_lossy(name)
-                                ));
-                            }
                             let (end, opens, closes) = expand(b, at, entities, shape)?;
                             level += opens;
                             shape.expr_depth = shape.expr_depth.max(level);
