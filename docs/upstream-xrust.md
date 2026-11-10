@@ -6,7 +6,8 @@ has been filed**: filing is an outward-facing action and is Brian's call (ledger
 Each case below is a stylesheet and an input that xrust evaluates to a wrong answer
 **without an error**, or panics on instead of producing the XSLT 1.0 result. ikigai-xslt refuses cases 2 to 6 before xrust compiles them
 (`src/subset.rs`), so these drafts reproduce through stock xrust only; cases 7 and 9 are still
-answered. Case 10 is refused before either input is parsed (`src/limits.rs`, ledger #2519).
+answered. Case 10 is fixed in the xrust this crate carries, `ikigai-xrust` (`crates/xrust`,
+ledger #3342); 0.5.0 through 0.7.0 refused it before either input was parsed (ledger #2519).
 Case 1, and the literal `[n]` half of case 4, were first measured wrong on xrust 2.2.0
 (2026-10-10) and are **fixed in 2.3.0**. Everything here was re-measured on **xrust 2.3.0**
 (the newest release on crates.io, 2026-10-13) on 2026-10-14, through stock xrust
@@ -268,8 +269,10 @@ Input: an RDF/XML-shaped source whose IRI has capitals in it.
 
 - **Expected** (XML 1.0 §3.3.3 normalizes an attribute value's whitespace, never its case;
   Namespaces in XML does not touch values): `<out>urn:I:One</out>`
-- **Actual**: `<out>urn:i:one</out>`, without an error, through both stock xrust 2.3.0 and
-  ikigai-xslt before its #2519 guard. This crate now refuses the input before parsing.
+- **Actual**: `<out>urn:i:one</out>`, without an error, through xrust 2.3.0 as published and
+  ikigai-xslt before its #2519 guard. 0.5.0 through 0.7.0 refused the input before parsing;
+  since 0.8.0 this crate carries xrust with the fix (`ikigai-xrust`, ledger #3342) and answers
+  `<out>urn:I:One</out>`.
   The unprefixed `plain` attribute, with the same text, keeps its case:
   `<out>urn:I:One</out>`. So the defect is in the prefixed path, not in attribute values in
   general.
@@ -290,15 +293,12 @@ stylesheet rather than read from a prefixed attribute, keeps its case, which is 
 workaround ikigai-xslt's callers use today.)
 
 The defective match is at **line 233** in xrust 2.3.0; the generic prefixed arm
-at lines 303–328 stores its lowercased `v`. The one-line fix is:
-
-```diff
--                        value.to_lowercase().as_str(),
-+                        value.as_str(),
-```
-
-This also makes `xml:space` accept only the case-sensitive XML values `default` and
-`preserve`. The same bug affects stylesheet literals:
+at lines 303–328 stores its lowercased `v`. The fix this crate carries, and the one drafted
+for upstream in [`upstream/xrust-attribute-case.md`](upstream/xrust-attribute-case.md),
+keeps 2.3.0's case-insensitive `xml:space` comparison and matches every other arm on the value
+as parsed. (A one-line `value.as_str()` would also make `xml:space` case-sensitive again, as
+2.2.0 was, but with `Default` and `Preserve` as the accepted values; that is a separate
+question for upstream.) The same bug affects stylesheet literals:
 
 ```xml
 <xsl:template match="/">
@@ -308,8 +308,9 @@ This also makes `xml:space` accept only the case-sensitive XML values `default` 
 
 With RDF and XSL namespaces declared as above, stock xrust produces
 a `rdf:v` element whose `rdf:datatype` is `http://www.w3.org/2001/xmlschema#datetime`.
-The datatype must retain `XMLSchema#dateTime`. `tests/xrust_subset.rs` pins both stock wrong answers and this
-crate's refusals, plus the computed-value workaround. This draft is not filed upstream.
+The datatype must retain `XMLSchema#dateTime`. `tests/xrust_subset.rs` and
+`tests/attribute_case.rs` check that the carried xrust and this crate now give the right
+answer for both. This draft is not filed upstream.
 
 ## Not reported: the refused cases
 

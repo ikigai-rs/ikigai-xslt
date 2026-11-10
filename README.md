@@ -111,7 +111,9 @@ boolean conversion and literal attribute namespaces added 2026-10-30, ledger #25
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
 answers, so the day xrust fixes one, a test fails and says so: that is the signal to drop
-the refusal and update this table. The measured release is a record
+the refusal and update this table. "Stock" xrust is the xrust this crate carries,
+`ikigai-xrust` 2.3.0-ikigai.1: xrust 2.3.0 with one fix, prefixed attribute values kept as
+written (below); every other answer is xrust 2.3.0's own. The measured release is a record
 (`ikigai_xslt::subset::XRUST_MEASURED_ON`), not a gate: a newer xrust on crates.io is a
 warning in the ecosystem's daily scan, not a red build.
 
@@ -190,20 +192,20 @@ root, xrust's answer is right, and nothing is refused. The scan is lexical and
 conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
 `/doc//b` are not a leading `//`, and `[1]` or `[position() = 1]` is not a `[last()]` predicate.
 
-**Refused before parsing either input** (ledger #2519): a prefixed attribute whose
-value would change under Unicode lowercasing, in the source **or** stylesheet. This includes
-`rdf:about="https://Example.org/My-Post"`, `rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime"`,
-`xml:id`, `xml:base`, and uppercase variable names inside a prefixed attribute's
-value template (`f:k="{$camelVar}"`). Stock xrust lowercases these values; this crate returns
-`InvalidArgument` naming `src` or `stylesheet`, the attribute, and the defect. Character
-references and declared entity values are checked too. Namespace declarations (`xmlns:f`)
-are exempt because xrust preserves their values. A literal `xml:lang` is exempt too: a
-language tag is case-insensitive (BCP 47), so the lowercased `en-us` xrust keeps means what
-`en-US` meant. An `xml:lang` value template is still refused.
+**Prefixed attribute values keep their case** (ledger #3342, since 0.8.0). xrust 2.3.0's XML
+parser lowercases every prefixed attribute value (`rdf:about`, `rdf:resource`, `dc:title`,
+`rdf:datatype`, `xml:id`, `xml:base`, `xml:lang`, and the variable names inside a prefixed
+attribute's value template, `f:k="{$camelVar}"`), in the source and the stylesheet alike.
+0.5.0 through 0.7.0 refused such a value (ledger #2519). This crate now builds on
+`ikigai-xrust` ([`crates/xrust`](crates/xrust)), xrust 2.3.0 with that one defect fixed, so
+those values come through exactly as written, and nothing is refused for their case.
+`xml:space` is still compared without regard to case, as xrust 2.3.0 compares it. The fix is
+written up for upstream in [`docs/upstream/xrust-attribute-case.md`](docs/upstream/xrust-attribute-case.md).
+
+**Refused before parsing either input** (ledger #2520):
 
 | construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
-| a prefixed attribute with uppercase letters in its parsed value, in either input | preserve case | lowercase the value, silently changing IRIs and AVT variable names | carry the value in an unprefixed attribute, element text, or a parameter; compute the output with `xsl:attribute` or `rdf:about="{$iri}"` using a lowercase variable name |
 | a tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`, `&#13;`, including hexadecimal and leading-zero forms) | retain the referenced character | replaces it with a space | for the RSS newline, declare `<xsl:variable name="lf-holder">.` followed by a literal newline and `.</xsl:variable>`, then use `substring($lf-holder, 2, 1)` |
 
 The whitespace-reference refusal (#2520) also applies to **unprefixed** attributes in either
@@ -212,8 +214,7 @@ parsing: a reference and a literal space have already become indistinguishable. 
 references, escaped `&amp;#10;`, comments, CDATA and processing instructions are unaffected.
 The RSS workaround above produces one line per item with `method="text"` (tested).
 
-Lowercase prefixed values pass the case guard; the literal result namespace guard still
-applies. Unprefixed values and values computed from data keep their case. This guard also applies to `CompiledStylesheet::compile` and `transform`.
+This guard also applies to `CompiledStylesheet::compile` and `transform`.
 
 **Numeric conversion (#2487, since 0.5.0):** `number(/r/v)` and arithmetic on
 selected nodes or `string-length()` results work through this crate, including in chart
@@ -550,7 +551,9 @@ kernel, and the `urn:cap:net` gate on a remote stylesheet.
 ## Pure Rust, wasm-ready
 
 The transform is built on [`xrust`](https://crates.io/crates/xrust) (pure-Rust XPath 1.0
-/ XSLT 1.0, a subset of it: see [above](#the-xslt-subset-what-xrust-runs-refuses-and-gets-wrong-silently)) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
+/ XSLT 1.0, a subset of it: see [above](#the-xslt-subset-what-xrust-runs-refuses-and-gets-wrong-silently)),
+carried in this repository as `ikigai-xrust` ([`crates/xrust`](crates/xrust): xrust 2.3.0
+with prefixed attribute values kept as written, ledger #3342) — no C dependency, no `libxslt`, `#![forbid(unsafe_code)]`. It runs natively
 and compiles to `wasm32` unchanged; the demo lazy-loads it in the browser as a WASM
 module via the sibling `ikigai-xslt-module`. The public, host-agnostic
 `transform_xml(src, stylesheet, text_output) -> Result<String, String>` entry point —

@@ -1,3 +1,19 @@
+> **This is `ikigai-xrust` 2.3.0-ikigai.1, not xrust.** It is xrust 2.3.0, as published on
+> crates.io, with one change: the XML parser keeps every prefixed attribute value, and
+> `xml:id`, as written. 2.3.0 lowercases them, because `src/parser/xml/attribute.rs` matches
+> on `value.to_lowercase()` to compare `xml:space` and then builds those attributes from the
+> lowercased value. Here only the two `xml:space` comparisons ignore case. It is carried by
+> [ikigai-xslt](https://github.com/ikigai-rs/ikigai-xslt) (ledger #3342) until a release of
+> xrust includes the fix, which is drafted for upstream in that repository's
+> `docs/upstream/xrust-attribute-case.md`. The library is still named `xrust`, so code that
+> uses it does not change. It is licensed, like xrust, under the Apache License 2.0
+> ([LICENSE](./LICENSE)); xrust 2.3.0 ships no NOTICE file. The packaging differs from
+> 2.3.0's in four ways that do not touch the library: the manifest names the package
+> `ikigai-xrust`, leaves out the `ixml` example (it needs `earleybird`, a git dependency the
+> published manifest does not carry), and allows clippy and rustdoc lints; `rustfmt.toml`
+> turns formatting off; and the conformance-suite data and `tests/xml/45M.xml`, read only by
+> feature-gated or commented-out tests, are left out.
+
 # χrust
 
 [![crates.io](https://img.shields.io/crates/v/xrust.svg)](https://crates.io/crates/xrust)

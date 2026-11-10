@@ -21,6 +21,10 @@ name = "ikigai-xslt"
 # including nested modules; adds the I/O-free transform_xml_with_modules entry point.
 # 0.7.0: public API types move to ikigai-core 0.3 and its scoped content store
 # (ledger #2965).
+# 0.8.0: builds on ikigai-xrust (crates/xrust), xrust 2.3.0 with prefixed attribute values kept
+# as written (ledger #3342), and drops 0.5.0's refusal of a value xrust would lowercase: that
+# input now gets the correct answer. A behavior change, so a minor release. Publish
+# ikigai-xrust 2.3.0-ikigai.1 first: this crate's published manifest depends on it by version.
 version = "0.8.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -43,6 +47,11 @@ async-trait = "0.1"
 # RFC 3986 resolution also works for urn:file: bases (url::Url::join does not).
 # This is the same IRI implementation already used by ikigai-core.
 oxiri = "0.2"
+# Carried in this repository as `ikigai-xrust` (ledger #3342): xrust 2.3.0 with one fix, the XML
+# parser keeping prefixed attribute values and `xml:id` as written (crates/xrust/README.md).
+# The library is still named `xrust`, so no `use` line changes. A path dependency for builds
+# here, a version one once published: `cargo publish` keeps only the version. The history
+# below is xrust's, and still holds for the release this one is based on.
 # 2.3.0 is the floor, and it is an API break INSIDE the caret (ledger #1492): xrust 2.3.0
 # removed `Context::populate_key_values` (`key()` now indexes lazily), made
 # `ParseError::MissingNameSpace` a struct variant, and moved to qualname 0.0.2. So nothing
@@ -117,5 +126,6 @@ ikigai-module = "0.6.0"
 # (ledger #2965), keeping the test build on the same core as the library.
 ikigai-conformance = "0.14.0"
 
+# ikigai-xrust, carried here (ledger #3342). Its gates run with this crate's; see its manifest.
 [workspace]
 members = ["crates/xrust"]

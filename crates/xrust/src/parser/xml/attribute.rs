@@ -227,15 +227,12 @@ where
             attr_list
                 .iter()
                 .try_for_each(|((prefix, local_part), value)| {
-                    match (
-                        prefix.as_deref(),
-                        local_part.as_str(),
-                        value.to_lowercase().as_str(),
-                    ) {
+                    // Only the xml:space comparison ignores case: every value is stored as written.
+                    match (prefix.as_deref(), local_part.as_str(), value.as_str()) {
                         // Sanity checks
                         // Check if the xml:space attribute is present and if so, does it have
                         // "Preserved" or "Default" as its value. We'll actually handle in a future release.
-                        (Some("xml"), "space", "default") => {
+                        (Some("xml"), "space", v) if v.to_lowercase() == "default" => {
                             // Make the attribute
                             attr_vec.push(
                                 doc.new_attribute(
@@ -255,7 +252,7 @@ where
                             );
                             Ok(())
                         }
-                        (Some("xml"), "space", "preserve") => {
+                        (Some("xml"), "space", v) if v.to_lowercase() == "preserve" => {
                             // Make the attribute
                             attr_vec.push(
                                 doc.new_attribute(

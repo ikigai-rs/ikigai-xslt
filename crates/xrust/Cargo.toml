@@ -9,6 +9,11 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# ikigai-xrust (ledger #3342): xrust 2.3.0's published manifest, changed only where marked
+# "ikigai" below and in package name, version, description, documentation and repository
+# (xrust's own is https://gitlab.gnome.org/World/Rust/markup-rs/xrust.git). The one change to
+# the library is in src/parser/xml/attribute.rs; README.md says what and why.
+
 [package]
 edition = "2024"
 name = "ikigai-xrust"
@@ -23,8 +28,8 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Support for XPath and XSLT"
-documentation = "https://docs.rs/xrust/"
+description = "xrust 2.3.0 with prefixed attribute values kept as written: support for XPath and XSLT"
+documentation = "https://docs.rs/ikigai-xrust/"
 readme = "README.md"
 keywords = [
     "xml",
@@ -35,7 +40,7 @@ keywords = [
 ]
 categories = ["parser-implementations"]
 license = "Apache-2.0"
-repository = "https://gitlab.gnome.org/World/Rust/markup-rs/xrust.git"
+repository = "https://github.com/ikigai-rs/ikigai-xslt"
 
 [features]
 default = ["xslt"]
@@ -47,6 +52,8 @@ xslt = []
 name = "xrust"
 path = "src/lib.rs"
 
+# ikigai: the `ixml` example (examples/ixml.rs) is left out. It needs `earleybird`, a git
+# dev-dependency that xrust's published manifest strips, so it cannot build from this one.
 [[example]]
 name = "issue-30"
 path = "examples/issue-30.rs"
@@ -378,6 +385,8 @@ version = "0.1.7"
 [dev-dependencies.indextree]
 version = "4.7.4"
 
+# ikigai: the workspace gates run clippy and rustdoc with `-D warnings` on every member. These
+# are upstream's lints, not this repository's, and fixing them would rewrite upstream's code.
 [lints.clippy]
 all = "allow"
 

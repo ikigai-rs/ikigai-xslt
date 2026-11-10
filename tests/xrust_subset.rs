@@ -64,8 +64,10 @@ fn ours(src: &str, templates: &str) -> Result<String, String> {
     transform_xml(src, &style(templates), false)
 }
 
-/// Through stock xrust, exactly as its own `xslt` module documentation drives it: the
-/// reproduction an upstream report would carry.
+/// Through xrust directly, exactly as its own `xslt` module documentation drives it: the
+/// reproduction an upstream report would carry. "Stock" is xrust as this build carries it,
+/// `ikigai-xrust` (`crates/xrust`): xrust 2.3.0 with one fix, prefixed attribute values kept
+/// as written (ledger #3342). Every other answer pinned here is xrust 2.3.0's own.
 fn stock(src: &str, templates: &str) -> Result<String, String> {
     stock_stylesheet(src, &style(templates))
 }
@@ -148,21 +150,25 @@ fn pin_refused(src: &str, templates: &str, wrong: &str, correct: &str, row: &str
     );
 }
 
-/// The xrust in this build, read from the lock file the build resolved.
+/// The xrust release this build carries, read from the lock file the build resolved:
+/// `ikigai-xrust` 2.3.0-ikigai.1 is xrust 2.3.0 plus the fix `crates/xrust/README.md` names.
 fn xrust_in_this_build() -> String {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("cargo writes Cargo.lock before it builds a test");
     let mut lines = lock.lines();
     while let Some(line) = lines.next() {
-        if line == r#"name = "xrust""# {
+        if line == r#"name = "ikigai-xrust""# {
             let version = lines.next().expect("a version follows a name");
             return version
                 .trim_start_matches("version = \"")
                 .trim_end_matches('"')
+                .split("-ikigai.")
+                .next()
+                .expect("split yields at least one part")
                 .to_string();
         }
     }
-    panic!("no xrust in Cargo.lock")
+    panic!("no ikigai-xrust in Cargo.lock")
 }
 
 /// The measured version is a RECORD, never a gate: a new xrust release must not turn a PR red
@@ -683,98 +689,105 @@ fn unprefixed_attribute_values_keep_their_case() {
     }
 }
 
-fn assert_case_refusal(error: &str, arg: &str) {
-    assert!(
-        error.starts_with(&format!("invalid argument `{arg}`: refused:")),
-        "{error}"
-    );
-    for detail in [
-        "prefixed attribute",
-        "xrust",
-        "lowercase",
-        "#2519",
-        "compute the value from data",
-    ] {
-        assert!(
-            error.contains(detail),
-            "refusal must name {detail}: {error}"
-        );
-    }
-}
-
+/// Ledger #3342: xrust 2.3.0 lowercased every prefixed attribute value, and 0.5.0 through 0.7.0
+/// refused one whose case would change (#2519). The carried `ikigai-xrust` keeps the value as
+/// written, so both paths now give the XSLT answer, in the source and the stylesheet alike.
 #[test]
-fn refused_prefixed_attribute_case_in_both_inputs() {
+fn prefixed_attribute_values_keep_their_case_in_both_inputs() {
     let cases = [
         (
             r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="https://Example.org/My-Post"/></rdf:RDF>"#,
             r#"<xsl:template match="/"><out><xsl:value-of select="/rdf:RDF/rdf:Description/@rdf:about"/></out></xsl:template>"#,
-            "<out>https://example.org/my-post</out>",
             "<out>https://Example.org/My-Post</out>",
+        ),
+        (
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description><rdf:seeAlso rdf:resource="https://Example.org/Other-Post"/></rdf:Description></rdf:RDF>"#,
+            r#"<xsl:template match="/"><out><xsl:value-of select="//@rdf:resource"/></out></xsl:template>"#,
+            "<out>https://Example.org/Other-Post</out>",
+        ),
+        (
+            r#"<doc xmlns:dc="http://purl.org/dc/elements/1.1/" dc:title="A Title With Capitals"/>"#,
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/@*"/></out></xsl:template>"#,
+            "<out>A Title With Capitals</out>",
         ),
         (
             "<doc/>",
             r#"<xsl:template match="/"><rdf:v rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime"/></xsl:template>"#,
-            "<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='http://www.w3.org/2001/xmlschema#datetime'/>",
             "<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='http://www.w3.org/2001/XMLSchema#dateTime'/>",
         ),
     ];
-    for (i, (src, templates, wrong, correct)) in cases.into_iter().enumerate() {
-        let answer = stock(src, templates).unwrap();
-        assert_ne!(
-            answer, correct,
-            "xrust fixed #2519: remove the guard and update the README and upstream draft"
-        );
-        assert_eq!(answer, wrong, "xrust's answer changed: re-measure #2519");
-        let error = ours(src, templates).expect_err("refuse before parsing");
-        assert_case_refusal(&error, if i == 0 { "src" } else { "stylesheet" });
-        assert!(
-            error.contains(if i == 0 { "rdf:about" } else { "rdf:datatype" }),
-            "{error}"
-        );
+    for (src, templates, correct) in cases {
+        assert_eq!(stock(src, templates).unwrap(), correct, "carried xrust");
+        assert_eq!(ours(src, templates).unwrap(), correct, "ikigai-xslt");
     }
 }
 
 #[test]
-fn refused_encoded_and_unicode_prefixed_values_in_either_input() {
-    let templates = r#"<xsl:template match="/"><out/></xsl:template>"#;
-    for value in ["My-Post", "&#77;y-&#x50;ost", "Été", "&#x130;", "&iri;"] {
+fn encoded_and_unicode_prefixed_values_keep_their_case_in_either_input() {
+    for (value, expanded) in [
+        ("My-Post", "My-Post"),
+        ("&#77;y-&#x50;ost", "My-Post"),
+        ("Été", "Été"),
+        ("&#x130;", "\u{130}"),
+        ("&iri;", "My-Post"),
+    ] {
         let src = format!(
             r#"<!DOCTYPE doc [<!ENTITY iri "My-Post">]><doc xmlns:f="urn:f" f:k = '{value}'/>"#
         );
-        assert_case_refusal(&ours(&src, templates).unwrap_err(), "src");
+        assert_eq!(
+            ours(
+                &src,
+                r#"<xsl:template match="/"><out><xsl:value-of select="doc/@*"/></out></xsl:template>"#
+            )
+            .unwrap(),
+            format!("<out>{expanded}</out>")
+        );
         let stylesheet = format!(
             r#"<!DOCTYPE xsl:stylesheet [<!ENTITY iri "My-Post">]>{}"#,
             style(&format!(
-                r#"<xsl:template match="/"><out xmlns:f="urn:f" f:k = '{value}'/></xsl:template>"#
+                r#"<xsl:template match="/"><f:out xmlns:f="urn:f" f:k = '{value}'/></xsl:template>"#
             ))
         );
-        assert_case_refusal(
-            &transform_xml("<doc/>", &stylesheet, false).unwrap_err(),
-            "stylesheet",
+        assert_eq!(
+            transform_xml("<doc/>", &stylesheet, false).unwrap(),
+            format!("<f:out xmlns:f='urn:f' f:k='{expanded}'/>")
         );
-    }
-    for name in ["xml:id", "xml:base", "xml:space"] {
-        let src = format!(r#"<doc {name}="Upper"/>"#);
-        let error = ours(&src, templates).unwrap_err();
-        assert_case_refusal(&error, "src");
-        assert!(error.contains(name), "{error}");
     }
 }
 
-/// `xml:lang` is case-insensitive (BCP 47), so a literal one is admitted in both inputs even
-/// though xrust lowercases it: `en-us` means what `en-US` meant. A value template there is still
-/// refused, because xrust would lowercase the variable names inside it.
+/// `xml:id`, `xml:base` and `xml:lang` keep their case; `xml:space` is compared without regard
+/// to case, as xrust 2.3.0 compares it, and stored as its lowercase keyword.
 #[test]
-fn a_literal_xml_lang_is_admitted_and_reads_back_lowercased() {
-    let read = r#"<xsl:template match="/"><out><xsl:value-of select="doc/@xml:lang"/></out></xsl:template>"#;
-    assert_eq!(
-        ours(r#"<doc xml:lang="en-US"/>"#, read).unwrap(),
-        "<out>en-us</out>"
-    );
+fn xml_attributes_keep_their_case() {
+    let read = |name: &str| {
+        format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/@{name}"/></out></xsl:template>"#
+        )
+    };
+    for (name, value, expected) in [
+        ("xml:id", "Upper", "Upper"),
+        (
+            "xml:base",
+            "https://Example.org/Base/",
+            "https://Example.org/Base/",
+        ),
+        ("xml:lang", "en-US", "en-US"),
+        ("xml:space", "Preserve", "preserve"),
+    ] {
+        let src = format!(r#"<doc {name}="{value}"/>"#);
+        assert_eq!(
+            ours(&src, &read(name)).unwrap(),
+            format!("<out>{expected}</out>"),
+            "{name}"
+        );
+    }
     let literal = style(r#"<xsl:template match="/"><out xml:lang="en-US"/></xsl:template>"#);
-    assert!(transform_xml("<doc/>", &literal, false).is_ok());
-    let avt = r#"<xsl:template match="/"><xsl:variable name="Lang" select="'en'"/><out xml:lang="{$Lang}"/></xsl:template>"#;
-    assert_case_refusal(&ours("<doc/>", avt).unwrap_err(), "stylesheet");
+    assert_eq!(
+        transform_xml("<doc/>", &literal, false).unwrap(),
+        "<out xml:lang='en-US'/>"
+    );
+    let avt = r#"<xsl:template match="/"><xsl:variable name="Lang" select="'en-GB'"/><out xml:lang="{$Lang}"/></xsl:template>"#;
+    assert_eq!(ours("<doc/>", avt).unwrap(), "<out xml:lang='en-GB'/>");
 }
 
 #[test]
@@ -797,65 +810,53 @@ fn lowercase_values_and_computed_values_remain_admitted() {
     assert_eq!(ours(src, templates).unwrap(), "<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:about='https://Example.org/My-Post' rdf:datatype='http://www.w3.org/2001/XMLSchema#dateTime'/>");
 }
 
+/// An attribute value template on a prefixed attribute keeps its variable names: xrust 2.3.0
+/// lowercased `{$camelVar}` to `{$camelvar}` and failed to find it.
 #[test]
-fn refused_prefixed_avt_before_its_variable_name_is_lowercased() {
+fn a_prefixed_avt_keeps_its_variable_names() {
     let templates = r#"<xsl:template match="/"><xsl:variable name="camelVar" select="'My-Post'"/><rdf:v rdf:about="{$camelVar}"/></xsl:template>"#;
-    let error = stock("<doc/>", templates).unwrap_err();
-    assert!(error.contains("camelvar"), "{error}");
-    assert_case_refusal(&ours("<doc/>", templates).unwrap_err(), "stylesheet");
+    let correct =
+        "<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:about='My-Post'/>";
+    assert_eq!(
+        stock("<doc/>", templates).unwrap(),
+        correct,
+        "carried xrust"
+    );
+    assert_eq!(ours("<doc/>", templates).unwrap(), correct, "ikigai-xslt");
 }
 
 #[test]
-fn the_compiled_api_refuses_prefixed_values_in_both_inputs() {
-    let bad_style = style(r#"<xsl:template match="/"><rdf:v rdf:about="My-Post"/></xsl:template>"#);
-    let error = ikigai_xslt::CompiledStylesheet::compile(&bad_style)
-        .err()
-        .expect("refused");
-    assert_case_refusal(&error, "stylesheet");
+fn the_compiled_api_keeps_prefixed_values_in_both_inputs() {
     let result = ikigai_xslt::limits::on_xslt_stack(|| {
         let compiled = ikigai_xslt::CompiledStylesheet::compile(&style(
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
+            r#"<xsl:template match="/"><rdf:v rdf:about="My-Post" rdf:label="{doc/@*}"/></xsl:template>"#,
         ))?;
-        compiled.transform(r#"<doc xmlns:f="urn:f" f:k="My-Post"/>"#, false)
+        compiled.transform(r#"<doc xmlns:f="urn:f" f:k="Their-Post"/>"#, false)
     })
     .unwrap();
-    assert_case_refusal(&result.unwrap_err(), "src");
+    assert_eq!(
+        result.unwrap(),
+        "<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:about='My-Post' rdf:label='Their-Post'/>"
+    );
 }
 
 #[test]
-fn prefixed_case_refusals_at_the_endpoint_are_typed() {
+fn prefixed_values_at_the_endpoint_keep_their_case() {
     use futures::executor::block_on;
-    use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
+    use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
     use std::sync::Arc;
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
-    for (arg, src, templates) in [
-        (
-            "src",
-            r#"<doc xmlns:f="urn:f" f:k="My-Post"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-        ),
-        (
-            "content",
-            r#"<doc xmlns:f="urn:f" f:k="My-Post"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-        ),
-        (
-            "stylesheet",
-            "<doc/>",
-            r#"<xsl:template match="/"><rdf:v rdf:about="My-Post"/></xsl:template>"#,
-        ),
-    ] {
+    let src = r#"<doc xmlns:f="urn:f" f:k="My-Post"/>"#;
+    let templates = r#"<xsl:template match="/"><out><xsl:value-of select="doc/@*"/><rdf:v rdf:about="Their-Post"/></out></xsl:template>"#;
+    for arg in ["src", "content"] {
         let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
-            .with_arg(
-                if arg == "content" { "content" } else { "src" },
-                ArgRef::Inline(src.as_bytes().to_vec()),
-            )
+            .with_arg(arg, ArgRef::Inline(src.as_bytes().to_vec()))
             .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
-        let error = block_on(kernel.issue(request, &Capability::root())).expect_err("refused");
-        assert!(
-            matches!(&error, IkError::InvalidArgument { name, detail }
-            if name == arg && detail.contains("#2519")),
-            "{error}"
+        let rep = block_on(kernel.issue(request, &Capability::root())).expect("transforms");
+        assert_eq!(
+            String::from_utf8(rep.bytes).unwrap(),
+            "<out>My-Post<rdf:v xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:about='Their-Post'/></out>",
+            "{arg}"
         );
     }
 }
