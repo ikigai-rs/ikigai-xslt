@@ -509,10 +509,10 @@ are evaluated once in their original context. This uses xrust's existing conditi
 expression support internally; the adapter's accepted caller grammar remains XPath 1.0.
 The literal strings `'true'` and `'false'` still convert to `NaN`, as XPath 1.0 requires.
 Variable aliases and template-local parameters share case 12's bounded type analysis;
-ambiguous boolean/nonboolean conversions are refused as typed `InvalidArgument`
-naming `stylesheet`, including global boolean-default parameters that request strings
-can override. Other implicit boolean string conversions, such as `concat('[', true(), ']')`,
-remain an upstream limitation; use explicit `string()`.
+through 0.8.0 ambiguous boolean/nonboolean conversions were refused as typed
+`InvalidArgument` naming `stylesheet`. With the boolean and node conversions fixed in the
+carried xrust (ledger #3343), such a value is left to xrust and answered, and implicit
+boolean string conversions such as `concat('[', true(), ']')` are right too.
 
 Relational comparisons map each operand's items to numbers with internal `for`
 expressions, then use xrust's general comparison on the numeric sequences. This
