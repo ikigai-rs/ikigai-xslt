@@ -277,7 +277,8 @@ impl<N: Node> Item<N> {
     /// Gives the double value of the item. Returns NaN if the value cannot be converted to a double.
     pub fn to_double(&self) -> f64 {
         match self {
-            Item::Node(..) => f64::NAN,
+            // A node is converted by its string value.
+            Item::Node(..) => crate::value::string_to_double(&self.to_string()),
             Item::Function => f64::NAN,
             Item::Value(v) => v.to_double(),
         }

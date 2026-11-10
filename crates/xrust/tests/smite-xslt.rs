@@ -646,3 +646,27 @@ fn xslt_node_on_the_left_of_a_comparison() {
         );
     }
 }
+
+#[test]
+fn xslt_number_of_nodes_and_unsigned_results() {
+    let src = r#"<r><b n=" 7 "><l>12.5</l><l>4</l></b><e/><t>x</t></r>"#;
+    for (expr, answer) in [
+        ("number(/r/b/l)", "12.5"),
+        ("/r/b/l + 1", "13.5"),
+        ("/r/b/@n * 2", "14"),
+        ("number(/r/missing)", "NaN"),
+        ("/r/missing + 1", "NaN"),
+        ("number(/r/t)", "NaN"),
+        ("string-length('abc') - 1", "2"),
+        ("string-length('abc') * 2", "6"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str(src, &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}

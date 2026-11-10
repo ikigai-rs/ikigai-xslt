@@ -1145,17 +1145,17 @@ fn named_template_namespace_requires_every_call_site_to_supply_it() {
 fn numeric_conversion_is_adapted_over_stock_xrust_nan() {
     let src = r#"<r><b n="x"><l d="t">12.5</l></b></r>"#;
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', string(/r/b/l), '][', number(/r/b/l), '][', number(string(/r/b/l)), '][', /r/b/l + 1, ']')"/></out></xsl:template>"#;
+    // xrust 2.3.0: [12.5][NaN][12.5][NaN]; the carried xrust converts nodes (ledger #3343).
     assert_eq!(
         stock(src, templates).unwrap(),
-        "<out>[12.5][NaN][12.5][NaN]</out>",
-        "if upstream fixed this, re-measure the numeric adapter and docs"
+        "<out>[12.5][12.5][12.5][13.5]</out>"
     );
     assert_eq!(
         ours(src, templates).unwrap(),
         "<out>[12.5][12.5][12.5][13.5]</out>"
     );
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="string-length('abc') - 1"/></out></xsl:template>"#;
-    assert_eq!(stock(src, templates).unwrap(), "<out>NaN</out>");
+    assert_eq!(stock(src, templates).unwrap(), "<out>2</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>2</out>");
 }
 

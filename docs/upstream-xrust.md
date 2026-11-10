@@ -412,7 +412,11 @@ dispatch, call cycles, and dynamically constructed namespace scopes remain conse
 the guard does not assume variable/parameter fragments are emitted at their declaration site. The stock panic
 and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.
 
-## 14. Numeric conversion rejects nodes and unsigned values (#2487)
+## 14. Numeric conversion rejects nodes and unsigned values (#2487; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) as suggested below, taking a sequence's
+first item as XPath 1.0 does; the issue text and patch for upstream are
+[`upstream/xrust-numeric-nodes.md`](upstream/xrust-numeric-nodes.md).
 
 Measured on **xrust 2.3.0**. Source `<r><b n="x"><l d="t">12.5</l></b></r>`;
 stylesheet body (with text output):

@@ -542,7 +542,7 @@ mod tests {
                 .to_string()
         };
         let mut t = parse::<IdNode>("/r/v + 1", None, None).unwrap();
-        assert_eq!(evaluate(&t), "NaN");
+        assert_eq!(evaluate(&t), "13.5");
         let Transform::Arithmetic(operands) = &mut t else {
             panic!("expected arithmetic AST");
         };
