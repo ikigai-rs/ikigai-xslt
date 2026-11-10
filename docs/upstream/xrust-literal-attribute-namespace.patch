@@ -51,14 +51,13 @@ index 3ff5b0a..d0c3901 100644
                  n.attribute_iter()
                      .filter(|e| e.name().unwrap().namespace_uri() != *XSLTNS)
 diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
-index 2f2a05c..248bebd 100644
+index 0328b38..c7a8833 100644
 --- a/tests/smite-xslt.rs
 +++ b/tests/smite-xslt.rs
-@@ -688,3 +688,25 @@ fn xslt_integer_literal_beyond_i64() {
+@@ -670,3 +670,24 @@ fn xslt_number_of_nodes_and_unsigned_results() {
          );
      }
  }
-+
 +#[test]
 +fn xslt_literal_attribute_namespace_is_declared() {
 +    use xrust::item::Node;

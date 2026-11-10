@@ -214,9 +214,9 @@ line. The fix is written up for upstream in
 selected nodes or `string-length()` results work through this crate, including in chart
 attribute value templates such as `cx="{/r/v + 1}"`. xrust 2.3.0 returns `NaN` for
 these operands; the xrust this crate carries converts nodes, `string-length()` results and
-booleans itself, and no longer reverses a comparison with a node on its left or refuses an
-integer literal past `i64` (ledger #3343; the fixes are written up for upstream in
-[`docs/upstream/`](docs/upstream/README.md)). Before compilation, this crate converts each numeric operand through the
+booleans itself, and no longer reverses a comparison with a node on its left (ledger #3343;
+the fixes are written up for upstream in [`docs/upstream/`](docs/upstream/README.md)).
+Before compilation, this crate converts each numeric operand through the
 string value of its first item, trimming XML whitespace; empty selections and nonnumeric
 text yield `NaN`. `number()` without an argument uses the context node. XPath 1.0 operator
 precedence, predicates, variable references, names and string literals are preserved.
@@ -225,8 +225,8 @@ obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the co
 adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
 `substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
 pair of selected items to numbers, preserving XPath 1.0's existential semantics and
-avoiding xrust's reversed node comparison. Integer literals larger than `i64` use
-floating-point parsing. `string(true())` / `string(false())` return `true` / `false`;
+xrust's lexical comparison of strings. Integer literals larger than `i64`, which xrust
+refuses on purpose (its own `xpath_bigint` test), are rewritten to `number('…')`. `string(true())` / `string(false())` return `true` / `false`;
 the strings `'true'` and `'false'` still convert to `NaN`. Variable and parameter types
 use the bounded analysis below; one that may be boolean or not (refused through 0.8.0) is
 left to xrust, which converts either. What still needs the adapter is the relational

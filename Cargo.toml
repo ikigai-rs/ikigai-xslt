@@ -27,7 +27,7 @@ name = "ikigai-xslt"
 # ikigai-xrust 2.3.0-ikigai.1 first: this crate's published manifest depends on it by version.
 # 0.9.0: builds on ikigai-xrust 2.3.0-ikigai.2, which also fixes whitespace-only xsl:text,
 # booleans as strings and numbers, node and unsigned numeric conversion, a reversed node
-# comparison, integer literals past i64, attribute whitespace character references and
+# comparison, attribute whitespace character references and
 # literal attributes in a namespace (ledger #3343). Their refusals and the boolean value-of
 # adaptation go: input 0.8.0 refused or rewrote is now answered. A behavior change, so a
 # minor release. Publish ikigai-xrust 2.3.0-ikigai.2 first.

@@ -19,8 +19,6 @@
 > - `number()` and arithmetic convert a node by its string value, any numeric type by its
 >   lexical form, and a sequence by its first item; 2.3.0 gave NaN
 >   (`src/item.rs`, `src/value.rs`, `src/transform/numbers.rs`; #2487);
-> - an integer literal past `i64` is a double; 2.3.0 gave NaN
->   (`src/parser/xpath/literals.rs`; #2668);
 > - a literal result element declares the namespaces of its attributes' names; 2.3.0
 >   panicked serializing them (`src/xslt.rs`; #2520).
 >

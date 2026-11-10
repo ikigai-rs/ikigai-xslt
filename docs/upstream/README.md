@@ -20,11 +20,10 @@ as published on crates.io, they give exactly the `src/` this repository carries 
 | 5 | [a comparison with a node on its left is reversed](xrust-node-comparison.md) | [patch](xrust-node-comparison.patch) | #2668 |
 | 6 | [an attribute's whitespace character reference becomes a space](xrust-attribute-references.md) | [patch](xrust-attribute-references.patch) | #2520 |
 | 7 | [`number()` and arithmetic on a node, or `string-length()`, are NaN](xrust-numeric-nodes.md) | [patch](xrust-numeric-nodes.patch) | #2487 |
-| 8 | [an integer literal past `i64` is NaN](xrust-large-integer-literal.md) | [patch](xrust-large-integer-literal.patch) | #2668 |
-| 9 | [a literal attribute in a namespace panics in serialization](xrust-literal-attribute-namespace.md) | [patch](xrust-literal-attribute-namespace.patch) | #2520 |
+| 8 | [a literal attribute in a namespace panics in serialization](xrust-literal-attribute-namespace.md) | [patch](xrust-literal-attribute-namespace.patch) | #2520 |
 
 Patch 6 changes the same file as patch 1 and applies only on top of it; the others touch
-different code and can be filed in any order, though a test in patches 3 to 9 needs patch
+different code and can be filed in any order, though a test in patches 3 to 8 needs patch
 2's `transform_str` helper in `tests/smite-xslt.rs` (or a copy of it).
 
 Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger (ledger
@@ -37,6 +36,8 @@ Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger 
 - match-pattern predicates and template priority (cases 2 and 3), `position()`, `last()` and
   `[last()]` (cases 4 and 5), and a leading `//` away from the root (case 6): each needs a
   change to how patterns or the focus are evaluated, a design call for upstream;
+- an integer literal past `i64` (#2668): xrust's own `xpath_bigint` test requires it to be an
+  error, so reading it as a double, as XPath 1.0 would, is upstream's call;
 - `xsl:value-of` over several nodes (case 7), XPath 1.0 relational comparison of strings, and
   unary `-`/`+`: XPath 1.0 and 2.0 disagree on the first two, which is a design call; unary
   signs were not reached.
