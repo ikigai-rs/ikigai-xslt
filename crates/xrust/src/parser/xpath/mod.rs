@@ -1,0 +1,277 @@
+/*! # Parse XPath expressions
+
+An XPath expression parser using the xrust parser combinator that produces a xrust transformation.
+
+```rust
+use xrust::parser::xpath::parse;
+# use xrust::item::Node;
+# fn do_parse<N: Node>() {
+let t = parse::<N>("/child::A/child::B/child::C", None, None).expect("unable to parse XPath expression");
+# }
+```
+
+"t" now contains a [Transform] that will return "C" elements that have a "B" parent and an "A" grandparent in the source document.
+
+To evaluate the transformation we need a Context with a source document as its current item.
+
+```rust
+# use std::rc::Rc;
+# use xrust::xdmerror::{Error, ErrorKind};
+use xrust::item::{Sequence, SequenceTrait, Item, Node, NodeType};
+use xrust::trees::smite::RNode;
+use xrust::parser::ParseError;
+use xrust::parser::xml::parse as xmlparse;
+use xrust::parser::xpath::parse;
+use xrust::transform::context::{Context, ContextBuilder, StaticContext, StaticContextBuilder};
+
+let t = parse("/child::A/child::B/child::C", None, None)
+    .expect("unable to parse XPath expression");
+
+let source = RNode::new_document();
+xmlparse(source.clone(), "<A><B><C/></B><B><C/></B></A>", Some(|_: &_| Err(ParseError::MissingNameSpace{prefix: None, nsuri: None, message: Some("XPath parser".to_string())})))
+    .expect("unable to parse XML");
+let mut static_context = StaticContextBuilder::new()
+    .message(|_| Ok(()))
+    .fetcher(|_| Ok(String::new()))
+    .parser(|_| Err(Error::new(ErrorKind::NotImplemented, "not implemented")))
+    .build();
+let context = ContextBuilder::new()
+    .context(vec![Item::Node(source)])
+    .build();
+let sequence = context.dispatch(&mut static_context, &t)
+    .expect("evaluation failed");
+assert_eq!(sequence.len(), 2);
+assert_eq!(sequence.to_xml(), "<C/><C/>")
+```
+*/
+
+mod compare;
+mod context;
+mod expressions;
+mod flwr;
+mod functions;
+pub(crate) mod literals;
+mod logic;
+mod nodes;
+pub(crate) mod nodetests;
+mod numbers;
+pub(crate) mod predicates;
+mod strings;
+pub(crate) mod support;
+mod types;
+pub(crate) mod variables;
+
+use crate::parser::combinators::alt::alt4;
+//use crate::parser::combinators::debug::inspect;
+use crate::parser::combinators::list::separated_list1;
+use crate::parser::combinators::map::map;
+use crate::parser::combinators::tag::tag;
+use crate::parser::combinators::tuple::tuple3;
+use crate::parser::combinators::whitespace::xpwhitespace;
+use crate::parser::xpath::flwr::{for_expr, if_expr, let_expr};
+use crate::parser::xpath::logic::or_expr;
+use crate::parser::xpath::support::noop;
+use crate::parser::{
+    ParseError, ParseInput, ParserState, ParserStateBuilder, StaticState, StaticStateBuilder,
+};
+
+use crate::item::Node;
+use crate::transform::Transform;
+use crate::xdmerror::{Error, ErrorKind};
+use qualname::{NamespaceMap, NamespacePrefix, NamespaceUri};
+
+/// Parse an XPath expression to produce a [Transform]. The optional [Node] or [NamespaceMap] may be used to resolve XML Namespaces (The [Node] will be searched first).
+pub fn parse<N: Node>(
+    input: &str,
+    n: Option<N>,
+    nmap: Option<NamespaceMap>,
+) -> Result<Transform<N>, Error> {
+    // Shortcut for empty
+    if input.is_empty() {
+        return Ok(Transform::Empty);
+    }
+
+    let state = n.clone().map_or_else(
+        || ParserState::new(),
+        |m| ParserStateBuilder::new().doc(m.clone()).current(m).build(),
+    );
+    let result = if let Some(m) = n.clone() {
+        let mut static_state = StaticStateBuilder::new()
+            .namespace(move |pre| {
+                m.namespace_iter()
+                    .find(|nsd| nsd.as_namespace_prefix().unwrap().is_some_and(|p| p == pre))
+                    .map_or_else(
+                        || {
+                            Err(ParseError::MissingNameSpace {
+                                prefix: Some(pre.to_string()),
+                                nsuri: None,
+                                message: Some(String::from("XPath parse")),
+                            })
+                        },
+                        |nsd| Ok(nsd.as_namespace_uri().unwrap().clone()),
+                    )
+            })
+            .build();
+        xpath_expr((input, state), &mut static_state)
+    } else if let Some(nm) = nmap {
+        let mut static_state = StaticStateBuilder::new()
+            .namespace(move |pre: &NamespacePrefix| {
+                nm.namespace_uri(&Some(pre.clone()))
+                    .ok_or(ParseError::MissingNameSpace {
+                        prefix: Some(pre.to_string()),
+                        nsuri: None,
+                        message: Some(String::from("XPath parse")),
+                    })
+            })
+            .build();
+        xpath_expr((input, state), &mut static_state)
+    } else {
+        let mut static_state = StaticStateBuilder::new()
+            .namespace(|_| {
+                Err(ParseError::MissingNameSpace {
+                    prefix: None,
+                    nsuri: None,
+                    message: Some(String::from("XPath parse")),
+                })
+            })
+            .build();
+        xpath_expr((input, state), &mut static_state)
+    };
+    match result {
+        Ok((_, x)) => Ok(x),
+        Err(err) => match err {
+            ParseError::Combinator(f) => Err(Error::new(
+                ErrorKind::ParseError,
+                format!(
+                    "Unrecoverable parser error ({}) while parsing XPath expression \"{}\"",
+                    f, input
+                ),
+            )),
+            ParseError::NotWellFormed(e) => Err(Error::new(
+                ErrorKind::ParseError,
+                format!("Unrecognised extra characters: \"{}\"", e),
+            )),
+            ParseError::MissingNameSpace {
+                prefix,
+                nsuri,
+                message,
+            } => Err(Error::new(
+                ErrorKind::ParseError,
+                format!(
+                    "Missing namespace declaration: prefix \"{}\" namespace URI \"{}\"{}",
+                    prefix.map_or(String::from("--None--"), |pr| pr.to_string()),
+                    nsuri.map_or(String::from("--None--"), |uri| uri.to_string()),
+                    message.map_or(String::new(), |m| format!(" {}", m.clone()))
+                ),
+            )),
+            ParseError::Notimplemented => Err(Error::new(
+                ErrorKind::ParseError,
+                "Unimplemented feature.".to_string(),
+            )),
+            _ => Err(Error::new(ErrorKind::Unknown, "Unknown error".to_string())),
+        },
+    }
+}
+
+fn xpath_expr<'a, N: Node + 'a, L>(
+    input: ParseInput<'a, N>,
+    ss: &mut StaticState<L>,
+) -> Result<(ParseInput<'a, N>, Transform<N>), ParseError>
+where
+    L: FnMut(&NamespacePrefix) -> Result<NamespaceUri, ParseError> + 'a,
+{
+    match expr::<N, L>()(input, ss) {
+        Err(err) => Err(err),
+        Ok(((input1, state1), e)) => {
+            //Check nothing remaining in iterator, nothing after the end of the root node.
+            if input1.is_empty() {
+                Ok(((input1, state1), e))
+            } else {
+                Err(ParseError::NotWellFormed(format!(
+                    "Unrecognised extra characters: \"{}\"",
+                    input1
+                )))
+            }
+        }
+    }
+}
+// Implementation note: cannot use opaque type because XPath expressions are recursive, and Rust *really* doesn't like recursive opaque types. Dynamic trait objects aren't ideal, but compiling XPath expressions is a one-off operation so that shouldn't cause a major performance issue.
+// Implementation note 2: since XPath is recursive, must lazily evaluate arguments to avoid stack overflow.
+pub fn expr<'a, N: Node + 'a, L>() -> Box<
+    dyn Fn(
+            ParseInput<'a, N>,
+            &mut StaticState<L>,
+        ) -> Result<(ParseInput<'a, N>, Transform<N>), ParseError>
+        + 'a,
+>
+where
+    L: FnMut(&NamespacePrefix) -> Result<NamespaceUri, ParseError> + 'a,
+{
+    Box::new(map(
+        separated_list1(
+            map(tuple3(xpwhitespace(), tag(","), xpwhitespace()), |_| ()),
+            expr_single::<N, L>(),
+        ),
+        |mut v| {
+            if v.len() == 1 {
+                v.pop().unwrap()
+            } else {
+                Transform::SequenceItems(v)
+            }
+        },
+    ))
+}
+
+pub(crate) fn expr_wrapper<'a, N: Node + 'a, L>(
+    b: bool,
+) -> Box<
+    dyn Fn(
+        ParseInput<'a, N>,
+        &mut StaticState<L>,
+    ) -> Result<(ParseInput<'a, N>, Transform<N>), ParseError>,
+>
+where
+    L: FnMut(&NamespacePrefix) -> Result<NamespaceUri, ParseError> + 'a,
+{
+    Box::new(move |input, ss| {
+        if b {
+            expr::<N, L>()(input, ss)
+        } else {
+            noop::<N, L>()(input, ss)
+        }
+    })
+}
+
+// ExprSingle ::= ForExpr | LetExpr | QuantifiedExpr | IfExpr | OrExpr
+fn expr_single<'a, N: Node + 'a, L>() -> Box<
+    dyn Fn(
+            ParseInput<'a, N>,
+            &mut StaticState<L>,
+        ) -> Result<(ParseInput<'a, N>, Transform<N>), ParseError>
+        + 'a,
+>
+where
+    L: FnMut(&NamespacePrefix) -> Result<NamespaceUri, ParseError> + 'a,
+{
+    Box::new(alt4(let_expr(), for_expr(), if_expr(), or_expr()))
+}
+
+pub(crate) fn expr_single_wrapper<'a, N: Node + 'a, L>(
+    b: bool,
+) -> Box<
+    dyn Fn(
+        ParseInput<'a, N>,
+        &mut StaticState<L>,
+    ) -> Result<(ParseInput<'a, N>, Transform<N>), ParseError>,
+>
+where
+    L: FnMut(&NamespacePrefix) -> Result<NamespaceUri, ParseError> + 'a,
+{
+    Box::new(move |input, ss| {
+        if b {
+            expr_single::<N, L>()(input, ss)
+        } else {
+            noop::<N, L>()(input, ss)
+        }
+    })
+}
