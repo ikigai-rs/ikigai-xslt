@@ -162,3 +162,7 @@ Status of [standards implementation](https://gitlab.gnome.org/World/Rust/markup-
 | Version 1.2   | Added ID/IDREFS support. Added XPath 2.0 functions: avg(), min(), max().                 |
 | Version 1.1   | Added new_document() to Node trait. Tree documents can now be created in one step. eg. smite::RNode::new_document() |
 |               | XML Namespace support has been redesigned. Node names are now Rc-shared.                 |
+
+The unpublished audit of 2026-11-11 also fixes `xsl:text` double escaping and honors
+its `disable-output-escaping` hint. See `docs/upstream/xrust-text-escaping.md` in
+the containing repository for the reproduction and upstream patch.

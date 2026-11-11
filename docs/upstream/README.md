@@ -41,3 +41,11 @@ Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger 
 - `xsl:value-of` over several nodes (case 7), XPath 1.0 relational comparison of strings, and
   unary `-`/`+`: XPath 1.0 and 2.0 disagree on the first two, which is a design call; unary
   signs were not reached.
+
+## Audit additions (2026-11-11)
+
+Apply after patches 1–8 above. Versions are unchanged; nothing is published.
+
+| issue | patch | ledger |
+| --- | --- | --- |
+| [xsl:text escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |

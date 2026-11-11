@@ -823,41 +823,20 @@ pub(crate) fn to_transform<N: Node>(
         NodeType::Element => {
             let qn = n.name().unwrap();
             if qn == *XSLTEXT {
-                let doe = n.get_attribute(&ATTRDOE);
-                if !doe.to_string().is_empty() {
-                    match (&doe.to_string()[..], od.method()) {
-                        ("yes", _) | (_, Method::Xml) => Ok(Transform::Literal(Item::Value(
-                            Rc::new(Value::from(n.to_string())),
-                        ))),
-                        ("no", _) => {
-                            let text = n
-                                .to_string()
-                                .replace('&', "&amp;")
-                                .replace('>', "&gt;")
-                                .replace('<', "&lt;")
-                                .replace('\'', "&apos;")
-                                .replace('\"', "&quot;");
-                            Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
-                        }
-                        _ => Err(Error::new(
-                            ErrorKind::TypeError,
-                            "disable-output-escaping only accepts values yes or no.".to_string(),
-                        )),
-                    }
-                } else if od.method() == Method::Text {
-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(
-                        n.to_string(),
-                    )))))
-                } else {
-                    let text = n
-                        .to_string()
-                        .replace('&', "&amp;")
-                        .replace('>', "&gt;")
-                        .replace('<', "&lt;")
-                        .replace('\'', "&apos;")
-                        .replace('\"', "&quot;");
-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
-                }
+                let output = match n.get_attribute(&ATTRDOE).to_string().as_str() {
+                    "" | "no" => OutputSpec::Normal,
+                    "yes" => OutputSpec::NoEscape,
+                    _ => return Err(Error::new(
+                        ErrorKind::TypeError,
+                        "disable-output-escaping only accepts values yes or no.",
+                    )),
+                };
+                // Store the characters, not their serialized spelling. The text node's
+                // output hint tells the serializer whether to escape them exactly once.
+                Ok(Transform::LiteralText(
+                    Box::new(Transform::Literal(Item::Value(Rc::new(Value::from(n.to_string()))))),
+                    output,
+                ))
             } else if qn == *XSLVALUEOF {
                 let sel = n.get_attribute(&ATTRSELECT);
                 let doe = n.get_attribute(&ATTRDOE);

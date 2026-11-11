@@ -691,3 +691,15 @@ fn xslt_literal_attribute_namespace_is_declared() {
         assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
     }
 }
+
+#[test]
+fn xslt_text_escapes_once_and_honors_disable_output_escaping() {
+    for (attribute, expected) in [
+        ("", "&lt;b/&gt;&amp;"),
+        (" disable-output-escaping='no'", "&lt;b/&gt;&amp;"),
+        (" disable-output-escaping='yes'", "<b/>&"),
+    ] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:text{attribute}>&lt;b/&gt;&amp;</xsl:text></out></xsl:template>"));
+        assert_eq!(transform_str("<doc/>", &style), format!("<out>{expected}</out>"));
+    }
+}
