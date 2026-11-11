@@ -316,30 +316,34 @@ impl Parser<'_> {
                             converted
                         })
                     } else {
-                        let kind = if matches!(
-                            token.as_str(),
-                            "true"
-                                | "false"
-                                | "boolean"
-                                | "not"
-                                | "contains"
-                                | "starts-with"
-                                | "ends-with"
-                        ) {
-                            Kind::Boolean
-                        } else {
-                            Kind::Other
+                        let text = format!(
+                            "{token}({})",
+                            args.iter()
+                                .map(|a| a.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                        // The value-of analysis's table of core function result types,
+                        // so an extension function is Unknown here too (#3398).
+                        let kind = match &self.node {
+                            Some(n) => boolean_values::expression_kind(&text, n),
+                            None if matches!(
+                                token.as_str(),
+                                "true"
+                                    | "false"
+                                    | "boolean"
+                                    | "not"
+                                    | "contains"
+                                    | "starts-with"
+                                    | "ends-with"
+                                    | "lang"
+                            ) =>
+                            {
+                                Kind::Boolean
+                            }
+                            None => Kind::Other,
                         };
-                        Expr {
-                            text: format!(
-                                "{token}({})",
-                                args.iter()
-                                    .map(|a| a.text.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                            kind,
-                        }
+                        Expr { text, kind }
                     }
                 } else if self.peek() == Some("::") {
                     self.take();
