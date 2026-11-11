@@ -101,3 +101,28 @@ fn the_foaf_shape_six_way_prefixed_union_under_a_mode() {
         include_str!("fixtures/foaf-union.expected.txt").trim_end()
     );
 }
+
+#[test]
+fn excluded_prefixes_and_intermediate_rebindings_survive_splitting_and_imports() {
+    let module = format!(
+        "<xsl:stylesheet xmlns:xsl='{XSL}' xmlns:p='urn:pattern' version='1.0' exclude-result-prefixes='p'>\
+         <xsl:template match='p:a | p:b' mode='m'>\
+         <xsl:for-each xmlns:p='urn:body' select='p:value'>[<xsl:value-of select='.'/>]</xsl:for-each>\
+         </xsl:template></xsl:stylesheet>"
+    );
+    let main = format!(
+        "<xsl:stylesheet xmlns:xsl='{XSL}' xmlns:p='urn:importer' version='1.0'>\
+         <xsl:import href='urn:module'/><xsl:output method='text'/>\
+         <xsl:template match='/'><xsl:apply-templates select='*/*' mode='m'/></xsl:template>\
+         </xsl:stylesheet>"
+    );
+    let src = "<doc xmlns:p='urn:pattern' xmlns:v='urn:body'><p:a><v:value>A</v:value></p:a><p:b><v:value>B</v:value></p:b></doc>";
+    // Also exercise the same module without detaching it through an import.
+    let standalone = module.replace("<xsl:template match='p:a", "<xsl:template match='/'><xsl:apply-templates select='*/*' mode='m'/></xsl:template><xsl:template match='p:a");
+    assert_eq!(transform(src, &standalone).unwrap(), "[A][B]");
+    let modules = BTreeMap::from([("urn:module".into(), module)]);
+    assert_eq!(
+        ikigai_xslt::transform_xml_with_modules(src, &main, &modules, true).unwrap(),
+        "[A][B]"
+    );
+}

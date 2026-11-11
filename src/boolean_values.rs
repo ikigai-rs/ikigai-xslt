@@ -1,6 +1,8 @@
 //! Work around xrust 2.3.0's missing Boolean arm in ValueData::fmt (#2520).
 //! Inspect the parsed XPath result type, not comparison tokens in predicates or strings.
-//! Known boolean results become xsl:choose, evaluated once in the original context.
+//! Known boolean value-of and copy-of results become xsl:choose, evaluated once in
+//! the original context. In particular, copy-of must construct text rather than
+//! leak an atomic boolean into a variable's result tree fragment.
 //! Variable results that may change type (parameters, ambiguous bindings) are refused.
 //! Declarations are compared by identity: xrust's `==` on nodes is structural, so two
 //! templates' `<xsl:param name="iri"/>` would otherwise be one declaration (#3398).
@@ -87,9 +89,29 @@ fn binding(node: &IdNode, name: &str) -> Option<IdNode> {
 // Shared with numeric/string conversion: resolve variable and parameter types in
 // their lexical scope using the same bounded analysis as direct value-of.
 pub(crate) fn expression_kind(source: &str, node: &IdNode) -> Kind {
-    parse(source, Some(node.clone()), None)
-        .map(|t| kind(&t, node, &mut Analysis::new()))
-        .unwrap_or(Kind::Unknown)
+    source_kind(source, node, &mut Analysis::new()).unwrap_or(Kind::Unknown)
+}
+
+fn source_kind(source: &str, node: &IdNode, seen: &mut Analysis) -> Option<Kind> {
+    parse(source, Some(node.clone()), None).ok().map(|t| {
+        // xrust parses ex:string/ex:true/etc. as the corresponding core
+        // Transform, losing the function namespace. Conservatively keep any
+        // expression containing a prefixed call unknown. Tokens distinguish
+        // calls from axis steps, QNames in paths, and quoted text.
+        let extension = crate::numeric_values::tokens(source).is_some_and(|tokens| {
+            tokens.windows(2).any(|pair| {
+                pair[1] == "("
+                    && pair[0].split_once(':').is_some_and(|(prefix, local)| {
+                        NcName::try_from(prefix).is_ok() && NcName::try_from(local).is_ok()
+                    })
+            })
+        });
+        if extension {
+            Kind::Unknown
+        } else {
+            kind(&t, node, seen)
+        }
+    })
 }
 
 // The result types of the XPath 1.0 core functions xrust 2.3.0 does not parse into
@@ -163,7 +185,10 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Analysis, input: Kin
             }
         }
         Invoke(name, ..) => invoked_kind(name),
-        Call(..) => Kind::Unknown,
+        // XPath 2.0 bindings are accepted by xrust's parser, but are not stylesheet
+        // declarations. Their bodies can return booleans, including through a bound
+        // variable, so do not let the nonboolean fallback admit them.
+        Call(..) | Loop(..) | VariableDeclaration(..) => Kind::Unknown,
         _ => Kind::Other,
     }
 }
@@ -221,13 +246,13 @@ fn reference_kind(declaration: &IdNode, seen: &mut Analysis) -> Kind {
     }
 }
 
-// A missing select denotes a result tree fragment or an empty string.
+// A missing select denotes a result tree fragment or an empty string. prepare()
+// makes boolean copy-of construct text and refuses boolean/unknown xsl:sequence,
+// so xrust cannot leak those atomic values through a content declaration.
 fn declaration_kind(node: &IdNode, seen: &mut Analysis) -> Kind {
     match node.get_attribute_node(&QName::try_from("select").unwrap()) {
         None => Kind::Other,
-        Some(a) => parse(&a.value().to_string(), Some(node.clone()), None)
-            .map(|t| kind(&t, node, seen))
-            .unwrap_or(Kind::Unknown),
+        Some(a) => source_kind(&a.value().to_string(), node, seen).unwrap_or(Kind::Unknown),
     }
 }
 
@@ -278,26 +303,29 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
     let mut booleans = Vec::new();
     while let Some(n) = stack.pop() {
         stack.extend(n.child_iter());
-        if !is_xsl(&n, "value-of") {
+        let sequence = is_xsl(&n, "sequence");
+        if !(is_xsl(&n, "value-of") || is_xsl(&n, "copy-of") || sequence) {
             continue;
         }
         // Preserve xrust's validation of disable-output-escaping. Both valid choices
         // are equivalent for the plain ASCII words this adaptation emits.
         let escaping = attr(&n, "disable-output-escaping");
-        if !matches!(escaping.as_str(), "" | "yes" | "no") {
+        if is_xsl(&n, "value-of") && !matches!(escaping.as_str(), "" | "yes" | "no") {
             continue;
         }
         let select = attr(&n, "select");
         // Invalid XPath remains xrust's ordinary compile error.
-        let Ok(t) = parse(&select, Some(n.clone()), None) else {
+        let Some(result) = source_kind(&select, &n, &mut Analysis::new()) else {
             continue;
         };
-        match kind(&t, &n, &mut Analysis::new()) {
-            Kind::Boolean => booleans.push((n, select)),
+        match result {
+            Kind::Boolean if !sequence => booleans.push((n, select)),
             Kind::Other => {},
-            Kind::Unknown => return Err(Error::InvalidArgument {
+            // xsl:sequence preserves atomic types. Turning its boolean into text
+            // would change subsequent boolean/numeric operations, so refuse it.
+            Kind::Boolean | Kind::Unknown => return Err(Error::InvalidArgument {
                 name: "stylesheet".into(),
-                detail: format!("refused: xsl:value-of select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops (ledger #2520; README, The XSLT subset); use xsl:choose with explicit true/false text, or supply a string"),
+                detail: format!("refused: xsl:{} select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops (ledger #2520; README, The XSLT subset); use xsl:choose with explicit true/false text, or supply a string", n.name().unwrap().local_name().to_string()),
             }),
         }
     }
@@ -383,7 +411,14 @@ mod tests {
             ),
             (
                 Kind::Unknown,
-                &["ex:f()", "ex:lang('en')", "unparsed-entity-uri('a')"][..],
+                &[
+                    "ex:f()",
+                    "ex:lang('en')",
+                    "ex:string(true())",
+                    "ex:true()",
+                    "ex:number(true())",
+                    "unparsed-entity-uri('a')",
+                ][..],
             ),
         ] {
             for function in functions {
