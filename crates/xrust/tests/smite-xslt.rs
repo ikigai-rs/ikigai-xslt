@@ -716,3 +716,8 @@ fn xslt_builtin_templates_cover_modes_and_node_types() {
     assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="m"/></out></xsl:template><xsl:template match="item" mode="m">M</xsl:template><xsl:template match="item">D</xsl:template>"#)), "<out>TM</out>");
     assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="undeclared"/></out></xsl:template>"#)), "<out>TB</out>");
 }
+
+#[test]
+fn xslt_child_name_patterns_do_not_match_attributes() {
+    assert_eq!(transform_str("<doc a='A'/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/@*"/></out></xsl:template><xsl:template match="*">element</xsl:template>"#)), "<out>A</out>");
+}

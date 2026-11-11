@@ -24,6 +24,7 @@ as published on crates.io, they give exactly the `src/` this repository carries 
 | 9 | [`xsl:text` escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |
 | 10 | [equal-priority templates select the first](xrust-template-ties.md) | [patch](xrust-template-ties.patch) | #3493 |
 | 11 | [missing built-in templates](xrust-builtin-templates.md) | [patch](xrust-builtin-templates.patch) | #3493 |
+| 12 | [child name patterns match attributes](xrust-pattern-node-types.md) | [patch](xrust-pattern-node-types.patch) | #3493 |
 
 Patch 6 changes the same file as patch 1 and applies only on top of it; the others touch
 different code and can be filed in any order, though a test in patches 3 to 8 needs patch

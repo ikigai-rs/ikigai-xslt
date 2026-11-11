@@ -1,0 +1,46 @@
+diff --git a/src/pattern.rs b/src/pattern.rs
+index eca5ab1..23284b6 100644
+--- a/src/pattern.rs
++++ b/src/pattern.rs
+@@ -257,20 +257,14 @@ fn is_match<N: Node>(a: &Axis, nt: &NodeTest, i: &Item<N>) -> bool {
+                 _ => false,
+             }
+         }
+-        Axis::SelfAxis => {
+-            // Select item if it is an element-type node
+-            nt.matches_item(i)
+-            /*            match i {
+-                Item::Node(n) => {
+-                    if n.node_type() == NodeType::Element {
+-                        nt.matches(i)
+-                    } else {
+-                        false
+-                    }
+-                }
+-                _ => false,
+-            }*/
+-        }
++        Axis::SelfAxis => match i {
++            Item::Node(n) => match nt {
++                NodeTest::Name(_) => n.node_type() == NodeType::Element && nt.matches(n),
++                NodeTest::Kind(_) => !matches!(n.node_type(), NodeType::Attribute | NodeType::Namespace)
++                    && nt.matches(n),
++            },
++            _ => false,
++        },
+         Axis::Parent => {
+             // Select the parent node
+             match i {
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index c75bf7f..064ba36 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -716,3 +716,8 @@ fn xslt_builtin_templates_cover_modes_and_node_types() {
+     assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="m"/></out></xsl:template><xsl:template match="item" mode="m">M</xsl:template><xsl:template match="item">D</xsl:template>"#)), "<out>TM</out>");
+     assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="undeclared"/></out></xsl:template>"#)), "<out>TB</out>");
+ }
++
++#[test]
++fn xslt_child_name_patterns_do_not_match_attributes() {
++    assert_eq!(transform_str("<doc a='A'/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/@*"/></out></xsl:template><xsl:template match="*">element</xsl:template>"#)), "<out>A</out>");
++}

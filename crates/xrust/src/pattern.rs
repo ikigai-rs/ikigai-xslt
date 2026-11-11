@@ -257,20 +257,14 @@ fn is_match<N: Node>(a: &Axis, nt: &NodeTest, i: &Item<N>) -> bool {
                 _ => false,
             }
         }
-        Axis::SelfAxis => {
-            // Select item if it is an element-type node
-            nt.matches_item(i)
-            /*            match i {
-                Item::Node(n) => {
-                    if n.node_type() == NodeType::Element {
-                        nt.matches(i)
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            }*/
-        }
+        Axis::SelfAxis => match i {
+            Item::Node(n) => match nt {
+                NodeTest::Name(_) => n.node_type() == NodeType::Element && nt.matches(n),
+                NodeTest::Kind(_) => !matches!(n.node_type(), NodeType::Attribute | NodeType::Namespace)
+                    && nt.matches(n),
+            },
+            _ => false,
+        },
         Axis::Parent => {
             // Select the parent node
             match i {
