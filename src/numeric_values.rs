@@ -514,6 +514,33 @@ fn avt(source: &str) -> String {
     avt_at(source, None).unwrap()
 }
 
+// Parenthesized primaries carry identity predicate compositions in xrust's AST.
+// Follow those without adding parser nesting to a result already known to be scalar.
+fn singleton_result(mut ast: &xrust::transform::Transform<IdNode>) -> bool {
+    use xrust::transform::Transform;
+    for _ in 0..crate::limits::MAX_EXPR_DEPTH * 4 {
+        match ast {
+            Transform::Literal(xrust::item::Item::Value(_))
+            | Transform::Count(_)
+            | Transform::String(_)
+            | Transform::StringLength(_) => return true,
+            Transform::Compose(steps) => {
+                let Some(last) = steps
+                    .iter()
+                    .rev()
+                    .find(|step| !matches!(step, Transform::Compose(v) if v.is_empty()))
+                else {
+                    return false;
+                };
+                ast = last;
+            }
+            Transform::SequenceItems(items) if items.len() == 1 => ast = &items[0],
+            _ => return false,
+        }
+    }
+    false
+}
+
 pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
     let mut stack = vec![doc.clone()];
     while let Some(node) = stack.pop() {
@@ -542,7 +569,16 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
                 Some(avt_at(&source, Some(&node))?)
             } else if local == "value-of" && attr_local == "select" {
                 let expression = expression_at(&source, Some(&node))?.unwrap_or(source.clone());
-                Some(format!("({expression})[1]"))
+                // Proven singleton results need no first-item filter. In particular,
+                // preserve the admitted depth boundary for literals and count().
+                let singleton =
+                    xrust::parser::xpath::parse::<IdNode>(&source, Some(node.clone()), None)
+                        .is_ok_and(|ast| singleton_result(&ast));
+                Some(if singleton {
+                    expression
+                } else {
+                    format!("({expression})[1]")
+                })
             } else if matches!(attr_local.as_str(), "select" | "test" | "use" | "value") {
                 expression_at(&source, Some(&node))?
             } else {
