@@ -730,3 +730,15 @@ fn xslt_avt_doubled_braces_and_braces_in_xpath_strings() {
         assert!(xrust::parser::avt::parse::<xrust::trees::smite::RNode>(invalid, None).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn xslt_union_is_in_document_order_without_duplicate_nodes() {
+    for (select, expected) in [
+        ("doc/v[2] | doc/v[1]", "210"),
+        ("doc/v | doc/v", "210"),
+        ("doc/v[2] | doc/v | doc/v[1]", "210"),
+    ] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:for-each select='{select}'><xsl:value-of select='.'/></xsl:for-each></out></xsl:template>"));
+        assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), format!("<out>{expected}</out>"));
+    }
+}

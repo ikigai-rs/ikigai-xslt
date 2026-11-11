@@ -124,7 +124,7 @@ pub(crate) fn value_comparison<
 
 /// Each function in the supplied vector is evaluated, and the resulting sequences are combined into a single sequence.
 /// All items must be nodes.
-/// TODO: eliminate duplicates, sort by document order (XPath 3.1 3.4.2).
+/// Eliminate duplicates and sort by document order (XPath 3.1 3.4.2).
 pub(crate) fn union<
     N: Node,
     F: FnMut(&str) -> Result<(), Error>,
@@ -146,6 +146,13 @@ pub(crate) fn union<
         }
         result.append(&mut c)
     }
-    // TODO: eliminate duplicates and sort into document order
+    result.sort_by(|a, b| match (a, b) {
+        (Item::Node(a), Item::Node(b)) => a.cmp_document_order(b),
+        _ => unreachable!("union operands were checked to be nodes"),
+    });
+    result.dedup_by(|a, b| match (a, b) {
+        (Item::Node(a), Item::Node(b)) => a.is_same(b),
+        _ => false,
+    });
     Ok(result)
 }

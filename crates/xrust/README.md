@@ -172,3 +172,5 @@ Built-in template rules now cover every node kind and preserve the selected mode
 through recursion. See `docs/upstream/xrust-builtins.md`.
 Attribute value templates now honor doubled braces and braces inside XPath string
 literals. See `docs/upstream/xrust-avt-braces.md`.
+Union selections now sort nodes in document order and remove duplicate identities,
+as navigation already does. See `docs/upstream/xrust-union-order.md`.
