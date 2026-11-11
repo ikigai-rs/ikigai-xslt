@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:foaf="http://xmlns.com/foaf/0.1/">
+  <foaf:Person>
+    <foaf:name>Ada</foaf:name>
+    <foaf:homepage rdf:resource="https://example.org/"/>
+    <foaf:weblog rdf:resource="https://example.org/blog"/>
+    <foaf:workplaceHomepage rdf:resource="https://work.example.org/"/>
+    <foaf:schoolHomepage rdf:resource="https://school.example.org/"/>
+    <foaf:openid rdf:resource="https://id.example.org/"/>
+    <foaf:page rdf:resource="https://example.org/about"/>
+  </foaf:Person>
+</rdf:RDF>
