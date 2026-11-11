@@ -37,7 +37,9 @@ use xrust::{item::Node, value::Value};
 
 // Each token retains its source spelling. Names include hyphens and QNames;
 // an asterisk is interpreted as multiplication only after a complete operand.
-fn tokens(s: &str) -> Option<Vec<&str>> {
+// Also used to recognize namespaced calls before boolean type analysis: xrust
+// discards their namespaces when their local names match core functions.
+pub(crate) fn tokens(s: &str) -> Option<Vec<&str>> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < s.len() {
@@ -186,6 +188,24 @@ impl Parser<'_> {
     }
 
     fn expression_inner(&mut self, min: u8) -> Option<Expr> {
+        if min == 1 && self.peek() == Some("if") && self.tokens.get(self.pos + 1) == Some(&"(") {
+            self.take();
+            self.expect("(")?;
+            let condition = self.expression(1)?;
+            self.expect(")")?;
+            self.expect("then")?;
+            let yes = self.expression(1)?;
+            self.expect("else")?;
+            let no = self.expression(1)?;
+            return Some(Expr {
+                text: format!("(if ({condition}) then {yes} else {no})"),
+                kind: if yes.kind == no.kind {
+                    yes.kind
+                } else {
+                    Kind::Unknown
+                },
+            });
+        }
         let mut left = if matches!(self.peek(), Some("-" | "+")) {
             let sign = self.take()?.to_string();
             let value = self.expression(7)?;
@@ -395,12 +415,29 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
         ambiguous: false,
         item_name,
     };
-    let Some(result) = parser.expression(1) else {
-        return Ok(None);
-    };
-    if parser.pos != parser.tokens.len() {
+    let result = parser.expression(1);
+    if result.is_none() || parser.pos != parser.tokens.len() {
+        // xrust also accepts syntax outside this source adapter's grammar (for
+        // example XPath 2.0 for/let bindings). Leaving a conversion in that syntax
+        // untouched would bypass the boolean guard. Refuse valid expressions that
+        // might need adaptation; malformed XPath remains the compiler's error.
+        if node.is_some()
+            && parser.tokens.iter().any(|t| {
+                matches!(
+                    *t,
+                    "number" | "string" | "+" | "-" | "*" | "div" | "mod" | "<" | ">" | "<=" | ">="
+                )
+            })
+            && xrust::parser::xpath::parse(source, node.cloned(), None).is_ok()
+        {
+            return Err(Error::InvalidArgument {
+                name: "stylesheet".into(),
+                detail: format!("refused: use xsl:choose to convert values explicitly. Numeric/string conversion in `{source}` uses syntax whose operand types cannot be established"),
+            });
+        }
         return Ok(None);
     }
+    let result = result.unwrap();
     // Mixed parameter types need an explicit conversion (ledger #2668).
     if parser.ambiguous {
         return Err(Error::InvalidArgument {

@@ -223,7 +223,9 @@ these operands. Before compilation, this crate converts each numeric operand thr
 string value of its first item, trimming XML whitespace; empty selections and nonnumeric
 text yield `NaN`. `number()` without an argument uses the context node. XPath 1.0 operator
 precedence, predicates, variable references, names and string literals are preserved.
-Syntax outside this adapter's XPath 1.0 grammar is left to xrust. Generated expressions
+Conditional `if (...) then ... else ...` expressions propagate both arms' types through
+conversions. Valid syntax outside the adapter's grammar is refused when it may need a
+numeric or string adaptation; malformed XPath is left to xrust. Generated expressions
 obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the conversion
 adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
 `substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
@@ -235,7 +237,7 @@ use the bounded analysis below; ambiguous boolean/nonboolean numeric or string c
 are refused as `InvalidArgument` naming `stylesheet`. `tests/numeric_conversion.rs` covers
 the public path; `tests/xrust_subset.rs` pins the unadapted upstream failures.
 
-**Boolean `xsl:value-of` (#2520):** this crate converts known boolean results to explicit
+**Boolean `xsl:value-of` and `xsl:copy-of` (#2520, #3412):** this crate converts known boolean results to explicit
 `true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
 once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
 not trigger this adaptation. Boolean variables are followed through their lexical declarations,
@@ -248,18 +250,25 @@ boolean, which holds only if every call site gives exactly that kind under it; t
 analysis of one expression visits at most `16 × MAX_EXPR_DEPTH` declarations. XPath 1.0
 core functions have their fixed result types (`lang` boolean, `namespace-uri` string
 included); extension functions are unknown, in `xsl:value-of` and in numeric or string
-conversion alike. String-only parameters remain accepted; consistently boolean parameters
+conversion alike. Expressions containing namespace-qualified function calls remain
+conservatively unknown even when the local name matches a core function: xrust otherwise
+discards that namespace during parsing. String-only parameters remain accepted; consistently boolean parameters
 are adapted; mixed or unknown types are refused. Global parameters retain the request-argument rule: strings can override
-the default, so a boolean default is refused.
+the default, so a boolean default is refused. Boolean `copy-of` constructs text even in
+variable or parameter content, rather than letting xrust store an atomic boolean in a
+result tree fragment. Boolean or unknown `xsl:sequence` results are refused because that
+instruction preserves atomic types. XPath `for` and `let` binding results are unknown;
+their local bindings are outside this stylesheet-declaration analysis.
 
 | construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
 | --- | --- | --- | --- |
 | `<xsl:value-of select="1 &gt; 0"/>` (also `false()`, comparisons and boolean functions) | `true` (or `false`) | empty string for either boolean | adapted before compilation |
+| `<xsl:variable name="v"><xsl:copy-of select="false()"/></xsl:variable>` followed by `value-of $v` | `false` | empty string | boolean `copy-of` constructs text before compilation; also covers parameter content and defaults |
 | `xsl:value-of` of a template-local parameter whose default and all call-site values are nonboolean | the supplied/default string or node value | correct | accepted; pinned with CMS links, gonk, and RSS stylesheet fixtures |
 | `xsl:value-of` of a template-local parameter whose default and all call-site values are boolean | `true` / `false` | empty string | adapted before compilation |
 | `xsl:value-of` of a global boolean-default parameter, a local parameter with mixed boolean/nonboolean incoming values, or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
 
-Direct boolean results of `value-of` and explicit `string()` conversions are adapted.
+Direct boolean results of `value-of` and `copy-of`, and explicit `string()` conversions, are adapted.
 Other implicit boolean-to-string conversions (for example `concat('[', true(), ']')`)
 remain defective; use `string(true())` explicitly. A literal attribute namespace
 must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
