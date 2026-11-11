@@ -189,6 +189,11 @@ root template `count(//item)` is 3 only because the context node there IS the ro
 
 ## 7. xsl:value-of over several nodes concatenates them all
 
+The unpublished audit adapts this in ikigai-xslt, including core string-function
+arguments and AVTs, by converting the first node. The carried engine retains its
+later-version sequence model; the reproduction below describes the engine without
+that compatibility adaptation.
+
 Input: PLAIN.
 
 ```xml
@@ -226,7 +231,7 @@ disappears into it.
 ikigai-xslt 0.3.0 works around it: for the html method it gives each empty, non-void element
 in no namespace an empty text child before calling `to_xml`, so xrust's own serializer writes
 the end tag (`src/html.rs`). Void elements stay `<br/>`, not §16.2's `<br>`, and script and
-style content is still escaped.
+style text requiring escaping is now refused by ikigai-xslt before serialization.
 
 ## 9. Whitespace-only xsl:text is dropped (fixed in `ikigai-xrust`)
 
@@ -523,3 +528,13 @@ original focus. Oversized digit-only literals become `number('digits')`, which
 uses xrust's floating-point fallback. Unary signs use multiplication by a signed
 factor, preserving negative zero and avoiding xrust's unimplemented `unary_expr`
 evaluator. Generated nesting still obeys `MAX_EXPR_DEPTH`.
+
+
+## Unpublished audit, 2026-11-11
+
+See [the audit matrix](xslt-audit.md) for public-path measurements and reproductions.
+Additional carried fixes have their own patches in [upstream/README.md](upstream/README.md):
+text escaping, child-axis pattern node types, built-in templates and modes, AVT braces,
+and union ordering/deduplication. XPath 1.0 first-node string conversion and large-number
+rounding stay in the compatibility adapter. Namespace aliasing and unsupported explicit
+serialization options are refused, rather than silently ignored.

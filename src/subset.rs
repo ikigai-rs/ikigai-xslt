@@ -293,7 +293,8 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
     // The context the element's OWN expressions are evaluated in, and its children's.
     let (own_at_root, children_at_root) = match local.as_str() {
         "template" => {
-            let root = get("match").is_some_and(|m| m.trim() == "/");
+            // A named root rule can also be called with a non-root focus.
+            let root = get("name").is_none() && get("match").is_some_and(|m| m.trim() == "/");
             (root, root)
         }
         // `select` is evaluated where the for-each is; its body, once per selected node.

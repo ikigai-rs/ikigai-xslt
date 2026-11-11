@@ -547,7 +547,7 @@ fn prepare_precedence(declarations: &mut Vec<Declaration>, precedence: &[usize])
                 priorities.push((index, rank, priority));
             }
         }
-        if named(node, "output") && precedence.len() > 1 {
+        if named(node, "output") {
             outputs.push((index, rank));
         }
         if precedence.len() > 1 && contains_apply_imports(node) {
@@ -628,6 +628,9 @@ fn contains_apply_imports(node: &IdNode) -> bool {
 // Validate with xrust, then classify a single pattern, rather than using its
 // terminal node test (which loses both path steps and union alternatives).
 fn default_priority(node: &IdNode) -> Result<f64> {
+    if attribute(node, "match").trim_start().starts_with("//") {
+        return Err(invalid("refused: a leading // in a match pattern is not supported; use a name pattern such as item, which already matches at any depth"));
+    }
     let explicit = attribute(node, "priority");
     if !explicit.is_empty() {
         return explicit

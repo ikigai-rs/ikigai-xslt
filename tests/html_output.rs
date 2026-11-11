@@ -162,11 +162,10 @@ fn the_endpoint_serves_html() {
     );
 }
 
-/// Not done, on purpose, and pinned so the day it changes is a decision: XSLT 1.0 §16.2 writes
-/// `script` and `style` content unescaped, and this crate (like xrust) escapes it, so an
-/// INLINE script with a quote or a `<` in it is broken. See `src/html.rs`.
+/// The XML-compatible serializer cannot preserve HTML raw text; refuse before returning
+/// a script whose executable text would be changed. See `src/html.rs`.
 #[test]
-fn inline_script_text_is_still_escaped() {
+fn inline_script_text_that_needs_raw_serialization_is_refused() {
     let out = transform_xml(
         SRC,
         &style(
@@ -175,6 +174,28 @@ fn inline_script_text_is_still_escaped() {
         ),
         false,
     )
-    .expect("renders");
-    assert_eq!(out, "<script>if (a &lt; b) { x = &apos;y&apos;; }</script>");
+    .expect_err("refused before serializing a broken inline script");
+    assert!(
+        out.starts_with("invalid argument `stylesheet`: refused:"),
+        "{out}"
+    );
+    assert!(out.contains("inline HTML script"), "{out}");
+}
+
+/// Valued boolean attributes are valid HTML and intentionally retain XML-compatible
+/// serialization. This crate does not claim every XSLT section 16.2 spelling choice.
+#[test]
+fn html_boolean_attributes_retain_their_documented_values() {
+    assert_eq!(
+        transform_xml(
+            SRC,
+            &style(
+                Some("html"),
+                "<input checked='checked' disabled='disabled'/>"
+            ),
+            false
+        )
+        .unwrap(),
+        "<input checked='checked' disabled='disabled'/>"
+    );
 }

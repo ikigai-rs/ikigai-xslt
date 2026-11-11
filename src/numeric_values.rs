@@ -130,7 +130,7 @@ impl Parser<'_> {
             }
             Kind::Other => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     numeric(&value.text)
                 }
@@ -139,7 +139,7 @@ impl Parser<'_> {
             // since the carried xrust's boolean and node conversions (ledger #3343).
             Kind::Unknown => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     value.text.clone()
                 }
@@ -337,11 +337,26 @@ impl Parser<'_> {
                         let arg = args.first().unwrap_or(&default);
                         let converted = self.conversion(arg, token == "string");
                         Expr::other(if token == "number" {
-                            format!("number({converted})")
+                            format!("(number({converted}) * 1.0)")
                         } else {
                             converted
                         })
                     } else {
+                        // XPath 1.0 string arguments use the first node's string value.
+                        // xrust's later-version sequence conversion concatenates them.
+                        let string_args = match token.as_str() {
+                            "concat" | "contains" | "starts-with" | "substring-before"
+                            | "substring-after" | "translate" => args.len(),
+                            "string-length" | "normalize-space" | "substring" | "lang" => {
+                                args.len().min(1)
+                            }
+                            _ => 0,
+                        };
+                        for arg in args.iter_mut().take(string_args) {
+                            let text = self.conversion(arg, true);
+                            *arg = Expr::other(text);
+                            self.changed = true;
+                        }
                         let text = format!(
                             "{token}({})",
                             args.iter()
@@ -377,11 +392,15 @@ impl Parser<'_> {
                 } else if token.ends_with(':') && self.peek() == Some("*") {
                     self.take();
                     Expr::other(format!("{token}*"))
-                } else if token.bytes().all(|c| c.is_ascii_digit()) && token.parse::<i64>().is_err()
+                } else if token.bytes().all(|c| c.is_ascii_digit())
+                    && token
+                        .parse::<u64>()
+                        .map_or(true, |value| value >= (1_u64 << 53))
                 {
-                    // XPath 1.0 literals are doubles; xrust first tries an i64.
+                    // XPath 1.0 literals are doubles. xrust's exact integers can
+                    // distinguish adjacent integers above the double precision limit.
                     self.changed = true;
-                    Expr::other(format!("number('{token}')"))
+                    Expr::other(format!("{token}.0"))
                 } else {
                     Expr::other(token)
                 }
@@ -430,7 +449,27 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
             && parser.tokens.iter().any(|t| {
                 matches!(
                     *t,
-                    "number" | "string" | "+" | "-" | "*" | "div" | "mod" | "<" | ">" | "<=" | ">="
+                    "number"
+                        | "string"
+                        | "concat"
+                        | "contains"
+                        | "starts-with"
+                        | "substring-before"
+                        | "substring-after"
+                        | "translate"
+                        | "string-length"
+                        | "normalize-space"
+                        | "substring"
+                        | "lang"
+                        | "+"
+                        | "-"
+                        | "*"
+                        | "div"
+                        | "mod"
+                        | "<"
+                        | ">"
+                        | "<="
+                        | ">="
                 )
             })
             && xrust::parser::xpath::parse(source, node.cloned(), None).is_ok()
@@ -472,12 +511,9 @@ fn avt_at(source: &str, node: Option<&IdNode>) -> Result<String> {
                 break;
             }
             let original = &source[start..i];
+            let adapted = expression_at(original, node)?.unwrap_or_else(|| original.to_string());
             result.push('{');
-            result.push_str(
-                expression_at(original, node)?
-                    .as_deref()
-                    .unwrap_or(original),
-            );
+            result.push_str(&format!("string(({adapted})[1])"));
             result.push('}');
             i += 1;
         } else {
@@ -526,7 +562,15 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
             {
                 Some(avt_at(&source, Some(&node))?)
             } else if matches!(attr_local.as_str(), "select" | "test" | "use" | "value") {
-                expression_at(&source, Some(&node))?
+                // XSLT 1.0 value-of converts the first node, not the whole sequence.
+                // Keep this compatibility rule here rather than changing xrust's
+                // sequence model for its XPath/XSLT 3.0 consumers.
+                if local == "value-of" && attr_local == "select" {
+                    let adapted = expression_at(&source, Some(&node))?.unwrap_or(source.clone());
+                    Some(format!("string(({adapted})[1])"))
+                } else {
+                    expression_at(&source, Some(&node))?
+                }
             } else {
                 None
             };
@@ -600,12 +644,13 @@ mod tests {
     #[test]
     fn avt_text_escaped_braces_and_quoted_braces_are_preserved() {
         let source = "é + 1 {{number(/r)}} {concat('}', /r + 1)} {{x}}";
-        let expected = format!(
-            "é + 1 {{{{number(/r)}}}} {{concat('}}', ({} + {}))}} {{{{x}}}}",
-            numeric("/r"),
-            numeric("1")
+        let stylesheet = format!(
+            r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"><xsl:template match="/"><e a="{source}"/></xsl:template></xsl:stylesheet>"#
         );
-        assert_eq!(avt(source), expected);
+        assert_eq!(
+            crate::transform_xml("<r>2</r>", &stylesheet, false).unwrap(),
+            "<e a='é + 1 {number(/r)} }3 {x}'/>"
+        );
         assert_eq!(avt("{number(/r)"), "{number(/r)");
     }
 
