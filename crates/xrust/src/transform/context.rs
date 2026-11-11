@@ -474,11 +474,20 @@ impl<N: Node> Context<N> {
         let mut candidates =
             self.templates
                 .iter()
-                .filter(|t| t.mode == *m)
+                .filter(|t| t.priority.is_none() || t.mode == *m)
                 .try_fold(vec![], |mut cand, t| {
                     let e = t.pattern.matches(self, stctxt, i);
                     if e {
-                        cand.push(t.clone())
+                        if t.priority.is_none() {
+                            let mut builtin = (**t).clone();
+                            builtin.mode = m.clone();
+                            if let Transform::ApplyTemplates(_, mode, _) = &mut builtin.body {
+                                *mode = m.clone();
+                            }
+                            cand.push(Rc::new(builtin));
+                        } else {
+                            cand.push(t.clone());
+                        }
                     }
                     Ok(cand)
                 })?;

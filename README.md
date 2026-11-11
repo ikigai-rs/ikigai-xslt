@@ -185,9 +185,10 @@ a shell.
 | position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
 | a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
 
-"Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
+"Away from the root" is everywhere but the body of an unnamed `xsl:template match="/"` outside any
 `xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
-root, xrust's answer is right, and nothing is refused. The scan is lexical and
+root, xrust's answer is right, and nothing is refused. A template with both `name` and
+`match="/"` is conservative: named calls can supply a non-root context. The scan is lexical and
 conservative: a `[`, `//` or `prefix:name` inside a string literal is text, `a//b` and
 `/doc//b` are not a leading `//`, and `[1]` or `[position() = 1]` is not a `[last()]` predicate.
 
@@ -226,9 +227,10 @@ numeric or string adaptation; malformed XPath is left to xrust. Generated expres
 obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the conversion
 adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
 `substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
-pair of selected items to numbers, preserving XPath 1.0's existential semantics and
-xrust's lexical comparison of strings. Integer literals larger than `i64`, which xrust
-refuses on purpose (its own `xpath_bigint` test), are rewritten to `number('…')`. `string(true())` / `string(false())` return `true` / `false`;
+pair of selected items to numbers, preserving XPath 1.0's existential semantics, including numeric comparison of strings.
+Integer literals at or above 2^53 are compiled as doubles, including those beyond `i64`;
+adjacent integers can round to the same XPath 1.0 number. `number()` conversions also
+produce doubles rather than xrust's exact integers. `string(true())` / `string(false())` return `true` / `false`;
 the strings `'true'` and `'false'` still convert to `NaN`. Variable and parameter types
 use the bounded analysis below; one that may be boolean or not (refused through 0.8.1) is
 left to xrust, which converts either. What still needs the adapter is the relational
@@ -263,14 +265,20 @@ attribute's namespace on its element (ledger #3343), so nothing is refused. The 
 up for upstream in
 [`docs/upstream/xrust-literal-attribute-namespace.md`](docs/upstream/xrust-literal-attribute-namespace.md).
 
-⚠ **Still silently wrong: an answer, no error.** This case is a recorded limitation;
-it is not refused here. Whether a path selects one node or several is a property of
-the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
-`item` often is not).
+**XPath 1.0 string conversion (unpublished audit):** `xsl:value-of`, explicit `string()`,
+string arguments to core string functions, and attribute value template expressions take
+only the first selected node. Empty selections become an empty string. Union selections
+are in document order without duplicate nodes. The compatibility adapter enforces the
+1.0 conversions without changing xrust's later-version sequence model.
 
-| construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
-| --- | --- | --- | --- |
-| `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
+**Output refusals (unpublished audit):** namespace aliasing (`xsl:namespace-alias`),
+non-UTF-8 output encodings and explicit `omit-xml-declaration="no"` are refused as
+`InvalidArgument` naming `stylesheet` and the construct. XML output omits the declaration;
+use `omit-xml-declaration="yes"` and UTF-8. A leading `//` in a match pattern is also
+refused by name; a name pattern already matches that name at any depth.
+
+The synthetic [audit matrix](docs/xslt-audit.md) records the measured answers and
+regressions. This remains a bounded subset, not an XSLT conformance claim.
 
 ### `method="html"` is serialized as HTML
 
@@ -288,11 +296,16 @@ alike:
   makes the output byte for byte what gonk's own pass wrote (`ikigai-gonk/src/render.rs`);
 - an element in a namespace (inline SVG) is XML, as XSLT 1.0 §16.2 says: `<path/>`.
 
-Everything else (escaping, quoting, namespace declarations) is xrust's, unchanged. ⚠ One
-part of §16.2 is not done: `script` and `style` content is still escaped, so an INLINE script
-with a `'` or a `<` in it breaks (`'` becomes `&apos;`). Writing it raw would make any data a
-stylesheet copies into a script executable markup, so it stays a host's decision; keep scripts
-and styles in their own files.
+Escaping, quoting and namespace declarations otherwise use xrust's XML-compatible
+serialization. Boolean attributes retain their values (`checked='checked'`), and void
+elements retain the trailing slash; both forms have the intended behavior in HTML.
+This is not a complete implementation of XSLT 1.0 section 16.2 serialization.
+
+An inline `script` or `style` whose text would be escaped is refused with a typed
+`InvalidArgument` naming `stylesheet`; keep that content in external files. The check
+runs on the result tree, so dynamically generated text is covered and no partial document
+is returned. Plain inline text that needs no escaping and empty external script elements
+continue to work. Namespaced elements retain XML serialization.
 
 What the gaps cost a real stylesheet, and how one is written around them, is measured in
 gonk's renderer: everything a template would compute arrives as data on the node it

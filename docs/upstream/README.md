@@ -38,6 +38,19 @@ Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger 
   change to how patterns or the focus are evaluated, a design call for upstream;
 - an integer literal past `i64` (#2668): xrust's own `xpath_bigint` test requires it to be an
   error, so reading it as a double, as XPath 1.0 would, is upstream's call;
-- `xsl:value-of` over several nodes (case 7), XPath 1.0 relational comparison of strings, and
-  unary `-`/`+`: XPath 1.0 and 2.0 disagree on the first two, which is a design call; unary
-  signs were not reached.
+- `xsl:value-of` over several nodes (case 7), XPath 1.0 relational comparison of strings,
+  unary `-`/`+`, and large integer rounding: ikigai-xslt's compatibility adapter handles
+  these. The unpublished audit extends first-node conversion to string consumers and
+  AVTs and fixes rounding at 2^53. xrust retains its later-version value model.
+
+## Audit additions (2026-11-11)
+
+Apply after patches 1–8 above. Versions are unchanged; nothing is published.
+
+| issue | patch | ledger |
+| --- | --- | --- |
+| [xsl:text escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |
+| [child-axis name patterns match attributes](xrust-pattern-node-type.md) | [patch](xrust-pattern-node-type.patch) | #3493 |
+| [built-in template rules and modes](xrust-builtins.md) | [patch](xrust-builtins.patch) | #3493 |
+| [escaped and quoted braces in AVTs](xrust-avt-braces.md) | [patch](xrust-avt-braces.patch) | #3493 |
+| [union order and duplicate nodes](xrust-union-order.md) | [patch](xrust-union-order.patch) | #3493 |

@@ -586,54 +586,30 @@ where
 
     let whitespace_mgmt = parse_strip_preserve(styledoc.clone())?;
 
+    // Built-in text-only-copy rules exist in every mode (XSLT 1.0 section 5.8).
+    // Match node kinds directly, including namespace nodes, which pattern syntax
+    // does not expose. Attribute values must become text nodes, not attributes.
+    let mut builtins = Vec::new();
+    for kind in [KindTest::Document, KindTest::Element, KindTest::Text,
+        KindTest::Attribute, KindTest::Comment, KindTest::PI, KindTest::Namespace] {
+        let body = match kind {
+            KindTest::Document | KindTest::Element => Transform::ApplyTemplates(
+                Box::new(Transform::Step(NodeMatch::new(Axis::Child, NodeTest::Kind(KindTest::Any)))),
+                None,
+                vec![],
+            ),
+            KindTest::Text | KindTest::Attribute => Transform::LiteralText(
+                Box::new(Transform::ContextItem), OutputSpec::Normal),
+            _ => Transform::Empty,
+        };
+        builtins.push(Template::new(
+            Pattern::Selection(Branch::SingleStep(crate::pattern::Step::new(
+                Axis::SelfAxis, Axis::SelfAxis, NodeTest::Kind(kind)))),
+            body, None, vec![0], None, None, String::from("built-in"),
+        ));
+    }
     let mut newctxt = ContextBuilder::new()
-        // Define the builtin templates
-        // See XSLT 6.7. This implements text-only-copy.
-        // TODO: Support deep-copy, shallow-copy, deep-skin, shallow-skip and fail
-        // This matches "/" and processes the root element
-        .template(Template::new(
-            Pattern::try_from("/")?,
-            Transform::ApplyTemplates(
-                Box::new(Transform::Step(NodeMatch::new(
-                    Axis::Child,
-                    NodeTest::Kind(KindTest::Any),
-                ))),
-                None,
-                vec![],
-            ),
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("/"),
-        ))
-        // This matches "*" and applies templates to all children
-        .template(Template::new(
-            Pattern::try_from("child::*")?,
-            Transform::ApplyTemplates(
-                Box::new(Transform::Step(NodeMatch::new(
-                    Axis::Child,
-                    NodeTest::Kind(KindTest::Any),
-                ))),
-                None,
-                vec![],
-            ),
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("child::*"),
-        ))
-        // This matches "text()" and copies content
-        .template(Template::new(
-            Pattern::try_from("child::text()")?,
-            Transform::ContextItem,
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("child::text()"),
-        ))
+        .template_all(builtins)
         .template_all(templates)
         .output_definition(od.clone())
         .strip(whitespace_mgmt.0)
@@ -823,41 +799,20 @@ pub(crate) fn to_transform<N: Node>(
         NodeType::Element => {
             let qn = n.name().unwrap();
             if qn == *XSLTEXT {
-                let doe = n.get_attribute(&ATTRDOE);
-                if !doe.to_string().is_empty() {
-                    match (&doe.to_string()[..], od.method()) {
-                        ("yes", _) | (_, Method::Xml) => Ok(Transform::Literal(Item::Value(
-                            Rc::new(Value::from(n.to_string())),
-                        ))),
-                        ("no", _) => {
-                            let text = n
-                                .to_string()
-                                .replace('&', "&amp;")
-                                .replace('>', "&gt;")
-                                .replace('<', "&lt;")
-                                .replace('\'', "&apos;")
-                                .replace('\"', "&quot;");
-                            Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
-                        }
-                        _ => Err(Error::new(
-                            ErrorKind::TypeError,
-                            "disable-output-escaping only accepts values yes or no.".to_string(),
-                        )),
-                    }
-                } else if od.method() == Method::Text {
-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(
-                        n.to_string(),
-                    )))))
-                } else {
-                    let text = n
-                        .to_string()
-                        .replace('&', "&amp;")
-                        .replace('>', "&gt;")
-                        .replace('<', "&lt;")
-                        .replace('\'', "&apos;")
-                        .replace('\"', "&quot;");
-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
-                }
+                let output = match n.get_attribute(&ATTRDOE).to_string().as_str() {
+                    "" | "no" => OutputSpec::Normal,
+                    "yes" => OutputSpec::NoEscape,
+                    _ => return Err(Error::new(
+                        ErrorKind::TypeError,
+                        "disable-output-escaping only accepts values yes or no.",
+                    )),
+                };
+                // Store the characters, not their serialized spelling. The text node's
+                // output hint tells the serializer whether to escape them exactly once.
+                Ok(Transform::LiteralText(
+                    Box::new(Transform::Literal(Item::Value(Rc::new(Value::from(n.to_string()))))),
+                    output,
+                ))
             } else if qn == *XSLVALUEOF {
                 let sel = n.get_attribute(&ATTRSELECT);
                 let doe = n.get_attribute(&ATTRDOE);

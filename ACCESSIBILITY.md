@@ -21,7 +21,7 @@ report a barrier. It is not a conformance claim. Adapted from the
   call void keeps its end tag (`<script src='a.js'></script>`, `<div></div>`), so a browser does
   not misnest the rest of the page.
 - **Errors and refusals** (`src/lib.rs`, `src/limits.rs`, `src/subset.rs`,
-  `src/parameters.rs`, `src/boolean_values.rs`, `src/numeric_values.rs`, `src/modules.rs`): a missing input names
+  `src/parameters.rs`, `src/boolean_values.rs`, `src/numeric_values.rs`, `src/modules.rs`, `src/output_contract.rs`): a missing input names
   it (`src` or `stylesheet`); a bound past its limit names the input, the depth found, the limit
   and why (`the document nests 70 elements deep, deeper than 64 …`); an unsupported construct is
   refused by name; a transform past its time budget, a refusal while too many transforms are
@@ -49,7 +49,7 @@ host that serves the result owns the page around it.
 - `tests/html_output.rs`: `an_empty_non_void_element_keeps_its_end_tag_and_a_void_one_has_none`,
   `an_element_in_a_namespace_is_serialized_as_xml`, `escaping_is_unchanged`,
   `with_no_output_method_an_html_root_means_html`, `the_endpoint_serves_html` and
-  `inline_script_text_is_still_escaped` pin the html method's serialization.
+  `inline_script_text_that_needs_raw_serialization_is_refused` pin the html method's serialization.
 - `tests/xml_depth.rs`, `tests/time_budget.rs`
   (`a_transform_is_answered_within_its_budget_and_overdue_work_is_capped`),
   `tests/engine_panic.rs` (`copying_the_document_node_is_an_error_not_a_panic` and the rest),
@@ -66,9 +66,10 @@ host that serves the result owns the page around it.
 
 Found by reading the source on 2026-10-31, not by testing with people or assistive technology:
 
-- `script` and `style` text in an html-method result is still escaped (`'` becomes `&apos;`), so
-  an inline script or style with a quote or a `<` in it breaks; keep them in their own files. This
-  is a deliberate choice, recorded in `src/html.rs` and pinned by a test.
+- The HTML serializer uses XML-compatible quoting and valued boolean attributes. Inline
+  `script` or `style` text that needs raw serialization is refused before any document is
+  returned; keep it in external files. `tests/xslt_audit.rs` checks the typed refusal for
+  both element names and mixed case. No browser or assistive technology was used.
 - The panic refusal is a single paragraph of several sentences.
 - The examples' reports align columns with spaces (`{label:<18}`), so their meaning depends on
   position.
@@ -97,3 +98,4 @@ security-sensitive goes through
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-11 | Removed internal tracking numbers from refusals and put caller actions first in time, capacity, attribute, boolean and numeric refusals. Regression tests check the text; no assistive technology testing. |
+| 2026-11-11 | The unpublished audit fixes text escaping and refuses unsupported namespace/output requests and HTML raw text; recursion refusals name the stylesheet and suggest reducing recursion. Synthetic tests cover these errors; no assistive technology testing. |

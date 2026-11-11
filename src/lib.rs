@@ -88,6 +88,7 @@ pub mod limits;
 mod modules;
 mod node_id;
 mod numeric_values;
+mod output_contract;
 mod parameters;
 pub mod subset;
 
@@ -356,12 +357,13 @@ fn output_attribute_of(doc: &IdNode, attribute: &str) -> Option<String> {
     root.child_iter()
         .filter(|c| c.is_element())
         .filter(|c| c.name().is_some_and(|n| n.to_string() == output_name))
-        .find_map(|output| {
+        .filter_map(|output| {
             output
                 .attribute_iter()
                 .find(|a| a.name().is_some_and(|n| n.to_string() == attribute))
                 .map(|a| a.value().to_string())
         })
+        .last()
 }
 
 /// Resolve a resource reference through the kernel. An `http(s)://` URL is fetched via
@@ -462,6 +464,7 @@ impl CompiledStylesheet {
         let output_method = output_method_of(&styledoc);
         let output_media_type = output_attribute_of(&styledoc, "media-type");
         subset::check(&styledoc)?;
+        output_contract::check(&styledoc)?;
         boolean_values::prepare(&styledoc)?;
         numeric_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
@@ -528,6 +531,7 @@ impl CompiledStylesheet {
     fn run(&self, src_xml: &str, text_output: bool) -> std::result::Result<String, String> {
         self.run_with_parameters(src_xml, text_output, &BTreeMap::new())
             .map(|(out, _)| out)
+            .map_err(plain)
     }
 
     fn run_with_parameters(
@@ -535,9 +539,9 @@ impl CompiledStylesheet {
         src_xml: &str,
         text_output: bool,
         params: &BTreeMap<String, String>,
-    ) -> std::result::Result<(String, &'static str), String> {
+    ) -> Result<(String, &'static str)> {
         let srcdoc = parse_xml(src_xml)
-            .map_err(|e| format!("source document parse error: {}", e.message))?;
+            .map_err(|e| Error::Endpoint(format!("source document parse error: {}", e.message)))?;
 
         let mut stctxt = StaticContextBuilder::new()
             .message(|_| Ok(()))
@@ -565,14 +569,22 @@ impl CompiledStylesheet {
         // No `xsl:key` step: since xrust 2.3 `key()` indexes a (key, document) pair the first
         // time it is called and keeps the index on `stctxt`, which is built fresh above, so a
         // run never sees another run's keys. A broken key surfaces as a transform error.
-        let seq = ctxt
-            .evaluate(&mut stctxt)
-            .map_err(|e| format!("transform error: {}", e.message))?;
+        let seq = ctxt.evaluate(&mut stctxt).map_err(|e| {
+            if e.kind == XsltErrorKind::LimitExceeded {
+                Error::InvalidArgument {
+                    name: "stylesheet".into(),
+                    detail: format!("refused: {}; reduce template recursion", e.message),
+                }
+            } else {
+                Error::Endpoint(format!("transform error: {}", e.message))
+            }
+        })?;
         if text_output {
             return Ok((seq.to_string(), "text/plain"));
         }
         let media = if html::is_html(self.output_method(), &seq) {
-            html::open_empty_elements(&seq)?;
+            html::check_raw_text(&seq)?;
+            html::open_empty_elements(&seq).map_err(Error::Endpoint)?;
             "text/html"
         } else {
             "application/xml"
@@ -826,9 +838,7 @@ fn render(
     // as text even when its label is a more specific media type, such as N-Triples.
     let text_output = compiled.output_method() == Some("text")
         || as_media.is_some_and(|m| m.split(';').next().unwrap_or(m).trim() == "text/plain");
-    let (out, implied_media) = compiled
-        .run_with_parameters(source, text_output, params)
-        .map_err(Error::Endpoint)?;
+    let (out, implied_media) = compiled.run_with_parameters(source, text_output, params)?;
     Ok((media.unwrap_or(implied_media).to_string(), out))
 }
 

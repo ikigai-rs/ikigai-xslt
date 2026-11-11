@@ -19,11 +19,9 @@
 //! - an element **in a namespace** (inline SVG, MathML) is XML, as §16.2 says, and keeps
 //!   `<path/>`, which an HTML parser reads correctly inside foreign content.
 //!
-//! ⚠ Not done: §16.2 also writes the text of `script` and `style` unescaped, and xrust escapes
-//! it (`'` becomes `&apos;`, `<` becomes `&lt;`), so an INLINE script or style with a quote or a
-//! `<` in it is broken. Writing it raw would make any data a stylesheet copies into a script
-//! element executable markup, so that is a decision for a host, not a serializer default: keep
-//! scripts and styles in their own files (`<script src='…'>`).
+//! Inline script/style text that this XML-compatible serializer would escape is refused
+//! before serialization. Keep scripts and styles needing raw text in external files.
+//! Boolean attributes retain their values; void elements retain XML's trailing slash.
 
 use std::rc::Rc;
 
@@ -123,4 +121,39 @@ fn needs_end_tag(element: &IdNode) -> bool {
             !VOID.contains(&local.as_str())
         }
     })
+}
+
+/// The compatibility serializer escapes script/style text. Refuse a result it would
+/// corrupt, before serializing any of it. A host can keep this content in external files.
+pub(crate) fn check_raw_text(seq: &Sequence<IdNode>) -> ikigai_core::Result<()> {
+    let mut stack: Vec<_> = seq
+        .iter()
+        .filter_map(|item| match item {
+            Item::Node(node) => Some(node.clone()),
+            _ => None,
+        })
+        .collect();
+    while let Some(node) = stack.pop() {
+        stack.extend(node.child_iter());
+        if node.node_type() != NodeType::Element {
+            continue;
+        }
+        let Some(name) = node.name() else { continue };
+        if name.namespace_uri().is_none()
+            && matches!(
+                name.local_name().to_string().to_ascii_lowercase().as_str(),
+                "script" | "style"
+            )
+            && node.child_iter().any(|child| {
+                child.node_type() == NodeType::Text
+                    && child.to_string().contains(['&', '<', '>', '\'', '"'])
+            })
+        {
+            return Err(ikigai_core::Error::InvalidArgument {
+                name: "stylesheet".into(),
+                detail: format!("refused: inline HTML {} text needs raw-text serialization, which is not supported; keep scripts and styles in external files", name.local_name().to_string()),
+            });
+        }
+    }
+    Ok(())
 }

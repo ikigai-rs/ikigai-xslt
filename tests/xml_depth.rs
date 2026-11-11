@@ -438,12 +438,28 @@ fn everything_at_the_bounds_runs_from_a_two_mib_thread() {
     // `xsl:stylesheet` and `xsl:template` are two of the stylesheet's levels.
     let outcome = probe("style-nested", DEPTH - 2);
     assert!(outcome.starts_with("ok "), "{outcome}");
-    let outcome = probe("style-parens", EXPR);
+    // First-node string conversion adds two bracket levels. Generated expressions
+    // obey the same bound as caller input, so leave room for that conversion.
+    let outcome = probe("style-parens", EXPR - 2);
     assert!(outcome.starts_with("ok "), "{outcome}");
     // `count(` is one of the expression's levels, and the template's `{` another.
     for case in ["style-brackets", "style-avt"] {
-        let outcome = probe(case, EXPR - 1);
+        let outcome = probe(case, EXPR - 3);
         assert!(outcome.starts_with("ok "), "{case}: {outcome}");
+    }
+    // Lexically admitted input must still be refused if its generated conversion
+    // would exceed the parser's stack bound, rather than being parsed unsafely.
+    for (case, depth) in [
+        ("style-parens", EXPR),
+        ("style-brackets", EXPR - 1),
+        ("style-avt", EXPR - 1),
+    ] {
+        let outcome = probe(case, depth);
+        assert!(
+            outcome.starts_with("err invalid argument `stylesheet`")
+                && outcome.contains("MAX_EXPR_DEPTH"),
+            "{case}: {outcome}"
+        );
     }
 }
 

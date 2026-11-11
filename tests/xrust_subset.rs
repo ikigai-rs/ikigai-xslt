@@ -106,28 +106,6 @@ fn stock_stylesheet(src: &str, stylesheet: &str) -> Result<String, String> {
         .map_err(|e| format!("transform: {}", e.message))
 }
 
-/// Pin a silent case: today's answer is `wrong`, through this crate and through stock xrust
-/// alike, with no error; XSLT 1.0 says `correct`.
-fn pin_silent(src: &str, templates: &str, wrong: &str, correct: &str) {
-    assert_ne!(wrong, correct, "a silent case pins a WRONG answer");
-    for (path, answer) in [
-        ("ikigai-xslt", ours(src, templates)),
-        ("stock xrust", stock(src, templates)),
-    ] {
-        let answer = answer.unwrap_or_else(|e| {
-            panic!("{path}: xrust now REFUSES this (`{e}`), which is better than a wrong answer: move it to the refused table in README.md and docs/upstream-xrust.md")
-        });
-        assert!(
-            answer != correct,
-            "{path}: xrust {MEASURED_ON}'s silent defect is FIXED (it now answers the XSLT 1.0 `{correct}`): update README.md's subset table and docs/upstream-xrust.md"
-        );
-        assert_eq!(
-            answer, wrong,
-            "{path}: xrust's answer changed but is still not `{correct}`: re-measure and update README.md and docs/upstream-xrust.md"
-        );
-    }
-}
-
 /// Pin a construct this crate refuses because xrust answers it wrongly: through this crate it
 /// is refused as an `InvalidArgument` naming the README `row`; through stock xrust it still
 /// gives `wrong`, with no error, where XSLT 1.0 says `correct`.
@@ -388,17 +366,14 @@ fn a_leading_comment_before_the_stylesheet_is_admitted() {
     assert_eq!(answer.as_deref(), Ok("<out/>"));
 }
 
-/// The node-set-to-string defect behind `silent_value_of_a_node_set_concatenates_every_node`
+/// The node-set-to-string defect behind `value_of_a_node_set_uses_the_first_node_here`
 /// is not `xsl:value-of`'s alone: `string-length()` of several nodes measures them all
 /// concatenated (`onetwothree`, 11), where XSLT 1.0 measures the first (`one`, 3).
 #[test]
-fn silent_string_of_a_node_set_concatenates_every_node() {
-    pin_silent(
-        SRC,
-        r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/item)"/></out></xsl:template>"#,
-        "<out>11</out>",
-        "<out>3</out>",
-    );
+fn string_length_of_a_node_set_uses_the_first_node_here() {
+    let templates = r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/item)"/></out></xsl:template>"#;
+    assert_eq!(stock(SRC, templates).unwrap(), "<out>11</out>");
+    assert_eq!(ours(SRC, templates).unwrap(), "<out>3</out>");
 }
 
 // --------------------------------------------------------------------- refused here
@@ -584,13 +559,11 @@ fn the_endpoint_refuses_with_a_typed_invalid_argument() {
 /// `xsl:value-of` of several nodes concatenates them all with no separator. XSLT 1.0 takes
 /// the FIRST node's string value (and a 2.0+ processor running a 1.0 stylesheet does too).
 #[test]
-fn silent_value_of_a_node_set_concatenates_every_node() {
-    pin_silent(
-        SRC,
-        r#"<xsl:template match="/"><out><xsl:value-of select="doc/item"/></out></xsl:template>"#,
-        "<out>onetwothree</out>",
-        "<out>one</out>",
-    );
+fn value_of_a_node_set_uses_the_first_node_here() {
+    let templates =
+        r#"<xsl:template match="/"><out><xsl:value-of select="doc/item"/></out></xsl:template>"#;
+    assert_eq!(stock(SRC, templates).unwrap(), "<out>onetwothree</out>");
+    assert_eq!(ours(SRC, templates).unwrap(), "<out>one</out>");
 }
 
 /// `xsl:output method="html"`: stock xrust serializes XML, so every empty element is

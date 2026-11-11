@@ -691,3 +691,54 @@ fn xslt_literal_attribute_namespace_is_declared() {
         assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
     }
 }
+
+#[test]
+fn xslt_text_escapes_once_and_honors_disable_output_escaping() {
+    for (attribute, expected) in [
+        ("", "&lt;b/&gt;&amp;"),
+        (" disable-output-escaping='no'", "&lt;b/&gt;&amp;"),
+        (" disable-output-escaping='yes'", "<b/>&"),
+    ] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:text{attribute}>&lt;b/&gt;&amp;</xsl:text></out></xsl:template>"));
+        assert_eq!(transform_str("<doc/>", &style), format!("<out>{expected}</out>"));
+    }
+}
+
+#[test]
+fn xslt_element_name_patterns_do_not_match_attributes() {
+    for pattern in ["v", "*", "child::v", "child::*"] {
+        let style = stylesheet(&format!("<xsl:template match='/'><xsl:apply-templates select='doc/@v'/></xsl:template><xsl:template match='{pattern}' priority='1'>WRONG</xsl:template><xsl:template match='@*'>attribute</xsl:template>"));
+        assert_eq!(transform_str("<doc v='A'/>", &style), "attribute", "{pattern}");
+    }
+}
+
+#[test]
+fn xslt_builtin_rules_cover_each_node_kind_and_preserve_mode() {
+    for mode in ["", " mode='m'"] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:apply-templates select='doc/@* | doc/node()'{mode}/></out></xsl:template>"));
+        assert_eq!(transform_str("<doc a='A'><v>2</v><v>10</v><!--C--><?pi P?></doc>", &style), "<out>A210</out>");
+    }
+    let style = stylesheet("<xsl:template match='/'><out><xsl:apply-templates select='doc' mode='m'/></out></xsl:template><xsl:template match='v' mode='m'>V</xsl:template><xsl:template match='v'>WRONG</xsl:template>");
+    assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), "<out>VV</out>");
+}
+
+#[test]
+fn xslt_avt_doubled_braces_and_braces_in_xpath_strings() {
+    let style = stylesheet(r#"<xsl:template match="/"><out a="{{x}}" b="{{{doc/v}}}" c="{concat('}', '{')}"/></xsl:template>"#);
+    assert_eq!(transform_str("<doc><v>2</v></doc>", &style), "<out a='{x}' b='{2}' c='}{'/>");
+    for invalid in ["}", "{", "{1 +}", "{1 garbage}", "{1 { 2}"] {
+        assert!(xrust::parser::avt::parse::<xrust::trees::smite::RNode>(invalid, None).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn xslt_union_is_in_document_order_without_duplicate_nodes() {
+    for (select, expected) in [
+        ("doc/v[2] | doc/v[1]", "210"),
+        ("doc/v | doc/v", "210"),
+        ("doc/v[2] | doc/v | doc/v[1]", "210"),
+    ] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:for-each select='{select}'><xsl:value-of select='.'/></xsl:for-each></out></xsl:template>"));
+        assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), format!("<out>{expected}</out>"));
+    }
+}

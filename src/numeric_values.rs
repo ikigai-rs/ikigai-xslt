@@ -84,6 +84,7 @@ pub(crate) fn tokens(s: &str) -> Option<Vec<&str>> {
 struct Expr {
     text: String,
     kind: Kind,
+    is_string: bool,
 }
 
 impl Expr {
@@ -91,6 +92,15 @@ impl Expr {
         Self {
             text,
             kind: Kind::Other,
+            is_string: false,
+        }
+    }
+
+    fn string(text: String) -> Self {
+        Self {
+            text,
+            kind: Kind::Other,
+            is_string: true,
         }
     }
 }
@@ -118,6 +128,12 @@ fn numeric(value: &str) -> String {
 
 impl Parser<'_> {
     fn conversion(&mut self, value: &Expr, string: bool) -> String {
+        // A string literal or a core string function already returns one string.
+        // Rewrapping nested scalar calls grows the XPath fed back to xrust without
+        // changing its value. Node selections and unknown values still need [1].
+        if string && value.is_string {
+            return value.text.clone();
+        }
         match value.kind {
             Kind::Boolean => {
                 // xrust supports conditional expressions internally. Each branch
@@ -130,7 +146,7 @@ impl Parser<'_> {
             }
             Kind::Other => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     numeric(&value.text)
                 }
@@ -139,7 +155,7 @@ impl Parser<'_> {
             // since the carried xrust's boolean and node conversions (ledger #3343).
             Kind::Unknown => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     value.text.clone()
                 }
@@ -154,6 +170,7 @@ impl Parser<'_> {
         let item = Expr {
             text: format!("${}", self.item_name),
             kind: value.kind,
+            is_string: false,
         };
         let converted = self.conversion(&item, false);
         format!(
@@ -205,6 +222,7 @@ impl Parser<'_> {
             let no = self.expression(1)?;
             return Some(Expr {
                 text: format!("(if ({condition}) then {yes} else {no})"),
+                is_string: yes.is_string && no.is_string,
                 kind: if yes.kind == no.kind {
                     yes.kind
                 } else {
@@ -256,10 +274,12 @@ impl Parser<'_> {
                         self.numeric_items(&right)
                     ),
                     kind: Kind::Boolean,
+                    is_string: false,
                 }
             } else {
                 Expr {
                     text: format!("{left} {op} {right}"),
+                    is_string: false,
                     kind: if precedence <= 4 {
                         Kind::Boolean
                     } else {
@@ -284,6 +304,7 @@ impl Parser<'_> {
                 Expr {
                     text: format!("({value})"),
                     kind: value.kind,
+                    is_string: value.is_string,
                 }
             }
             "/" | "//" => {
@@ -313,7 +334,11 @@ impl Parser<'_> {
                     } else {
                         Kind::Other
                     };
-                    Expr { text, kind }
+                    Expr {
+                        text,
+                        kind,
+                        is_string: false,
+                    }
                 }
             }
             ")" | "]" | "," | "=" | "!=" | "<" | ">" | "<=" | ">=" => return None,
@@ -336,12 +361,27 @@ impl Parser<'_> {
                         let default = Expr::other(".".into());
                         let arg = args.first().unwrap_or(&default);
                         let converted = self.conversion(arg, token == "string");
-                        Expr::other(if token == "number" {
-                            format!("number({converted})")
+                        if token == "number" {
+                            Expr::other(format!("(number({converted}) * 1.0)"))
                         } else {
-                            converted
-                        })
+                            Expr::string(converted)
+                        }
                     } else {
+                        // XPath 1.0 string arguments use the first node's string value.
+                        // xrust's later-version sequence conversion concatenates them.
+                        let string_args = match token.as_str() {
+                            "concat" | "contains" | "starts-with" | "substring-before"
+                            | "substring-after" | "translate" => args.len(),
+                            "string-length" | "normalize-space" | "substring" | "lang" => {
+                                args.len().min(1)
+                            }
+                            _ => 0,
+                        };
+                        for arg in args.iter_mut().take(string_args) {
+                            let text = self.conversion(arg, true);
+                            *arg = Expr::string(text);
+                            self.changed = true;
+                        }
                         let text = format!(
                             "{token}({})",
                             args.iter()
@@ -349,27 +389,40 @@ impl Parser<'_> {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
-                        // The value-of analysis's table of core function result types,
-                        // so an extension function is Unknown here too (#3398).
-                        let kind = match &self.node {
-                            Some(n) => boolean_values::expression_kind(&text, n),
-                            None if matches!(
-                                token.as_str(),
-                                "true"
-                                    | "false"
-                                    | "boolean"
-                                    | "not"
-                                    | "contains"
-                                    | "starts-with"
-                                    | "ends-with"
-                                    | "lang"
-                            ) =>
-                            {
-                                Kind::Boolean
-                            }
-                            None => Kind::Other,
+                        // Core scalar result types do not depend on their arguments.
+                        // Parsing the expanded arguments here repeats all generated
+                        // first-node conversions, once for every enclosing call.
+                        let kind = match token.as_str() {
+                            "true" | "false" | "boolean" | "not" | "contains" | "starts-with"
+                            | "lang" => Kind::Boolean,
+                            "concat" | "substring" | "substring-before" | "substring-after"
+                            | "normalize-space" | "translate" | "string-length" | "count"
+                            | "sum" | "floor" | "ceiling" | "round" | "position" | "last"
+                            | "name" | "local-name" | "namespace-uri" => Kind::Other,
+                            // Keep the existing conservative analysis for other calls,
+                            // including namespaced spellings of core functions.
+                            _ => match &self.node {
+                                Some(n) => boolean_values::expression_kind(&text, n),
+                                None => Kind::Other,
+                            },
                         };
-                        Expr { text, kind }
+                        let is_string = matches!(
+                            token.as_str(),
+                            "concat"
+                                | "substring"
+                                | "substring-before"
+                                | "substring-after"
+                                | "normalize-space"
+                                | "translate"
+                                | "name"
+                                | "local-name"
+                                | "namespace-uri"
+                        );
+                        Expr {
+                            text,
+                            kind,
+                            is_string,
+                        }
                     }
                 } else if self.peek() == Some("::") {
                     self.take();
@@ -377,11 +430,17 @@ impl Parser<'_> {
                 } else if token.ends_with(':') && self.peek() == Some("*") {
                     self.take();
                     Expr::other(format!("{token}*"))
-                } else if token.bytes().all(|c| c.is_ascii_digit()) && token.parse::<i64>().is_err()
+                } else if token.bytes().all(|c| c.is_ascii_digit())
+                    && token
+                        .parse::<u64>()
+                        .map_or(true, |value| value >= (1_u64 << 53))
                 {
-                    // XPath 1.0 literals are doubles; xrust first tries an i64.
+                    // XPath 1.0 literals are doubles. xrust's exact integers can
+                    // distinguish adjacent integers above the double precision limit.
                     self.changed = true;
-                    Expr::other(format!("number('{token}')"))
+                    Expr::other(format!("{token}.0"))
+                } else if token.starts_with(['\'', '"']) {
+                    Expr::string(token)
                 } else {
                     Expr::other(token)
                 }
@@ -393,6 +452,7 @@ impl Parser<'_> {
             self.expect("]")?;
             value = Expr {
                 text: format!("{value}[{predicate}]"),
+                is_string: false,
                 kind: if value.kind == Kind::Other {
                     Kind::Other
                 } else {
@@ -430,7 +490,27 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
             && parser.tokens.iter().any(|t| {
                 matches!(
                     *t,
-                    "number" | "string" | "+" | "-" | "*" | "div" | "mod" | "<" | ">" | "<=" | ">="
+                    "number"
+                        | "string"
+                        | "concat"
+                        | "contains"
+                        | "starts-with"
+                        | "substring-before"
+                        | "substring-after"
+                        | "translate"
+                        | "string-length"
+                        | "normalize-space"
+                        | "substring"
+                        | "lang"
+                        | "+"
+                        | "-"
+                        | "*"
+                        | "div"
+                        | "mod"
+                        | "<"
+                        | ">"
+                        | "<="
+                        | ">="
                 )
             })
             && xrust::parser::xpath::parse(source, node.cloned(), None).is_ok()
@@ -472,12 +552,9 @@ fn avt_at(source: &str, node: Option<&IdNode>) -> Result<String> {
                 break;
             }
             let original = &source[start..i];
+            let adapted = expression_at(original, node)?.unwrap_or_else(|| original.to_string());
             result.push('{');
-            result.push_str(
-                expression_at(original, node)?
-                    .as_deref()
-                    .unwrap_or(original),
-            );
+            result.push_str(&format!("string(({adapted})[1])"));
             result.push('}');
             i += 1;
         } else {
@@ -526,7 +603,15 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
             {
                 Some(avt_at(&source, Some(&node))?)
             } else if matches!(attr_local.as_str(), "select" | "test" | "use" | "value") {
-                expression_at(&source, Some(&node))?
+                // XSLT 1.0 value-of converts the first node, not the whole sequence.
+                // Keep this compatibility rule here rather than changing xrust's
+                // sequence model for its XPath/XSLT 3.0 consumers.
+                if local == "value-of" && attr_local == "select" {
+                    let adapted = expression_at(&source, Some(&node))?.unwrap_or(source.clone());
+                    Some(format!("string(({adapted})[1])"))
+                } else {
+                    expression_at(&source, Some(&node))?
+                }
             } else {
                 None
             };
@@ -600,12 +685,13 @@ mod tests {
     #[test]
     fn avt_text_escaped_braces_and_quoted_braces_are_preserved() {
         let source = "é + 1 {{number(/r)}} {concat('}', /r + 1)} {{x}}";
-        let expected = format!(
-            "é + 1 {{{{number(/r)}}}} {{concat('}}', ({} + {}))}} {{{{x}}}}",
-            numeric("/r"),
-            numeric("1")
+        let stylesheet = format!(
+            r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"><xsl:template match="/"><e a="{source}"/></xsl:template></xsl:stylesheet>"#
         );
-        assert_eq!(avt(source), expected);
+        assert_eq!(
+            crate::transform_xml("<r>2</r>", &stylesheet, false).unwrap(),
+            "<e a='é + 1 {number(/r)} }3 {x}'/>"
+        );
         assert_eq!(avt("{number(/r)"), "{number(/r)");
     }
 

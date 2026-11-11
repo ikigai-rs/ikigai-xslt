@@ -1,0 +1,48 @@
+diff --git a/src/transform/logic.rs b/src/transform/logic.rs
+index eff85f2..3c602e8 100644
+--- a/src/transform/logic.rs
++++ b/src/transform/logic.rs
+@@ -124,7 +124,7 @@ pub(crate) fn value_comparison<
+ 
+ /// Each function in the supplied vector is evaluated, and the resulting sequences are combined into a single sequence.
+ /// All items must be nodes.
+-/// TODO: eliminate duplicates, sort by document order (XPath 3.1 3.4.2).
++/// Eliminate duplicates and sort by document order (XPath 3.1 3.4.2).
+ pub(crate) fn union<
+     N: Node,
+     F: FnMut(&str) -> Result<(), Error>,
+@@ -146,6 +146,13 @@ pub(crate) fn union<
+         }
+         result.append(&mut c)
+     }
+-    // TODO: eliminate duplicates and sort into document order
++    result.sort_by(|a, b| match (a, b) {
++        (Item::Node(a), Item::Node(b)) => a.cmp_document_order(b),
++        _ => unreachable!("union operands were checked to be nodes"),
++    });
++    result.dedup_by(|a, b| match (a, b) {
++        (Item::Node(a), Item::Node(b)) => a.is_same(b),
++        _ => false,
++    });
+     Ok(result)
+ }
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index e448372..3a2f0aa 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -730,3 +730,15 @@ fn xslt_avt_doubled_braces_and_braces_in_xpath_strings() {
+         assert!(xrust::parser::avt::parse::<xrust::trees::smite::RNode>(invalid, None).is_err(), "{invalid}");
+     }
+ }
++
++#[test]
++fn xslt_union_is_in_document_order_without_duplicate_nodes() {
++    for (select, expected) in [
++        ("doc/v[2] | doc/v[1]", "210"),
++        ("doc/v | doc/v", "210"),
++        ("doc/v[2] | doc/v | doc/v[1]", "210"),
++    ] {
++        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:for-each select='{select}'><xsl:value-of select='.'/></xsl:for-each></out></xsl:template>"));
++        assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), format!("<out>{expected}</out>"));
++    }
++}
