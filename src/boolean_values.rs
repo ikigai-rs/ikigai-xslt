@@ -323,9 +323,10 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
             Kind::Other => {},
             // xsl:sequence preserves atomic types. Turning its boolean into text
             // would change subsequent boolean/numeric operations, so refuse it.
+            // Mixed values cannot safely use the boolean adaptation (ledger #2520).
             Kind::Boolean | Kind::Unknown => return Err(Error::InvalidArgument {
                 name: "stylesheet".into(),
-                detail: format!("refused: xsl:{} select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops (ledger #2520; README, The XSLT subset); use xsl:choose with explicit true/false text, or supply a string", n.name().unwrap().local_name().to_string()),
+                detail: format!("refused: use xsl:choose with explicit true/false text, or supply a string. xsl:{} select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops; see README, The XSLT subset", n.name().unwrap().local_name().to_string()),
             }),
         }
     }

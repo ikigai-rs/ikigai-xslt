@@ -212,6 +212,8 @@ fn ambiguous_parameter_conversions_are_refused_explicitly() {
             r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:param name="flag" select="true()"/><xsl:template match="/"><xsl:value-of select="{conversion}"/></xsl:template></xsl:stylesheet>"#
         );
         let error = transform_xml("<r/>", &stylesheet, true).unwrap_err();
+        assert!(!error.contains("ledger #"), "{error}");
+        assert!(error.contains("refused: use xsl:choose"), "{error}");
         assert!(
             error.starts_with("invalid argument `stylesheet`:"),
             "{error}"

@@ -18,6 +18,8 @@ fn assert_refused(sheet: &str) {
         error.starts_with("invalid argument `stylesheet`: refused:"),
         "{error}"
     );
+    assert!(error.contains("refused: use xsl:choose"), "{error}");
+    assert!(!error.contains("ledger #"), "{error}");
 }
 
 #[test]

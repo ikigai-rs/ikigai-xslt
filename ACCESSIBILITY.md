@@ -11,7 +11,7 @@ report a barrier. It is not a conformance claim. Adapted from the
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-xslt/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-xslt/security/advisories/new) |
-| Last reviewed | 2026-10-31 |
+| Last reviewed | 2026-11-11 |
 
 ## What it emits that people read
 
@@ -69,12 +69,7 @@ Found by reading the source on 2026-10-31, not by testing with people or assisti
 - `script` and `style` text in an html-method result is still escaped (`'` becomes `&apos;`), so
   an inline script or style with a quote or a `<` in it breaks; keep them in their own files. This
   is a deliberate choice, recorded in `src/html.rs` and pinned by a test.
-- Several refusals end in a project-internal tracking number in parentheses (the time-budget and
-  overdue-capacity refusals in `src/limits.rs`, the attribute refusals there, the boolean and
-  numeric refusals), which a reader outside the project cannot look up.
-- The time-budget, overdue-capacity and panic refusals are single paragraphs of several sentences,
-  and what to do comes last; the attribute refusals put an XSLT workaround inline in the same
-  sentence.
+- The panic refusal is a single paragraph of several sentences.
 - The examples' reports align columns with spaces (`{label:<18}`), so their meaning depends on
   position.
 
@@ -101,3 +96,4 @@ security-sensitive goes through
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-11 | Removed internal tracking numbers from refusals and put caller actions first in time, capacity, attribute, boolean and numeric refusals. Regression tests check the text; no assistive technology testing. |

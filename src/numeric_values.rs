@@ -432,16 +432,17 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
         {
             return Err(Error::InvalidArgument {
                 name: "stylesheet".into(),
-                detail: format!("refused: numeric/string conversion in `{source}` uses syntax whose operand types cannot be established; use xsl:choose to convert values explicitly"),
+                detail: format!("refused: use xsl:choose to convert values explicitly. Numeric/string conversion in `{source}` uses syntax whose operand types cannot be established"),
             });
         }
         return Ok(None);
     }
     let result = result.unwrap();
+    // Mixed parameter types need an explicit conversion (ledger #2668).
     if parser.ambiguous {
         return Err(Error::InvalidArgument {
             name: "stylesheet".into(),
-            detail: format!("refused: numeric/string conversion in `{source}` may receive a boolean or a nonboolean value (ledger #2668); use xsl:choose to convert mixed parameter values explicitly"),
+            detail: format!("refused: use xsl:choose to convert mixed parameter values explicitly. Numeric/string conversion in `{source}` may receive a boolean or a nonboolean value"),
         });
     }
     Ok(parser.changed.then_some(result.text))
