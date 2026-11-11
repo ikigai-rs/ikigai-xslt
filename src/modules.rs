@@ -435,6 +435,18 @@ fn split_union_templates(
             } else {
                 charge_bytes(bytes, copy_bytes)?;
                 let copy = copy_template(node)?;
+                // The copy is detached, so it has no in-scope namespaces of its own. Give
+                // it the original's (its own module's), so every alternative's prefixes
+                // resolve as alternative 0's do, even where an importer binds them otherwise.
+                for ns in node.namespace_iter() {
+                    let uri = ns.as_namespace_uri().map_err(engine)?.clone();
+                    let prefix = ns.as_namespace_prefix().map_err(engine)?.cloned();
+                    copy.add_namespace(
+                        copy.new_namespace(uri, prefix, ns.is_in_scope())
+                            .map_err(engine)?,
+                    )
+                    .map_err(engine)?;
+                }
                 // A union template with a name still declares that name only once.
                 if let Some(mut name) = copy.get_attribute_node(&QName::try_from("name").unwrap()) {
                     name.pop().map_err(engine)?;

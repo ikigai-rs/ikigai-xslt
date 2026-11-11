@@ -1,0 +1,1 @@
+homepage=https://example.org/;weblog=https://example.org/blog;workplaceHomepage=https://work.example.org/;schoolHomepage=https://school.example.org/;openid=https://id.example.org/;page=https://example.org/about;
