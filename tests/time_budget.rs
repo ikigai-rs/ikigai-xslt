@@ -55,7 +55,7 @@ fn a_transform_is_answered_within_its_budget_and_overdue_work_is_capped() {
     });
     let waited = start.elapsed();
     assert!(
-        matches!(&late, Err(Error::Timeout(m)) if m.contains("50 ms")),
+        matches!(&late, Err(Error::Timeout(m)) if m.contains("50 ms") && !m.contains("ledger #") && m.starts_with("Make the input")),
         "{late:?}"
     );
     assert!(
@@ -88,7 +88,7 @@ fn a_transform_is_answered_within_its_budget_and_overdue_work_is_capped() {
     });
     assert!(
         matches!(&refused, Err(e @ Error::Unavailable(m))
-            if e.is_transient() && m.contains("still running")),
+            if e.is_transient() && m.contains("still running") && !m.contains("ledger #") && m.starts_with("Retry shortly.")),
         "{refused:?}"
     );
     assert!(

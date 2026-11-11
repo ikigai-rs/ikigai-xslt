@@ -295,9 +295,10 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
         match kind(&t, &n, &mut Analysis::new()) {
             Kind::Boolean => booleans.push((n, select)),
             Kind::Other => {},
+            // Mixed values cannot safely use the boolean adaptation (ledger #2520).
             Kind::Unknown => return Err(Error::InvalidArgument {
                 name: "stylesheet".into(),
-                detail: format!("refused: xsl:value-of select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops (ledger #2520; README, The XSLT subset); use xsl:choose with explicit true/false text, or supply a string"),
+                detail: format!("refused: use xsl:choose with explicit true/false text, or supply a string. xsl:value-of select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops; see README, The XSLT subset"),
             }),
         }
     }
