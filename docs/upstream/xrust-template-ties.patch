@@ -8,7 +8,7 @@ index a641485..e4d03cd 100644
                      |t| {
 -                        if s < t {
 +                        if s == t {
-+                            Ordering::Equal
++                            self.import.len().cmp(&other.import.len())
 +                        } else if s < t {
                              Ordering::Greater
                          } else {

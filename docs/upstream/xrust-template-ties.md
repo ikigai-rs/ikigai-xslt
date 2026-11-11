@@ -10,6 +10,12 @@ the initial root dispatch, separately from `apply-templates`.
 error or recovery by choosing the last declaration at equal import precedence and
 priority. The engine silently chose the first. Two causes: the compiler set every
 matched template's document_order to None, and Template::cmp returned Less for equal
-numeric priorities. Record declaration order and return Equal for equal priorities,
+numeric priorities. Record declaration order and compare import depth for equal priorities (returning
+Equal only at equal depth),
 so the existing conflict-resolution code can choose the last candidate. No API change.
 Check GitLab main before submitting.
+
+The full workspace run also exercises the existing `tr_apply_templates_import`
+regression. It exposed that simply returning Equal could reorder templates at
+different import depths; the comparator retains the engine's shallower-import-first
+ordering on equal numeric priorities.

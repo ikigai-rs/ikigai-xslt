@@ -70,7 +70,7 @@ impl<N: Node> Ord for Template<N> {
                     || Ordering::Less,
                     |t| {
                         if s == t {
-                            Ordering::Equal
+                            self.import.len().cmp(&other.import.len())
                         } else if s < t {
                             Ordering::Greater
                         } else {
