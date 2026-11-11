@@ -22,6 +22,9 @@
 > - a literal result element declares the namespaces of its attributes' names; 2.3.0
 >   panicked serializing them (`src/xslt.rs`; #2520).
 >
+> - `xsl:text` stores characters and escapes only during serialization; 2.3.0 escaped
+>   special characters twice (`src/xslt.rs`; #3493).
+>
 > No public API changes. The library is still named `xrust`, so code that
 > uses it does not change. It is licensed, like xrust, under the Apache License 2.0
 > ([LICENSE](./LICENSE)); xrust 2.3.0 ships no NOTICE file. The packaging differs from

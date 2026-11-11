@@ -691,3 +691,14 @@ fn xslt_literal_attribute_namespace_is_declared() {
         assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
     }
 }
+
+#[test]
+fn xslt_text_escapes_only_during_serialization() {
+    for instruction in [
+        r#"<xsl:text>&lt;&amp;</xsl:text>"#,
+        r#"<xsl:text disable-output-escaping="no">&lt;&amp;</xsl:text>"#,
+    ] {
+        assert_eq!(transform_str("<doc/>", &stylesheet(&format!(r#"<xsl:template match="/"><out>{instruction}</out></xsl:template>"#))), "<out>&lt;&amp;</out>");
+    }
+    assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:text disable-output-escaping="yes">&lt;b/&gt;</xsl:text></out></xsl:template>"#)), "<out><b/></out>");
+}

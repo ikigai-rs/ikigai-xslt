@@ -1,0 +1,78 @@
+diff --git a/src/xslt.rs b/src/xslt.rs
+index d0c3901..52154c0 100644
+--- a/src/xslt.rs
++++ b/src/xslt.rs
+@@ -823,41 +823,19 @@ pub(crate) fn to_transform<N: Node>(
+         NodeType::Element => {
+             let qn = n.name().unwrap();
+             if qn == *XSLTEXT {
+-                let doe = n.get_attribute(&ATTRDOE);
+-                if !doe.to_string().is_empty() {
+-                    match (&doe.to_string()[..], od.method()) {
+-                        ("yes", _) | (_, Method::Xml) => Ok(Transform::Literal(Item::Value(
+-                            Rc::new(Value::from(n.to_string())),
+-                        ))),
+-                        ("no", _) => {
+-                            let text = n
+-                                .to_string()
+-                                .replace('&', "&amp;")
+-                                .replace('>', "&gt;")
+-                                .replace('<', "&lt;")
+-                                .replace('\'', "&apos;")
+-                                .replace('\"', "&quot;");
+-                            Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
+-                        }
+-                        _ => Err(Error::new(
+-                            ErrorKind::TypeError,
+-                            "disable-output-escaping only accepts values yes or no.".to_string(),
+-                        )),
+-                    }
+-                } else if od.method() == Method::Text {
+-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(
+-                        n.to_string(),
+-                    )))))
+-                } else {
+-                    let text = n
+-                        .to_string()
+-                        .replace('&', "&amp;")
+-                        .replace('>', "&gt;")
+-                        .replace('<', "&lt;")
+-                        .replace('\'', "&apos;")
+-                        .replace('\"', "&quot;");
+-                    Ok(Transform::Literal(Item::Value(Rc::new(Value::from(text)))))
+-                }
++                // Store characters in the result tree; escaping belongs to serialization.
++                let output = match n.get_attribute(&ATTRDOE).to_string().as_str() {
++                    "" | "no" => OutputSpec::Normal,
++                    "yes" => OutputSpec::NoEscape,
++                    _ => return Err(Error::new(
++                        ErrorKind::TypeError,
++                        "disable-output-escaping only accepts values yes or no.".to_string(),
++                    )),
++                };
++                Ok(Transform::LiteralText(
++                    Box::new(Transform::Literal(Item::Value(Rc::new(Value::from(n.to_string()))))),
++                    output,
++                ))
+             } else if qn == *XSLVALUEOF {
+                 let sel = n.get_attribute(&ATTRSELECT);
+                 let doe = n.get_attribute(&ATTRDOE);
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index c7a8833..2773c73 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -691,3 +691,14 @@ fn xslt_literal_attribute_namespace_is_declared() {
+         assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
+     }
+ }
++
++#[test]
++fn xslt_text_escapes_only_during_serialization() {
++    for instruction in [
++        r#"<xsl:text>&lt;&amp;</xsl:text>"#,
++        r#"<xsl:text disable-output-escaping="no">&lt;&amp;</xsl:text>"#,
++    ] {
++        assert_eq!(transform_str("<doc/>", &stylesheet(&format!(r#"<xsl:template match="/"><out>{instruction}</out></xsl:template>"#))), "<out>&lt;&amp;</out>");
++    }
++    assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:text disable-output-escaping="yes">&lt;b/&gt;</xsl:text></out></xsl:template>"#)), "<out><b/></out>");
++}

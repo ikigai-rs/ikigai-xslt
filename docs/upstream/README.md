@@ -22,6 +22,8 @@ as published on crates.io, they give exactly the `src/` this repository carries 
 | 7 | [`number()` and arithmetic on a node, or `string-length()`, are NaN](xrust-numeric-nodes.md) | [patch](xrust-numeric-nodes.patch) | #2487 |
 | 8 | [a literal attribute in a namespace panics in serialization](xrust-literal-attribute-namespace.md) | [patch](xrust-literal-attribute-namespace.patch) | #2520 |
 
+| 9 | [`xsl:text` escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |
+
 Patch 6 changes the same file as patch 1 and applies only on top of it; the others touch
 different code and can be filed in any order, though a test in patches 3 to 8 needs patch
 2's `transform_str` helper in `tests/smite-xslt.rs` (or a copy of it).
