@@ -1,0 +1,65 @@
+diff --git a/src/transform/context.rs b/src/transform/context.rs
+index ca313f6..3b30d3c 100644
+--- a/src/transform/context.rs
++++ b/src/transform/context.rs
+@@ -12,8 +12,8 @@ A [Context] is used to evaluate a [Transform]. The evaluate method matches the c
+ 
+ use stacksafe::stacksafe;
+ 
+-use crate::item::{Node, Sequence};
+-use crate::output::OutputDefinition;
++use crate::item::{Node, NodeType, Sequence};
++use crate::output::{OutputDefinition, OutputSpec};
+ #[allow(unused_imports)]
+ use crate::pattern::Pattern;
+ use crate::security::{Policy, SecurityResult};
+@@ -488,10 +488,29 @@ impl<N: Node> Context<N> {
+             candidates.sort_unstable_by(|a, b| (*a).cmp(b));
+             Ok(candidates)
+         } else {
+-            Err(Error::new(
+-                ErrorKind::Unknown,
+-                format!("no matching template for item {:?} in mode \"{:?}\"", i, m),
+-            ))
++            // XSLT 1.0 section 5.8: built-in rules apply in every mode,
++            // with lower import precedence than all explicit templates.
++            let body = match i {
++                Item::Node(n) => match n.node_type() {
++                    NodeType::Document | NodeType::Element => Transform::ApplyTemplates(
++                        Box::new(Transform::Step(crate::transform::NodeMatch::new(
++                            crate::transform::Axis::Child,
++                            NodeTest::Kind(crate::transform::KindTest::Any),
++                        ))),
++                        m.clone(),
++                        vec![],
++                    ),
++                    NodeType::Text | NodeType::Attribute => Transform::LiteralText(
++                        Box::new(Transform::ContextItem), OutputSpec::Normal,
++                    ),
++                    _ => Transform::Empty,
++                },
++                _ => Transform::LiteralText(Box::new(Transform::ContextItem), OutputSpec::Normal),
++            };
++            Ok(vec![Rc::new(Template::new(
++                Pattern::try_from("node()")?, body, None, vec![0], None, m.clone(),
++                String::from("built-in"),
++            ))])
+         }
+     }
+ 
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index afc8940..c75bf7f 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -708,3 +708,11 @@ fn xslt_equal_priority_uses_last_declaration() {
+     assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/">first</xsl:template><xsl:template match="/">last</xsl:template>"#)), "last");
+     assert_eq!(transform_str("<doc><item/></doc>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item">first</xsl:template><xsl:template match="item">last</xsl:template>"#)), "<out>last</out>");
+ }
++
++#[test]
++fn xslt_builtin_templates_cover_modes_and_node_types() {
++    let src = "<doc a='A'>T<!--C--><?pi P?><item>B</item></doc>";
++    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/@* | doc/node()"/></out></xsl:template>"#)), "<out>ATB</out>");
++    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="m"/></out></xsl:template><xsl:template match="item" mode="m">M</xsl:template><xsl:template match="item">D</xsl:template>"#)), "<out>TM</out>");
++    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="undeclared"/></out></xsl:template>"#)), "<out>TB</out>");
++}

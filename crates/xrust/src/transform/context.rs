@@ -12,8 +12,8 @@ A [Context] is used to evaluate a [Transform]. The evaluate method matches the c
 
 use stacksafe::stacksafe;
 
-use crate::item::{Node, Sequence};
-use crate::output::OutputDefinition;
+use crate::item::{Node, NodeType, Sequence};
+use crate::output::{OutputDefinition, OutputSpec};
 #[allow(unused_imports)]
 use crate::pattern::Pattern;
 use crate::security::{Policy, SecurityResult};
@@ -488,10 +488,29 @@ impl<N: Node> Context<N> {
             candidates.sort_unstable_by(|a, b| (*a).cmp(b));
             Ok(candidates)
         } else {
-            Err(Error::new(
-                ErrorKind::Unknown,
-                format!("no matching template for item {:?} in mode \"{:?}\"", i, m),
-            ))
+            // XSLT 1.0 section 5.8: built-in rules apply in every mode,
+            // with lower import precedence than all explicit templates.
+            let body = match i {
+                Item::Node(n) => match n.node_type() {
+                    NodeType::Document | NodeType::Element => Transform::ApplyTemplates(
+                        Box::new(Transform::Step(crate::transform::NodeMatch::new(
+                            crate::transform::Axis::Child,
+                            NodeTest::Kind(crate::transform::KindTest::Any),
+                        ))),
+                        m.clone(),
+                        vec![],
+                    ),
+                    NodeType::Text | NodeType::Attribute => Transform::LiteralText(
+                        Box::new(Transform::ContextItem), OutputSpec::Normal,
+                    ),
+                    _ => Transform::Empty,
+                },
+                _ => Transform::LiteralText(Box::new(Transform::ContextItem), OutputSpec::Normal),
+            };
+            Ok(vec![Rc::new(Template::new(
+                Pattern::try_from("node()")?, body, None, vec![0], None, m.clone(),
+                String::from("built-in"),
+            ))])
         }
     }
 

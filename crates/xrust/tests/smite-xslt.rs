@@ -708,3 +708,11 @@ fn xslt_equal_priority_uses_last_declaration() {
     assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/">first</xsl:template><xsl:template match="/">last</xsl:template>"#)), "last");
     assert_eq!(transform_str("<doc><item/></doc>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item">first</xsl:template><xsl:template match="item">last</xsl:template>"#)), "<out>last</out>");
 }
+
+#[test]
+fn xslt_builtin_templates_cover_modes_and_node_types() {
+    let src = "<doc a='A'>T<!--C--><?pi P?><item>B</item></doc>";
+    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/@* | doc/node()"/></out></xsl:template>"#)), "<out>ATB</out>");
+    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="m"/></out></xsl:template><xsl:template match="item" mode="m">M</xsl:template><xsl:template match="item">D</xsl:template>"#)), "<out>TM</out>");
+    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="undeclared"/></out></xsl:template>"#)), "<out>TB</out>");
+}
