@@ -711,3 +711,13 @@ fn xslt_element_name_patterns_do_not_match_attributes() {
         assert_eq!(transform_str("<doc v='A'/>", &style), "attribute", "{pattern}");
     }
 }
+
+#[test]
+fn xslt_builtin_rules_cover_each_node_kind_and_preserve_mode() {
+    for mode in ["", " mode='m'"] {
+        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:apply-templates select='doc/@* | doc/node()'{mode}/></out></xsl:template>"));
+        assert_eq!(transform_str("<doc a='A'><v>2</v><v>10</v><!--C--><?pi P?></doc>", &style), "<out>A210</out>");
+    }
+    let style = stylesheet("<xsl:template match='/'><out><xsl:apply-templates select='doc' mode='m'/></out></xsl:template><xsl:template match='v' mode='m'>V</xsl:template><xsl:template match='v'>WRONG</xsl:template>");
+    assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), "<out>VV</out>");
+}

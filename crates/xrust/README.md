@@ -168,3 +168,5 @@ its `disable-output-escaping` hint. See `docs/upstream/xrust-text-escaping.md` i
 the containing repository for the reproduction and upstream patch.
 Child-axis name patterns now require an element, so `match="v"` and `match="*"`
 do not match attributes. See `docs/upstream/xrust-pattern-node-type.md`.
+Built-in template rules now cover every node kind and preserve the selected mode
+through recursion. See `docs/upstream/xrust-builtins.md`.

@@ -586,54 +586,30 @@ where
 
     let whitespace_mgmt = parse_strip_preserve(styledoc.clone())?;
 
+    // Built-in text-only-copy rules exist in every mode (XSLT 1.0 section 5.8).
+    // Match node kinds directly, including namespace nodes, which pattern syntax
+    // does not expose. Attribute values must become text nodes, not attributes.
+    let mut builtins = Vec::new();
+    for kind in [KindTest::Document, KindTest::Element, KindTest::Text,
+        KindTest::Attribute, KindTest::Comment, KindTest::PI, KindTest::Namespace] {
+        let body = match kind {
+            KindTest::Document | KindTest::Element => Transform::ApplyTemplates(
+                Box::new(Transform::Step(NodeMatch::new(Axis::Child, NodeTest::Kind(KindTest::Any)))),
+                None,
+                vec![],
+            ),
+            KindTest::Text | KindTest::Attribute => Transform::LiteralText(
+                Box::new(Transform::ContextItem), OutputSpec::Normal),
+            _ => Transform::Empty,
+        };
+        builtins.push(Template::new(
+            Pattern::Selection(Branch::SingleStep(crate::pattern::Step::new(
+                Axis::SelfAxis, Axis::SelfAxis, NodeTest::Kind(kind)))),
+            body, None, vec![0], None, None, String::from("built-in"),
+        ));
+    }
     let mut newctxt = ContextBuilder::new()
-        // Define the builtin templates
-        // See XSLT 6.7. This implements text-only-copy.
-        // TODO: Support deep-copy, shallow-copy, deep-skin, shallow-skip and fail
-        // This matches "/" and processes the root element
-        .template(Template::new(
-            Pattern::try_from("/")?,
-            Transform::ApplyTemplates(
-                Box::new(Transform::Step(NodeMatch::new(
-                    Axis::Child,
-                    NodeTest::Kind(KindTest::Any),
-                ))),
-                None,
-                vec![],
-            ),
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("/"),
-        ))
-        // This matches "*" and applies templates to all children
-        .template(Template::new(
-            Pattern::try_from("child::*")?,
-            Transform::ApplyTemplates(
-                Box::new(Transform::Step(NodeMatch::new(
-                    Axis::Child,
-                    NodeTest::Kind(KindTest::Any),
-                ))),
-                None,
-                vec![],
-            ),
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("child::*"),
-        ))
-        // This matches "text()" and copies content
-        .template(Template::new(
-            Pattern::try_from("child::text()")?,
-            Transform::ContextItem,
-            None,
-            vec![0],
-            None,
-            None,
-            String::from("child::text()"),
-        ))
+        .template_all(builtins)
         .template_all(templates)
         .output_definition(od.clone())
         .strip(whitespace_mgmt.0)

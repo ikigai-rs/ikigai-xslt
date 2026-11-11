@@ -1,0 +1,125 @@
+diff --git a/src/transform/context.rs b/src/transform/context.rs
+index ca313f6..37962b0 100644
+--- a/src/transform/context.rs
++++ b/src/transform/context.rs
+@@ -474,11 +474,20 @@ impl<N: Node> Context<N> {
+         let mut candidates =
+             self.templates
+                 .iter()
+-                .filter(|t| t.mode == *m)
++                .filter(|t| t.priority.is_none() || t.mode == *m)
+                 .try_fold(vec![], |mut cand, t| {
+                     let e = t.pattern.matches(self, stctxt, i);
+                     if e {
+-                        cand.push(t.clone())
++                        if t.priority.is_none() {
++                            let mut builtin = (**t).clone();
++                            builtin.mode = m.clone();
++                            if let Transform::ApplyTemplates(_, mode, _) = &mut builtin.body {
++                                *mode = m.clone();
++                            }
++                            cand.push(Rc::new(builtin));
++                        } else {
++                            cand.push(t.clone());
++                        }
+                     }
+                     Ok(cand)
+                 })?;
+diff --git a/src/xslt.rs b/src/xslt.rs
+index 9ae6d9d..949ecaa 100644
+--- a/src/xslt.rs
++++ b/src/xslt.rs
+@@ -586,54 +586,30 @@ where
+ 
+     let whitespace_mgmt = parse_strip_preserve(styledoc.clone())?;
+ 
+-    let mut newctxt = ContextBuilder::new()
+-        // Define the builtin templates
+-        // See XSLT 6.7. This implements text-only-copy.
+-        // TODO: Support deep-copy, shallow-copy, deep-skin, shallow-skip and fail
+-        // This matches "/" and processes the root element
+-        .template(Template::new(
+-            Pattern::try_from("/")?,
+-            Transform::ApplyTemplates(
+-                Box::new(Transform::Step(NodeMatch::new(
+-                    Axis::Child,
+-                    NodeTest::Kind(KindTest::Any),
+-                ))),
+-                None,
+-                vec![],
+-            ),
+-            None,
+-            vec![0],
+-            None,
+-            None,
+-            String::from("/"),
+-        ))
+-        // This matches "*" and applies templates to all children
+-        .template(Template::new(
+-            Pattern::try_from("child::*")?,
+-            Transform::ApplyTemplates(
+-                Box::new(Transform::Step(NodeMatch::new(
+-                    Axis::Child,
+-                    NodeTest::Kind(KindTest::Any),
+-                ))),
++    // Built-in text-only-copy rules exist in every mode (XSLT 1.0 section 5.8).
++    // Match node kinds directly, including namespace nodes, which pattern syntax
++    // does not expose. Attribute values must become text nodes, not attributes.
++    let mut builtins = Vec::new();
++    for kind in [KindTest::Document, KindTest::Element, KindTest::Text,
++        KindTest::Attribute, KindTest::Comment, KindTest::PI, KindTest::Namespace] {
++        let body = match kind {
++            KindTest::Document | KindTest::Element => Transform::ApplyTemplates(
++                Box::new(Transform::Step(NodeMatch::new(Axis::Child, NodeTest::Kind(KindTest::Any)))),
+                 None,
+                 vec![],
+             ),
+-            None,
+-            vec![0],
+-            None,
+-            None,
+-            String::from("child::*"),
+-        ))
+-        // This matches "text()" and copies content
+-        .template(Template::new(
+-            Pattern::try_from("child::text()")?,
+-            Transform::ContextItem,
+-            None,
+-            vec![0],
+-            None,
+-            None,
+-            String::from("child::text()"),
+-        ))
++            KindTest::Text | KindTest::Attribute => Transform::LiteralText(
++                Box::new(Transform::ContextItem), OutputSpec::Normal),
++            _ => Transform::Empty,
++        };
++        builtins.push(Template::new(
++            Pattern::Selection(Branch::SingleStep(crate::pattern::Step::new(
++                Axis::SelfAxis, Axis::SelfAxis, NodeTest::Kind(kind)))),
++            body, None, vec![0], None, None, String::from("built-in"),
++        ));
++    }
++    let mut newctxt = ContextBuilder::new()
++        .template_all(builtins)
+         .template_all(templates)
+         .output_definition(od.clone())
+         .strip(whitespace_mgmt.0)
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index de70c88..71b08f5 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -711,3 +711,13 @@ fn xslt_element_name_patterns_do_not_match_attributes() {
+         assert_eq!(transform_str("<doc v='A'/>", &style), "attribute", "{pattern}");
+     }
+ }
++
++#[test]
++fn xslt_builtin_rules_cover_each_node_kind_and_preserve_mode() {
++    for mode in ["", " mode='m'"] {
++        let style = stylesheet(&format!("<xsl:template match='/'><out><xsl:apply-templates select='doc/@* | doc/node()'{mode}/></out></xsl:template>"));
++        assert_eq!(transform_str("<doc a='A'><v>2</v><v>10</v><!--C--><?pi P?></doc>", &style), "<out>A210</out>");
++    }
++    let style = stylesheet("<xsl:template match='/'><out><xsl:apply-templates select='doc' mode='m'/></out></xsl:template><xsl:template match='v' mode='m'>V</xsl:template><xsl:template match='v'>WRONG</xsl:template>");
++    assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), "<out>VV</out>");
++}
