@@ -51,3 +51,4 @@ Apply after patches 1–8 above. Versions are unchanged; nothing is published.
 | [xsl:text escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |
 | [child-axis name patterns match attributes](xrust-pattern-node-type.md) | [patch](xrust-pattern-node-type.patch) | #3493 |
 | [built-in template rules and modes](xrust-builtins.md) | [patch](xrust-builtins.patch) | #3493 |
+| [escaped and quoted braces in AVTs](xrust-avt-braces.md) | [patch](xrust-avt-braces.patch) | #3493 |

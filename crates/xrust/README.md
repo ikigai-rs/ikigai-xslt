@@ -170,3 +170,5 @@ Child-axis name patterns now require an element, so `match="v"` and `match="*"`
 do not match attributes. See `docs/upstream/xrust-pattern-node-type.md`.
 Built-in template rules now cover every node kind and preserve the selected mode
 through recursion. See `docs/upstream/xrust-builtins.md`.
+Attribute value templates now honor doubled braces and braces inside XPath string
+literals. See `docs/upstream/xrust-avt-braces.md`.

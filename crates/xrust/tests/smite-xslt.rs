@@ -721,3 +721,12 @@ fn xslt_builtin_rules_cover_each_node_kind_and_preserve_mode() {
     let style = stylesheet("<xsl:template match='/'><out><xsl:apply-templates select='doc' mode='m'/></out></xsl:template><xsl:template match='v' mode='m'>V</xsl:template><xsl:template match='v'>WRONG</xsl:template>");
     assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), "<out>VV</out>");
 }
+
+#[test]
+fn xslt_avt_doubled_braces_and_braces_in_xpath_strings() {
+    let style = stylesheet(r#"<xsl:template match="/"><out a="{{x}}" b="{{{doc/v}}}" c="{concat('}', '{')}"/></xsl:template>"#);
+    assert_eq!(transform_str("<doc><v>2</v></doc>", &style), "<out a='{x}' b='{2}' c='}{'/>");
+    for invalid in ["}", "{", "{1 +}", "{1 garbage}", "{1 { 2}"] {
+        assert!(xrust::parser::avt::parse::<xrust::trees::smite::RNode>(invalid, None).is_err(), "{invalid}");
+    }
+}
