@@ -870,11 +870,11 @@ fn refused_attribute_whitespace_character_references() {
         );
         assert_eq!(stock(SRC, &templates).unwrap(), "<out>a </out>");
         let error = ours(SRC, &templates).unwrap_err();
+        assert!(!error.contains("ledger #"), "{error}");
         for detail in [
             "invalid argument `stylesheet`",
             "character reference",
             "space",
-            "#2520",
             "lf-holder",
             "substring",
         ] {
@@ -885,8 +885,9 @@ fn refused_attribute_whitespace_character_references() {
             r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#;
         assert_eq!(stock(&src, read).unwrap(), "<out>a b</out>");
         let error = ours(&src, read).unwrap_err();
+        assert!(!error.contains("ledger #"), "{error}");
         assert!(
-            error.starts_with("invalid argument `src`: refused: character reference"),
+            error.starts_with("invalid argument `src`: refused: for a line feed"),
             "{error}"
         );
     }
@@ -1139,7 +1140,10 @@ fn template_local_parameter_types_follow_defaults_and_call_sites() {
         let t = format!(
             r#"<xsl:template match="/"><out><xsl:call-template name="t"><xsl:with-param name="p" select="{supplied}"/></xsl:call-template></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
         );
-        assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean"));
+        let error = ours(SRC, &t).unwrap_err();
+        assert!(error.contains("may return a boolean"), "{error}");
+        assert!(!error.contains("ledger #"), "{error}");
+        assert!(error.contains("refused: use xsl:choose"), "{error}");
     }
 }
 

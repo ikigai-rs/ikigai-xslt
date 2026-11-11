@@ -401,10 +401,11 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
     if parser.pos != parser.tokens.len() {
         return Ok(None);
     }
+    // Mixed parameter types need an explicit conversion (ledger #2668).
     if parser.ambiguous {
         return Err(Error::InvalidArgument {
             name: "stylesheet".into(),
-            detail: format!("refused: numeric/string conversion in `{source}` may receive a boolean or a nonboolean value (ledger #2668); use xsl:choose to convert mixed parameter values explicitly"),
+            detail: format!("refused: use xsl:choose to convert mixed parameter values explicitly. Numeric/string conversion in `{source}` may receive a boolean or a nonboolean value"),
         });
     }
     Ok(parser.changed.then_some(result.text))
