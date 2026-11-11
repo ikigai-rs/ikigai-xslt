@@ -25,7 +25,12 @@ name = "ikigai-xslt"
 # as written (ledger #3342), and drops 0.5.0's refusal of a value xrust would lowercase: that
 # input now gets the correct answer. A behavior change, so a minor release. Publish
 # ikigai-xrust 2.3.0-ikigai.1 first: this crate's published manifest depends on it by version.
-version = "0.8.0"
+# 0.8.1: fixes. A union match template keeps its namespace bindings in every split alternative
+# (ledger #3396), and the subset analysis compares declarations by identity, so a parameter
+# forwarded from a same-spelled one is no longer refused and two identical value-ofs no longer
+# share a binding (ledger #3398). An extension function inside string() is now refused, as it
+# already was elsewhere. ikigai-xrust is unchanged.
+version = "0.8.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
