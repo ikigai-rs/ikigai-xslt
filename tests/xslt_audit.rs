@@ -226,10 +226,19 @@ fn string_consumers_convert_the_first_node_and_large_integers_are_doubles() {
         ("string-length(doc/v)", "1"),
         ("concat(doc/v, '!')", "2!"),
         ("contains(doc/v, '10')", "false"),
+        // Nested scalar functions need no extra conversion; the node argument still
+        // takes only its first node. Boolean and filtered results retain conversion.
+        ("concat(normalize-space(doc/v), substring('abc', 2))", "2bc"),
+        ("concat(contains(doc/v, '2'), string(doc/v))", "true2"),
+        ("concat(substring('abc', 2)[0], '!')", "!"),
         ("9007199254740992 = 9007199254740993", "true"),
     ] {
         let sheet = style("", &format!("<xsl:value-of select=\"{expression}\"/>"));
-        assert_eq!(issue(SRC, &sheet).unwrap(), expected, "{expression}");
+        assert_eq!(
+            issue(SRC, &sheet).unwrap_or_else(|error| panic!("{expression}: {error}")),
+            expected,
+            "{expression}"
+        );
     }
 }
 

@@ -138,3 +138,33 @@ was 1,024,881 bytes. Those are a different workload, with very little arithmetic
 and should not be used to infer numeric operand cost. Their parsing and evaluation
 costs explain why the warm compile cache does not eliminate transform cost; this
 chart comparison separately prices the per-operand adaptation.
+
+## RSS cold compilation after first-node string adaptation
+
+PR #56's first-node compatibility changes expanded every core string argument and
+then reparsed each expanded enclosing call to discover its result type. Its existing
+`real_rss_stylesheet_accepts_local_string_parameters` regression timed out in two CI
+runs, including [this failed native job](https://github.com/ikigai-rs/ikigai-xslt/actions/runs/43062448183/job/130683907804).
+The RSS fixture has no union expressions; union sorting is not on this path.
+
+The rework classifies known core function results without reparsing their arguments
+and tracks expressions known to return exactly one string, avoiding redundant string
+wrappers around those results. Node selections, variables and unknown calls keep
+their first-node conversions. No engine code or time budget changes.
+
+Measured offline on 2026-11-11, macOS arm64, rustc 1.99.1, debug build:
+
+```sh
+cargo test --test xrust_subset real_rss_stylesheet_accepts_local_string_parameters -- --nocapture
+```
+
+Temporary stage timers in `CompiledStylesheet::compile_modules` measured 1,100.5 ms
+in `numeric_values::prepare` and 879.6 ms in `from_document` at head `59d2c48`,
+versus 334.5 ms and 737.5 ms after the rework. The whole isolated test, including its
+direct-engine control, fell from 2.49 s to 1.54 s. These are single-run observations,
+not CI thresholds or cross-platform performance guarantees; the timers were removed.
+
+The existing RSS regression still uses the default five-second budget and checks
+byte-identical output against its golden fixture. The audit's string-consumer cases
+also cover nested scalar calls, boolean conversion, and a scalar expression filtered
+to an empty sequence. The existing FOAF golden regression remains unchanged.

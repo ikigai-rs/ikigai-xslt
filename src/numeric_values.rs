@@ -84,6 +84,7 @@ pub(crate) fn tokens(s: &str) -> Option<Vec<&str>> {
 struct Expr {
     text: String,
     kind: Kind,
+    is_string: bool,
 }
 
 impl Expr {
@@ -91,6 +92,15 @@ impl Expr {
         Self {
             text,
             kind: Kind::Other,
+            is_string: false,
+        }
+    }
+
+    fn string(text: String) -> Self {
+        Self {
+            text,
+            kind: Kind::Other,
+            is_string: true,
         }
     }
 }
@@ -118,6 +128,12 @@ fn numeric(value: &str) -> String {
 
 impl Parser<'_> {
     fn conversion(&mut self, value: &Expr, string: bool) -> String {
+        // A string literal or a core string function already returns one string.
+        // Rewrapping nested scalar calls grows the XPath fed back to xrust without
+        // changing its value. Node selections and unknown values still need [1].
+        if string && value.is_string {
+            return value.text.clone();
+        }
         match value.kind {
             Kind::Boolean => {
                 // xrust supports conditional expressions internally. Each branch
@@ -154,6 +170,7 @@ impl Parser<'_> {
         let item = Expr {
             text: format!("${}", self.item_name),
             kind: value.kind,
+            is_string: false,
         };
         let converted = self.conversion(&item, false);
         format!(
@@ -205,6 +222,7 @@ impl Parser<'_> {
             let no = self.expression(1)?;
             return Some(Expr {
                 text: format!("(if ({condition}) then {yes} else {no})"),
+                is_string: yes.is_string && no.is_string,
                 kind: if yes.kind == no.kind {
                     yes.kind
                 } else {
@@ -256,10 +274,12 @@ impl Parser<'_> {
                         self.numeric_items(&right)
                     ),
                     kind: Kind::Boolean,
+                    is_string: false,
                 }
             } else {
                 Expr {
                     text: format!("{left} {op} {right}"),
+                    is_string: false,
                     kind: if precedence <= 4 {
                         Kind::Boolean
                     } else {
@@ -284,6 +304,7 @@ impl Parser<'_> {
                 Expr {
                     text: format!("({value})"),
                     kind: value.kind,
+                    is_string: value.is_string,
                 }
             }
             "/" | "//" => {
@@ -313,7 +334,11 @@ impl Parser<'_> {
                     } else {
                         Kind::Other
                     };
-                    Expr { text, kind }
+                    Expr {
+                        text,
+                        kind,
+                        is_string: false,
+                    }
                 }
             }
             ")" | "]" | "," | "=" | "!=" | "<" | ">" | "<=" | ">=" => return None,
@@ -336,11 +361,11 @@ impl Parser<'_> {
                         let default = Expr::other(".".into());
                         let arg = args.first().unwrap_or(&default);
                         let converted = self.conversion(arg, token == "string");
-                        Expr::other(if token == "number" {
-                            format!("(number({converted}) * 1.0)")
+                        if token == "number" {
+                            Expr::other(format!("(number({converted}) * 1.0)"))
                         } else {
-                            converted
-                        })
+                            Expr::string(converted)
+                        }
                     } else {
                         // XPath 1.0 string arguments use the first node's string value.
                         // xrust's later-version sequence conversion concatenates them.
@@ -354,7 +379,7 @@ impl Parser<'_> {
                         };
                         for arg in args.iter_mut().take(string_args) {
                             let text = self.conversion(arg, true);
-                            *arg = Expr::other(text);
+                            *arg = Expr::string(text);
                             self.changed = true;
                         }
                         let text = format!(
@@ -364,27 +389,40 @@ impl Parser<'_> {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
-                        // The value-of analysis's table of core function result types,
-                        // so an extension function is Unknown here too (#3398).
-                        let kind = match &self.node {
-                            Some(n) => boolean_values::expression_kind(&text, n),
-                            None if matches!(
-                                token.as_str(),
-                                "true"
-                                    | "false"
-                                    | "boolean"
-                                    | "not"
-                                    | "contains"
-                                    | "starts-with"
-                                    | "ends-with"
-                                    | "lang"
-                            ) =>
-                            {
-                                Kind::Boolean
-                            }
-                            None => Kind::Other,
+                        // Core scalar result types do not depend on their arguments.
+                        // Parsing the expanded arguments here repeats all generated
+                        // first-node conversions, once for every enclosing call.
+                        let kind = match token.as_str() {
+                            "true" | "false" | "boolean" | "not" | "contains" | "starts-with"
+                            | "lang" => Kind::Boolean,
+                            "concat" | "substring" | "substring-before" | "substring-after"
+                            | "normalize-space" | "translate" | "string-length" | "count"
+                            | "sum" | "floor" | "ceiling" | "round" | "position" | "last"
+                            | "name" | "local-name" | "namespace-uri" => Kind::Other,
+                            // Keep the existing conservative analysis for other calls,
+                            // including namespaced spellings of core functions.
+                            _ => match &self.node {
+                                Some(n) => boolean_values::expression_kind(&text, n),
+                                None => Kind::Other,
+                            },
                         };
-                        Expr { text, kind }
+                        let is_string = matches!(
+                            token.as_str(),
+                            "concat"
+                                | "substring"
+                                | "substring-before"
+                                | "substring-after"
+                                | "normalize-space"
+                                | "translate"
+                                | "name"
+                                | "local-name"
+                                | "namespace-uri"
+                        );
+                        Expr {
+                            text,
+                            kind,
+                            is_string,
+                        }
                     }
                 } else if self.peek() == Some("::") {
                     self.take();
@@ -401,6 +439,8 @@ impl Parser<'_> {
                     // distinguish adjacent integers above the double precision limit.
                     self.changed = true;
                     Expr::other(format!("{token}.0"))
+                } else if token.starts_with(['\'', '"']) {
+                    Expr::string(token)
                 } else {
                     Expr::other(token)
                 }
@@ -412,6 +452,7 @@ impl Parser<'_> {
             self.expect("]")?;
             value = Expr {
                 text: format!("{value}[{predicate}]"),
+                is_string: false,
                 kind: if value.kind == Kind::Other {
                     Kind::Other
                 } else {
