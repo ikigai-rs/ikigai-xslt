@@ -480,7 +480,8 @@ where
         .child_iter()
         .filter(|c| c.is_element() && c.name().is_some_and(|cn| cn == *XSLTEMPLATE))
         .filter(|c| c.get_attribute_node(&ATTRMATCH).is_some())
-        .try_for_each(|c| {
+        .enumerate()
+        .try_for_each(|(document_order, c)| {
             let m = c.get_attribute(&ATTRMATCH);
             let pat = Pattern::try_from((m.to_string(), c.clone())).map_err(|e| {
                 Error::new(
@@ -558,7 +559,7 @@ where
                 Transform::SequenceItems(body),
                 Some(prio),
                 vec![import],
-                None,
+                Some(document_order),
                 qmode,
                 m.to_string(),
             ));

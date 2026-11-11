@@ -69,7 +69,9 @@ impl<N: Node> Ord for Template<N> {
                 other.priority.map_or_else(
                     || Ordering::Less,
                     |t| {
-                        if s < t {
+                        if s == t {
+                            Ordering::Equal
+                        } else if s < t {
                             Ordering::Greater
                         } else {
                             Ordering::Less

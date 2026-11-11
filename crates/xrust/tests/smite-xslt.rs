@@ -702,3 +702,9 @@ fn xslt_text_escapes_only_during_serialization() {
     }
     assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:text disable-output-escaping="yes">&lt;b/&gt;</xsl:text></out></xsl:template>"#)), "<out><b/></out>");
 }
+
+#[test]
+fn xslt_equal_priority_uses_last_declaration() {
+    assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/">first</xsl:template><xsl:template match="/">last</xsl:template>"#)), "last");
+    assert_eq!(transform_str("<doc><item/></doc>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item">first</xsl:template><xsl:template match="item">last</xsl:template>"#)), "<out>last</out>");
+}

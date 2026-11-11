@@ -1,0 +1,52 @@
+diff --git a/src/transform/template.rs b/src/transform/template.rs
+index a641485..e4d03cd 100644
+--- a/src/transform/template.rs
++++ b/src/transform/template.rs
+@@ -69,7 +69,9 @@ impl<N: Node> Ord for Template<N> {
+                 other.priority.map_or_else(
+                     || Ordering::Less,
+                     |t| {
+-                        if s < t {
++                        if s == t {
++                            Ordering::Equal
++                        } else if s < t {
+                             Ordering::Greater
+                         } else {
+                             Ordering::Less
+diff --git a/src/xslt.rs b/src/xslt.rs
+index 52154c0..285beab 100644
+--- a/src/xslt.rs
++++ b/src/xslt.rs
+@@ -480,7 +480,8 @@ where
+         .child_iter()
+         .filter(|c| c.is_element() && c.name().is_some_and(|cn| cn == *XSLTEMPLATE))
+         .filter(|c| c.get_attribute_node(&ATTRMATCH).is_some())
+-        .try_for_each(|c| {
++        .enumerate()
++        .try_for_each(|(document_order, c)| {
+             let m = c.get_attribute(&ATTRMATCH);
+             let pat = Pattern::try_from((m.to_string(), c.clone())).map_err(|e| {
+                 Error::new(
+@@ -558,7 +559,7 @@ where
+                 Transform::SequenceItems(body),
+                 Some(prio),
+                 vec![import],
+-                None,
++                Some(document_order),
+                 qmode,
+                 m.to_string(),
+             ));
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index 2773c73..afc8940 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -702,3 +702,9 @@ fn xslt_text_escapes_only_during_serialization() {
+     }
+     assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/"><out><xsl:text disable-output-escaping="yes">&lt;b/&gt;</xsl:text></out></xsl:template>"#)), "<out><b/></out>");
+ }
++
++#[test]
++fn xslt_equal_priority_uses_last_declaration() {
++    assert_eq!(transform_str("<doc/>", &stylesheet(r#"<xsl:template match="/">first</xsl:template><xsl:template match="/">last</xsl:template>"#)), "last");
++    assert_eq!(transform_str("<doc><item/></doc>", &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item">first</xsl:template><xsl:template match="item">last</xsl:template>"#)), "<out>last</out>");
++}
