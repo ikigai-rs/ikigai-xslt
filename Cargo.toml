@@ -25,11 +25,16 @@ name = "ikigai-xslt"
 # as written (ledger #3342), and drops 0.5.0's refusal of a value xrust would lowercase: that
 # input now gets the correct answer. A behavior change, so a minor release. Publish
 # ikigai-xrust 2.3.0-ikigai.1 first: this crate's published manifest depends on it by version.
+# 0.8.1: fixes. A union match template keeps its namespace bindings in every split alternative
+# (ledger #3396), and the subset analysis compares declarations by identity, so a parameter
+# forwarded from a same-spelled one is no longer refused and two identical value-ofs no longer
+# share a binding (ledger #3398). An extension function inside string() is now refused, as it
+# already was elsewhere. ikigai-xrust is unchanged.
 # 0.9.0: builds on ikigai-xrust 2.3.0-ikigai.2, which also fixes whitespace-only xsl:text,
 # booleans as strings and numbers, node and unsigned numeric conversion, a reversed node
 # comparison, attribute whitespace character references and
 # literal attributes in a namespace (ledger #3343). Their refusals and the boolean value-of
-# adaptation go: input 0.8.0 refused or rewrote is now answered. A behavior change, so a
+# adaptation go: input 0.8.1 refused or rewrote is now answered. A behavior change, so a
 # minor release. Publish ikigai-xrust 2.3.0-ikigai.2 first.
 version = "0.9.0"
 edition = "2021"

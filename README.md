@@ -220,7 +220,9 @@ Before compilation, this crate converts each numeric operand through the
 string value of its first item, trimming XML whitespace; empty selections and nonnumeric
 text yield `NaN`. `number()` without an argument uses the context node. XPath 1.0 operator
 precedence, predicates, variable references, names and string literals are preserved.
-Syntax outside this adapter's XPath 1.0 grammar is left to xrust. Generated expressions
+Conditional `if (...) then ... else ...` expressions propagate both arms' types through
+conversions. Valid syntax outside the adapter's grammar is refused when it may need a
+numeric or string adaptation; malformed XPath is left to xrust. Generated expressions
 obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the conversion
 adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
 `substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
@@ -228,7 +230,7 @@ pair of selected items to numbers, preserving XPath 1.0's existential semantics 
 xrust's lexical comparison of strings. Integer literals larger than `i64`, which xrust
 refuses on purpose (its own `xpath_bigint` test), are rewritten to `number('…')`. `string(true())` / `string(false())` return `true` / `false`;
 the strings `'true'` and `'false'` still convert to `NaN`. Variable and parameter types
-use the bounded analysis below; one that may be boolean or not (refused through 0.8.0) is
+use the bounded analysis below; one that may be boolean or not (refused through 0.8.1) is
 left to xrust, which converts either. What still needs the adapter is the relational
 comparisons, which xrust makes lexical for a string on the left (`'10' < '2'` is true) and
 an error for nonnumeric text (`/r/bad > 0`), and unary signs, which xrust does not
@@ -237,16 +239,25 @@ xrust's own answers.
 
 **Boolean string values (#2520):** stock xrust 2.3.0 writes a boolean's string value as
 the empty string, so `<xsl:value-of select="1 &gt; 0"/>`, `string(true())` and
-`concat('[', true(), ']')` lost it. Through 0.8.0 this crate rewrote known boolean
-`value-of` results to `xsl:choose` and refused those whose type it could not establish
-(global boolean-default parameters, mixed template parameters, long alias chains). The xrust
+`concat('[', true(), ']')` lost it. Through 0.8.1 this crate rewrote known boolean
+`value-of` and `copy-of` results to `xsl:choose` and refused those whose type it could not
+establish (global boolean-default parameters, mixed template parameters, long alias chains,
+boolean `xsl:sequence`). The xrust
 it carries writes `true` and `false` (ledger #3343), so every one of those is answered and
 none is refused. The fix is written up for upstream in
 [`docs/upstream/xrust-boolean-string.md`](docs/upstream/xrust-boolean-string.md).
 
+**A boolean in a result tree fragment (#3412):** xrust keeps an atomic boolean that
+`xsl:copy-of` or `xsl:sequence` returns as that value inside a variable's or parameter's
+content, so `boolean($v)` of `<xsl:variable name="v"><xsl:copy-of select="false()"/></xsl:variable>`
+would be `false` where XSLT 1.0 says `true`. This crate makes a known boolean `copy-of`
+construct `true` / `false` text with `xsl:choose`, and refuses as `InvalidArgument` naming
+`stylesheet` a `copy-of` whose type it cannot establish and a boolean or unknown
+`xsl:sequence`, which preserves atomic types by design.
+
 **A literal attribute in a namespace** (#2520): stock xrust 2.3.0 declared namespaces only for
 a literal element's own name, so `<out><b rdf:datatype="x"/></out>` panicked in
-serialization (`unable to find namespace`), and 0.5.0 through 0.8.0 refused it unless a literal
+serialization (`unable to find namespace`), and 0.5.0 through 0.8.1 refused it unless a literal
 element in that namespace enclosed it on every path. The xrust this crate carries declares the
 attribute's namespace on its element (ledger #3343), so nothing is refused. The fix is written
 up for upstream in

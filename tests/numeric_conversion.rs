@@ -205,7 +205,7 @@ fn boolean_variables_parameters_predicates_and_avts_are_adapted() {
     assert!(result.ends_with(">2[true][1]</out>"), "{result}");
 }
 
-/// Refused through 0.8.0, when xrust gave a boolean no number or string value (#2668);
+/// Refused through 0.8.1, when xrust gave a boolean no number or string value (#2668);
 /// the carried xrust converts either kind itself (ledger #3343).
 #[test]
 fn parameter_conversions_that_may_be_boolean_are_answered() {

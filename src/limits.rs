@@ -58,7 +58,7 @@
 //! ## Attribute whitespace references (ledger #2520)
 //!
 //! xrust 2.3.0 normalizes a referenced tab, LF or CR in an attribute to a space, and 0.5.0
-//! through 0.8.0 refused such a reference in either input. The xrust this crate carries keeps
+//! through 0.8.1 refused such a reference in either input. The xrust this crate carries keeps
 //! the referenced character, as XML 1.0 §3.3.3 says (ledger #3343), so nothing is refused.
 //!
 //! ## Time (ledger #1040)
@@ -761,17 +761,16 @@ pub(crate) fn release_stylesheet_threads() {
     pool::HOMES.release();
 }
 
-/// The refusal a transform past its budget is answered with.
+/// The refusal a transform past its budget is answered with (ledger #1040).
 #[cfg(not(target_family = "wasm"))]
 fn timeout(budget: Duration) -> Error {
     Error::Timeout(format!(
-        "this XSLT transform ran past its time budget of {} ms and its caller was answered \
-         instead of waiting (ledger #1040); nothing it produced is returned. The XSLT engine \
-         cannot be stopped partway, so it finishes on its own thread and is counted until it \
-         does. Some shapes are super-linear in the engine — a long chain of operators, a \
-         template that recurses to build a deep result, a path nested inside a predicate \
-         over every node — so make the input or the stylesheet smaller, or, as the host, run \
-         it with a larger budget",
+        "Make the input or the stylesheet smaller, or, as the host, run it with a larger \
+         budget. This XSLT transform ran past its time budget of {} ms; nothing it produced \
+         is returned. The XSLT engine cannot be stopped partway, so it finishes on its own \
+         thread and is counted until it does. Some shapes are super-linear in the engine: \
+         a long chain of operators, a template that recurses to build a deep result, or a \
+         path nested inside a predicate over every node",
         budget.as_millis()
     ))
 }
@@ -840,16 +839,16 @@ mod pool {
         m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// A transient refusal when too many abandoned transforms are still running.
+    /// A transient refusal when too many abandoned transforms are still running (ledger #1040).
     fn refuse_if_overdue() -> Result<()> {
         let (running, most) = (overdue(), max_overdue_transforms());
         if running >= most {
             return Err(Error::Unavailable(format!(
-                "{running} XSLT transforms are still running after their callers' time \
-                 budgets ran out (the most allowed is {most}, a quarter of this machine's \
+                "Retry shortly. {running} XSLT transforms are still running after their callers' \
+                 time budgets ran out (the most allowed is {most}, a quarter of this machine's \
                  cores); the engine cannot be stopped partway, so new transforms are \
                  refused until one finishes, rather than letting each request hold \
-                 another core (ledger #1040). Retry shortly"
+                 another core"
             )));
         }
         Ok(())
@@ -1124,13 +1123,13 @@ mod pool {
             };
             {
                 let mut queue = lock(&home.queue);
+                // Keep the stylesheet queue within its time budget (ledger #2826).
                 if queue.jobs.len() >= MAX_QUEUED_PER_STYLESHEET {
                     return Err(Error::Unavailable(format!(
-                        "{} XSLT transforms of this stylesheet are already waiting their turn \
-                         (the most allowed is {MAX_QUEUED_PER_STYLESHEET}); transforms of one \
-                         stylesheet run one at a time on the thread that compiled it (ledger \
-                         #2826), so this one is refused rather than queued past its time \
-                         budget. Retry shortly",
+                        "Retry shortly. {} XSLT transforms of this stylesheet are already waiting \
+                         their turn (the most allowed is {MAX_QUEUED_PER_STYLESHEET}); transforms of one \
+                         stylesheet run one at a time on the thread that compiled it, so this one \
+                         is refused rather than queued past its time budget.",
                         queue.jobs.len()
                     )));
                 }
@@ -1487,7 +1486,7 @@ mod tests {
         });
         let refused = run_keyed(&HOMES, "five", Some(long), reset, || 0);
         assert!(
-            matches!(&refused, Err(Error::Unavailable(m)) if m.contains("already waiting")),
+            matches!(&refused, Err(Error::Unavailable(m)) if m.contains("already waiting") && !m.contains("ledger #") && m.starts_with("Retry shortly.")),
             "{refused:?}"
         );
         busy.join().unwrap().unwrap();

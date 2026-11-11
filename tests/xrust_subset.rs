@@ -859,7 +859,7 @@ fn prefixed_values_at_the_endpoint_keep_their_case() {
 }
 
 // Ledger #2520: xrust 2.3.0 read a whitespace character reference in an attribute as a
-// space, and 0.5.0 through 0.8.0 refused one in either input. The carried xrust keeps the
+// space, and 0.5.0 through 0.8.1 refused one in either input. The carried xrust keeps the
 // referenced character (ledger #3343), in a stylesheet and in a source alike.
 #[test]
 fn attribute_whitespace_character_references_keep_their_characters() {
@@ -910,7 +910,7 @@ fn newline_workaround_and_reference_boundaries() {
     assert_eq!(ours(src, t).unwrap(), "<out>a b</out>");
 }
 
-/// #2520: xrust 2.3.0 wrote a boolean's string value as empty; through 0.8.0 this crate
+/// #2520: xrust 2.3.0 wrote a boolean's string value as empty; through 0.8.1 this crate
 /// rewrote known boolean results to xsl:choose and refused the rest. The carried xrust
 /// writes `true` and `false` (ledger #3343), so both paths answer and nothing is refused.
 #[test]
@@ -955,7 +955,7 @@ fn boolean_parameter_value_of_is_admitted() {
 }
 
 /// #2520: xrust 2.3.0 panicked serializing a literal attribute whose namespace no literal
-/// element name declared, and 0.5.0 through 0.8.0 refused it. The carried xrust declares
+/// element name declared, and 0.5.0 through 0.8.1 refused it. The carried xrust declares
 /// the attribute's namespace itself (ledger #3343).
 #[test]
 fn literal_attribute_namespace_is_declared() {
@@ -1003,7 +1003,7 @@ fn constructs_refused_through_0_8_are_answered_at_the_endpoint() {
     }
 }
 
-/// Through 0.8.0 an alias chain of `MAX_EXPR_DEPTH` booleans was refused (#2520); now any
+/// Through 0.8.1 an alias chain of `MAX_EXPR_DEPTH` booleans was refused (#2520); now any
 /// chain is answered. Eight links, not 32: the 32-link chain ran past the 5 s budget on CI's
 /// debug runner, and a transform past its budget makes the rest of this file's wait.
 #[test]
@@ -1087,7 +1087,7 @@ fn template_local_parameter_types_follow_defaults_and_call_sites() {
     let t = r#"<xsl:template match="/"><out><xsl:variable name="v" select="false()"/><xsl:call-template name="first"><xsl:with-param name="p" select="$v"/></xsl:call-template></out></xsl:template><xsl:template name="first"><xsl:param name="p" select="true()"/><xsl:call-template name="second"><xsl:with-param name="q" select="$p"/></xsl:call-template></xsl:template><xsl:template name="second"><xsl:param name="q" select="true()"/><xsl:value-of select="$q"/></xsl:template>"#;
     assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 
-    // Mixed boolean and string values, refused through 0.8.0 (#2520), are answered.
+    // Mixed boolean and string values, refused through 0.8.1 (#2520), are answered.
     for (default, supplied, expected) in
         [("'text'", "true()", "true"), ("false()", "'text'", "text")]
     {
@@ -1112,7 +1112,7 @@ fn template_local_parameters_consider_apply_templates_conservatively() {
     }
 }
 
-/// Refused through 0.8.0 unless every call site supplied the namespace (#2520).
+/// Refused through 0.8.1 unless every call site supplied the namespace (#2520).
 #[test]
 fn a_named_template_literal_attribute_is_answered_from_any_call_site() {
     let callee = r#"<xsl:template name="typed"><b rdf:datatype="x">1</b></xsl:template>"#;

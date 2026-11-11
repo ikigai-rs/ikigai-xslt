@@ -59,7 +59,7 @@
 //! does not call void, rather than as XML (ledger #193). Prefixed attribute values keep their
 //! case: this crate builds on `ikigai-xrust`, xrust 2.3.0 with its lowercasing of them fixed
 //! (ledger #3342; 0.5.0 through 0.7.0 refused such a value, ledger #2519), and since 0.9.0
-//! with the other defects `crates/xrust/README.md` lists fixed too, so 0.8.0's refusals of
+//! with the other defects `crates/xrust/README.md` lists fixed too, so 0.8.1's refusals of
 //! attribute whitespace references, literal attributes in a namespace and boolean `value-of`
 //! results it could not type are gone (ledger #3343).
 //!
@@ -462,6 +462,7 @@ impl CompiledStylesheet {
         let output_method = output_method_of(&styledoc);
         let output_media_type = output_attribute_of(&styledoc, "media-type");
         subset::check(&styledoc)?;
+        boolean_values::prepare(&styledoc)?;
         numeric_values::prepare(&styledoc)?;
         let parameters = parameters::prepare(&styledoc)?;
         // Module assembly has already expanded static edges so the guards above see
