@@ -241,9 +241,15 @@ once. It reads xrust's parsed XPath, so comparisons inside predicates and string
 not trigger this adaptation. Boolean variables are followed through their lexical declarations,
 up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused. A template-local
 parameter combines its default with every `with-param` from calls to its named template
-and, conservatively, every `apply-templates` passing that parameter name. String-only
-parameters remain accepted; consistently boolean parameters are adapted; mixed or unknown
-types are refused. Global parameters retain the request-argument rule: strings can override
+and, conservatively, every `apply-templates` passing that parameter name. Each declaration
+is its own: two templates' identically written `xsl:param` are not one (#3398). A recursive
+template's own calls passing its parameter on are checked against a guess, string and then
+boolean, which holds only if every call site gives exactly that kind under it; the whole
+analysis of one expression visits at most `16 × MAX_EXPR_DEPTH` declarations. XPath 1.0
+core functions have their fixed result types (`lang` boolean, `namespace-uri` string
+included); extension functions are unknown, in `xsl:value-of` and in numeric or string
+conversion alike. String-only parameters remain accepted; consistently boolean parameters
+are adapted; mixed or unknown types are refused. Global parameters retain the request-argument rule: strings can override
 the default, so a boolean default is refused.
 
 | construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |

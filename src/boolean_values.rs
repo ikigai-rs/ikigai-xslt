@@ -2,6 +2,8 @@
 //! Inspect the parsed XPath result type, not comparison tokens in predicates or strings.
 //! Known boolean results become xsl:choose, evaluated once in the original context.
 //! Variable results that may change type (parameters, ambiguous bindings) are refused.
+//! Declarations are compared by identity: xrust's `==` on nodes is structural, so two
+//! templates' `<xsl:param name="iri"/>` would otherwise be one declaration (#3398).
 
 use crate::{node_id::IdNode, XSL_NS};
 use ikigai_core::{Error, Result};
@@ -19,6 +21,32 @@ pub(crate) enum Kind {
     Boolean,
     Other,
     Unknown,
+}
+
+// A declaration under analysis. A local parameter reached again through its own
+// template's calls answers the kind assumed for it; any other cycle is Unknown.
+struct Visit {
+    declaration: IdNode,
+    assumed: Option<Kind>,
+    read: bool,
+}
+
+// Bounds the whole analysis of one expression: alias chains by depth, and recursive
+// parameters' passes by a total number of declaration visits.
+struct Analysis {
+    stack: Vec<Visit>,
+    visits: usize,
+}
+
+const MAX_VISITS: usize = 16 * crate::limits::MAX_EXPR_DEPTH;
+
+impl Analysis {
+    fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            visits: 0,
+        }
+    }
 }
 
 fn is_xsl(n: &IdNode, local: &str) -> bool {
@@ -39,7 +67,7 @@ fn binding(node: &IdNode, name: &str) -> Option<IdNode> {
         let global = is_xsl(&parent, "stylesheet") || is_xsl(&parent, "transform");
         let mut found = None;
         for child in parent.child_iter() {
-            if !global && child == current {
+            if !global && child.is_same(&current) {
                 break;
             }
             if (is_xsl(&child, "variable") || is_xsl(&child, "param"))
@@ -60,15 +88,28 @@ fn binding(node: &IdNode, name: &str) -> Option<IdNode> {
 // their lexical scope using the same bounded analysis as direct value-of.
 pub(crate) fn expression_kind(source: &str, node: &IdNode) -> Kind {
     parse(source, Some(node.clone()), None)
-        .map(|t| kind(&t, node, &mut Vec::new()))
+        .map(|t| kind(&t, node, &mut Analysis::new()))
         .unwrap_or(Kind::Unknown)
 }
 
-fn kind(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>) -> Kind {
+// The result types of the XPath 1.0 core functions xrust 2.3.0 does not parse into
+// a Transform of their own. Any other function, including extensions, is Unknown.
+fn invoked_kind(name: &QName) -> Kind {
+    if name.namespace_uri().is_some() {
+        return Kind::Unknown;
+    }
+    match name.local_name().to_string().as_str() {
+        "lang" => Kind::Boolean,
+        "namespace-uri" => Kind::Other,
+        _ => Kind::Unknown,
+    }
+}
+
+fn kind(t: &Transform<IdNode>, node: &IdNode, seen: &mut Analysis) -> Kind {
     kind_in(t, node, seen, Kind::Other)
 }
 
-fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: Kind) -> Kind {
+fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Analysis, input: Kind) -> Kind {
     use Transform::*;
     match t {
         // Postfix expressions, including true() and $v, are Compose([value, Compose([])]).
@@ -100,31 +141,7 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: 
             let Some(declaration) = binding(node, name) else {
                 return Kind::Unknown;
             };
-            // Alias chains need a bound even when every individual XPath is shallow.
-            if seen.len() >= crate::limits::MAX_EXPR_DEPTH || seen.contains(&declaration) {
-                return Kind::Unknown;
-            }
-            seen.push(declaration.clone());
-            let result = declaration_kind(&declaration, seen);
-            let result = if is_xsl(&declaration, "param") {
-                let global = declaration
-                    .parent()
-                    .is_some_and(|p| is_xsl(&p, "stylesheet") || is_xsl(&p, "transform"));
-                if global {
-                    // Request arguments supply strings, regardless of the default.
-                    if result == Kind::Other {
-                        result
-                    } else {
-                        Kind::Unknown
-                    }
-                } else {
-                    local_parameter_kind(&declaration, seen, result)
-                }
-            } else {
-                result
-            };
-            seen.pop();
-            result
+            reference_kind(&declaration, seen)
         }
         SequenceItems(items) if items.len() == 1 => kind(&items[0], node, seen),
         SequenceItems(items) => {
@@ -145,13 +162,67 @@ fn kind_in(t: &Transform<IdNode>, node: &IdNode, seen: &mut Vec<IdNode>, input: 
                 Kind::Unknown
             }
         }
-        Invoke(..) | Call(..) => Kind::Unknown,
+        Invoke(name, ..) => invoked_kind(name),
+        Call(..) => Kind::Unknown,
         _ => Kind::Other,
     }
 }
 
+fn reference_kind(declaration: &IdNode, seen: &mut Analysis) -> Kind {
+    if let Some(visit) = seen
+        .stack
+        .iter_mut()
+        .find(|v| v.declaration.is_same(declaration))
+    {
+        visit.read = true;
+        return visit.assumed.unwrap_or(Kind::Unknown);
+    }
+    let global = declaration
+        .parent()
+        .is_some_and(|p| is_xsl(&p, "stylesheet") || is_xsl(&p, "transform"));
+    let local_param = is_xsl(declaration, "param") && !global;
+    // A recursive parameter's kind is a guess, string first, then boolean. The guess
+    // holds when every call site, the recursive ones reading the guess, gives exactly
+    // that kind: by induction on the recursion depth, no call passes anything else.
+    let mut guesses = [Kind::Other, Kind::Boolean].into_iter();
+    let mut assumed = guesses.next().unwrap();
+    loop {
+        // Alias chains need a bound even when every individual XPath is shallow.
+        if seen.stack.len() >= crate::limits::MAX_EXPR_DEPTH || seen.visits >= MAX_VISITS {
+            return Kind::Unknown;
+        }
+        seen.visits += 1;
+        seen.stack.push(Visit {
+            declaration: declaration.clone(),
+            assumed: local_param.then_some(assumed),
+            read: false,
+        });
+        let result = declaration_kind(declaration, seen);
+        let result = if !is_xsl(declaration, "param") {
+            result
+        } else if global {
+            // Request arguments supply strings, regardless of the default.
+            if result == Kind::Other {
+                result
+            } else {
+                Kind::Unknown
+            }
+        } else {
+            local_parameter_kind(declaration, seen, result)
+        };
+        let visit = seen.stack.pop().unwrap();
+        if !local_param || !visit.read || result == assumed {
+            return result;
+        }
+        match guesses.next() {
+            Some(guess) => assumed = guess,
+            None => return Kind::Unknown,
+        }
+    }
+}
+
 // A missing select denotes a result tree fragment or an empty string.
-fn declaration_kind(node: &IdNode, seen: &mut Vec<IdNode>) -> Kind {
+fn declaration_kind(node: &IdNode, seen: &mut Analysis) -> Kind {
     match node.get_attribute_node(&QName::try_from("select").unwrap()) {
         None => Kind::Other,
         Some(a) => parse(&a.value().to_string(), Some(node.clone()), None)
@@ -160,7 +231,7 @@ fn declaration_kind(node: &IdNode, seen: &mut Vec<IdNode>) -> Kind {
     }
 }
 
-fn local_parameter_kind(param: &IdNode, seen: &mut Vec<IdNode>, default: Kind) -> Kind {
+fn local_parameter_kind(param: &IdNode, seen: &mut Analysis, default: Kind) -> Kind {
     let Some(template) = param.parent().filter(|p| is_xsl(p, "template")) else {
         return Kind::Unknown;
     };
@@ -221,7 +292,7 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
         let Ok(t) = parse(&select, Some(n.clone()), None) else {
             continue;
         };
-        match kind(&t, &n, &mut Vec::new()) {
+        match kind(&t, &n, &mut Analysis::new()) {
             Kind::Boolean => booleans.push((n, select)),
             Kind::Other => {},
             Kind::Unknown => return Err(Error::InvalidArgument {
@@ -267,6 +338,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn core_function_result_types() {
+        let doc = crate::parse_xml(&format!(
+            "<xsl:stylesheet xmlns:xsl='{XSL_NS}' xmlns:ex='urn:ex' version='1.0'><xsl:template match='/'/></xsl:stylesheet>"
+        ))
+        .unwrap();
+        let node = doc.child_iter().next().unwrap();
+        for (expected, functions) in [
+            (
+                Kind::Other,
+                &[
+                    "string(.)",
+                    "concat('a', 'b')",
+                    "substring('a', 1)",
+                    "substring-before('a', 'b')",
+                    "substring-after('a', 'b')",
+                    "normalize-space('a')",
+                    "translate('a', 'b', 'c')",
+                    "local-name()",
+                    "name()",
+                    "namespace-uri()",
+                    "count(*)",
+                    "sum(*)",
+                    "number('1')",
+                    "string-length('a')",
+                    "floor(1)",
+                    "ceiling(1)",
+                    "round(1)",
+                    "position()",
+                    "last()",
+                ][..],
+            ),
+            (
+                Kind::Boolean,
+                &[
+                    "boolean(*)",
+                    "not(*)",
+                    "true()",
+                    "false()",
+                    "lang('en')",
+                    "contains('a', 'b')",
+                    "starts-with('a', 'b')",
+                ][..],
+            ),
+            (
+                Kind::Unknown,
+                &["ex:f()", "ex:lang('en')", "unparsed-entity-uri('a')"][..],
+            ),
+        ] {
+            for function in functions {
+                assert!(expression_kind(function, &node) == expected, "{function}");
+            }
+        }
+    }
+
+    #[test]
     fn real_stylesheet_value_of_kind_counts() {
         // These are the unmodified fixture bodies, including the CMS template
         // library before a consumer adds its caller. Pin every value-of site,
@@ -295,7 +421,7 @@ mod tests {
                 stack.extend(node.child_iter());
                 if is_xsl(&node, "value-of") {
                     let expr = parse(&attr(&node, "select"), Some(node.clone()), None).unwrap();
-                    let index = match kind(&expr, &node, &mut Vec::new()) {
+                    let index = match kind(&expr, &node, &mut Analysis::new()) {
                         Kind::Boolean => 0,
                         Kind::Other => 1,
                         Kind::Unknown => 2,
