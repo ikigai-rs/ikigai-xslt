@@ -66,8 +66,9 @@ fn ours(src: &str, templates: &str) -> Result<String, String> {
 
 /// Through xrust directly, exactly as its own `xslt` module documentation drives it: the
 /// reproduction an upstream report would carry. "Stock" is xrust as this build carries it,
-/// `ikigai-xrust` (`crates/xrust`): xrust 2.3.0 with one fix, prefixed attribute values kept
-/// as written (ledger #3342). Every other answer pinned here is xrust 2.3.0's own.
+/// `ikigai-xrust` (`crates/xrust`): xrust 2.3.0 with the fixes its README lists (ledger #3342,
+/// #3343), the first of them prefixed attribute values kept
+/// as written. Every answer pinned here and not named as fixed is xrust 2.3.0's own.
 fn stock(src: &str, templates: &str) -> Result<String, String> {
     stock_stylesheet(src, &style(templates))
 }
@@ -151,7 +152,7 @@ fn pin_refused(src: &str, templates: &str, wrong: &str, correct: &str, row: &str
 }
 
 /// The xrust release this build carries, read from the lock file the build resolved:
-/// `ikigai-xrust` 2.3.0-ikigai.1 is xrust 2.3.0 plus the fix `crates/xrust/README.md` names.
+/// `ikigai-xrust` 2.3.0-ikigai.2 is xrust 2.3.0 plus the fixes `crates/xrust/README.md` names.
 fn xrust_in_this_build() -> String {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("cargo writes Cargo.lock before it builds a test");
@@ -643,22 +644,18 @@ fn html_output_is_html_here_and_xml_in_stock_xrust() {
     );
 }
 
-/// Ledger #2146: stylesheet whitespace stripping also removes xsl:text's explicit space.
-/// Keep this measured limitation visible until xrust preserves it; the workaround below
-/// pins a useful alternative without changing the caller's stylesheet here.
+/// Ledger #2146 (#1693): xrust 2.3.0's stylesheet whitespace stripping removed xsl:text's
+/// explicit space (`<out>MetaSource</out>`). The carried xrust preserves it (ledger #3343).
 #[test]
-fn silent_whitespace_only_xsl_text_is_dropped() {
+fn whitespace_only_xsl_text_is_preserved() {
     for text in [" ", "  ", "\t\n", "&#x20;"] {
         let templates = format!(
             r#"<xsl:template match="/"><out>Meta<xsl:text>{text}</xsl:text>Source</out></xsl:template>"#
         );
         let preserved = if text == "&#x20;" { " " } else { text };
-        pin_silent(
-            "<doc/>",
-            &templates,
-            "<out>MetaSource</out>",
-            &format!("<out>Meta{preserved}Source</out>"),
-        );
+        let correct = format!("<out>Meta{preserved}Source</out>");
+        assert_eq!(ours("<doc/>", &templates).unwrap(), correct);
+        assert_eq!(stock("<doc/>", &templates).unwrap(), correct);
     }
 }
 
@@ -861,35 +858,31 @@ fn prefixed_values_at_the_endpoint_keep_their_case() {
     }
 }
 
-// Ledger #2520: preserve the distinction between literal whitespace and references.
+// Ledger #2520: xrust 2.3.0 read a whitespace character reference in an attribute as a
+// space, and 0.5.0 through 0.8.1 refused one in either input. The carried xrust keeps the
+// referenced character (ledger #3343), in a stylesheet and in a source alike.
 #[test]
-fn refused_attribute_whitespace_character_references() {
-    for reference in ["&#10;", "&#xA;", "&#x0a;", "&#00010;", "&#9;", "&#xD;"] {
+fn attribute_whitespace_character_references_keep_their_characters() {
+    for (reference, character) in [
+        ("&#10;", "\n"),
+        ("&#xA;", "\n"),
+        ("&#x0a;", "\n"),
+        ("&#00010;", "\n"),
+        ("&#9;", "\t"),
+        ("&#xD;", "\r"),
+    ] {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="concat('a', '{reference}')"/></out></xsl:template>"#
         );
-        assert_eq!(stock(SRC, &templates).unwrap(), "<out>a </out>");
-        let error = ours(SRC, &templates).unwrap_err();
-        assert!(!error.contains("ledger #"), "{error}");
-        for detail in [
-            "invalid argument `stylesheet`",
-            "character reference",
-            "space",
-            "lf-holder",
-            "substring",
-        ] {
-            assert!(error.contains(detail), "{error}");
-        }
+        let expected = format!("<out>a{character}</out>");
+        assert_eq!(stock(SRC, &templates).unwrap(), expected, "{reference}");
+        assert_eq!(ours(SRC, &templates).unwrap(), expected, "{reference}");
         let src = format!(r#"<doc v="a{reference}b"/>"#);
         let read =
             r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#;
-        assert_eq!(stock(&src, read).unwrap(), "<out>a b</out>");
-        let error = ours(&src, read).unwrap_err();
-        assert!(!error.contains("ledger #"), "{error}");
-        assert!(
-            error.starts_with("invalid argument `src`: refused: for a line feed"),
-            "{error}"
-        );
+        let expected = format!("<out>a{character}b</out>");
+        assert_eq!(stock(&src, read).unwrap(), expected, "{reference}");
+        assert_eq!(ours(&src, read).unwrap(), expected, "{reference}");
     }
 }
 
@@ -917,8 +910,11 @@ fn newline_workaround_and_reference_boundaries() {
     assert_eq!(ours(src, t).unwrap(), "<out>a b</out>");
 }
 
+/// #2520: xrust 2.3.0 wrote a boolean's string value as empty; through 0.8.1 this crate
+/// rewrote known boolean results to xsl:choose and refused the rest. The carried xrust
+/// writes `true` and `false` (ledger #3343), so both paths answer and nothing is refused.
 #[test]
-fn boolean_value_of_is_corrected_here() {
+fn boolean_value_of_gives_true_and_false() {
     for (expr, expected) in [
         ("1 &gt; 0", "true"),
         ("1 &lt; 0", "false"),
@@ -934,20 +930,17 @@ fn boolean_value_of_is_corrected_here() {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
         );
-        assert_eq!(
-            stock(SRC, &templates).unwrap(),
-            "<out></out>",
-            "stock boolean conversion changed: remeasure #2520"
-        );
-        assert_eq!(
-            ours(SRC, &templates).unwrap(),
-            format!("<out>{expected}</out>"),
-            "{expr}"
-        );
+        for answer in [ours(SRC, &templates), stock(SRC, &templates)] {
+            assert_eq!(answer.unwrap(), format!("<out>{expected}</out>"), "{expr}");
+        }
     }
     let templates = r#"<xsl:variable name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/><xsl:variable name="v" select="true()"/><xsl:value-of select="$v"/></out></xsl:template>"#;
-    assert_eq!(stock(SRC, templates).unwrap(), "<out></out>");
+    assert_eq!(stock(SRC, templates).unwrap(), "<out>falsetrue</out>");
     assert_eq!(ours(SRC, templates).unwrap(), "<out>falsetrue</out>");
+    let explicit = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', string(true()), '][', string(false()), ']')"/></out></xsl:template>"#;
+    assert_eq!(stock(SRC, explicit).unwrap(), "<out>[true][false]</out>");
+    let implicit = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', true(), ']')"/></out></xsl:template>"#;
+    assert_eq!(ours(SRC, implicit).unwrap(), "<out>[true]</out>");
     let nested = r#"<xsl:template match="/"><out><xsl:for-each select="doc/item"><xsl:value-of select="@k = '1'"/></xsl:for-each></out></xsl:template>"#;
     assert_eq!(ours(SRC, nested).unwrap(), "<out>truefalsetrue</out>");
     // A comparison in a predicate or string is not the value-of result type.
@@ -956,42 +949,23 @@ fn boolean_value_of_is_corrected_here() {
 }
 
 #[test]
-fn boolean_parameter_value_of_is_refused_when_its_type_can_change() {
+fn boolean_parameter_value_of_is_admitted() {
     let t = r#"<xsl:param name="v" select="false()"/><xsl:template match="/"><out><xsl:value-of select="$v"/></out></xsl:template>"#;
-    let error = ours(SRC, t).unwrap_err();
-    assert!(
-        error.starts_with("invalid argument `stylesheet`: refused:"),
-        "{error}"
-    );
-    assert!(
-        error.contains("boolean") && error.contains("xsl:choose"),
-        "{error}"
-    );
+    assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 }
 
+/// #2520: xrust 2.3.0 panicked serializing a literal attribute whose namespace no literal
+/// element name declared, and 0.5.0 through 0.8.1 refused it. The carried xrust declares
+/// the attribute's namespace itself (ledger #3343).
 #[test]
-fn refused_literal_attribute_without_result_namespace() {
+fn literal_attribute_namespace_is_declared() {
     for templates in [
         r#"<xsl:template match="/"><out><b rdf:datatype="x">1</b></out></xsl:template>"#,
         r#"<xsl:template match="/"><out><b xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:datatype="x">1</b></out></xsl:template>"#,
     ] {
-        let panic = std::panic::catch_unwind(|| stock(SRC, templates))
-            .expect_err("stock xrust must still panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(message.contains("unable to find namespace"), "{message}");
-        let error = ours(SRC, templates).unwrap_err();
-        assert!(
-            error.starts_with("invalid argument `stylesheet`: refused:"),
-            "{error}"
-        );
-        assert!(
-            error.contains("a literal attribute without a result namespace declaration"),
-            "{error}"
-        );
+        let expected = "<out><b xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='x'>1</b></out>";
+        assert_eq!(stock(SRC, templates).unwrap(), expected);
+        assert_eq!(ours(SRC, templates).unwrap(), expected);
     }
     let t =
         r#"<xsl:template match="/"><rdf:RDF><b rdf:datatype="x">1</b></rdf:RDF></xsl:template>"#;
@@ -999,76 +973,53 @@ fn refused_literal_attribute_without_result_namespace() {
 }
 
 #[test]
-fn refusals_2520_are_typed_at_the_endpoint() {
+fn constructs_refused_through_0_8_are_answered_at_the_endpoint() {
     use futures::executor::block_on;
-    use ikigai_core::{ArgRef, Capability, Error as IkError, Iri, Kernel, Request, Verb};
+    use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
     use std::sync::Arc;
     let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
-    for (arg, src, templates, detail) in [
+    for (src, templates, expected) in [
         (
-            "src",
-            r#"<doc v="&#10;"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-            "character reference",
+            r#"<doc v="a&#10;b"/>"#,
+            r#"<xsl:template match="/"><out><xsl:value-of select="doc/@v"/></out></xsl:template>"#,
+            "<out>a\nb</out>",
         ),
         (
-            "content",
-            r#"<doc v="&#10;"/>"#,
-            r#"<xsl:template match="/"><out/></xsl:template>"#,
-            "character reference",
-        ),
-        (
-            "stylesheet",
-            SRC,
-            r#"<xsl:template match="/"><xsl:value-of select="'&#10;'"/></xsl:template>"#,
-            "character reference",
-        ),
-        (
-            "stylesheet",
             SRC,
             r#"<xsl:template match="/"><out rdf:datatype="x"/></xsl:template>"#,
-            "a literal attribute without a result namespace declaration",
+            "<out xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' rdf:datatype='x'/>",
         ),
         (
-            "stylesheet",
             SRC,
-            r#"<xsl:param name="v" select="true()"/><xsl:template match="/"><xsl:value-of select="$v"/></xsl:template>"#,
-            "boolean",
+            r#"<xsl:param name="v" select="true()"/><xsl:template match="/"><out><xsl:value-of select="$v"/></out></xsl:template>"#,
+            "<out>true</out>",
         ),
     ] {
         let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
-            .with_arg(
-                if arg == "content" { "content" } else { "src" },
-                ArgRef::Inline(src.as_bytes().to_vec()),
-            )
+            .with_arg("src", ArgRef::Inline(src.as_bytes().to_vec()))
             .with_arg("stylesheet", ArgRef::Inline(style(templates).into_bytes()));
-        let error = block_on(kernel.issue(request, &Capability::root())).unwrap_err();
-        assert!(
-            matches!(&error, IkError::InvalidArgument { name, detail: d } if name == arg && d.contains(detail)),
-            "{error}"
-        );
+        let answer = block_on(kernel.issue(request, &Capability::root())).unwrap();
+        assert_eq!(String::from_utf8(answer.bytes).unwrap(), expected);
     }
 }
 
+/// Through 0.8.1 an alias chain of `MAX_EXPR_DEPTH` booleans was refused (#2520); now any
+/// chain is answered. Eight links, not 32: the 32-link chain ran past the 5 s budget on CI's
+/// debug runner, and a transform past its budget makes the rest of this file's wait.
 #[test]
-fn boolean_variable_alias_analysis_is_bounded() {
+fn a_boolean_variable_alias_chain_is_admitted() {
+    const LINKS: usize = 8;
     let mut templates = String::from(r#"<xsl:variable name="v0" select="true()"/>"#);
-    for i in 1..=ikigai_xslt::limits::MAX_EXPR_DEPTH {
+    for i in 1..=LINKS {
         templates.push_str(&format!(
             r#"<xsl:variable name="v{i}" select="$v{}"/>"#,
             i - 1
         ));
     }
     templates.push_str(&format!(
-        r#"<xsl:template match="/"><xsl:value-of select="$v{}"/></xsl:template>"#,
-        ikigai_xslt::limits::MAX_EXPR_DEPTH
+        r#"<xsl:template match="/"><out><xsl:value-of select="$v{LINKS}"/></out></xsl:template>"#
     ));
-    let error = ours(SRC, &templates).unwrap_err();
-    assert!(
-        error.starts_with("invalid argument `stylesheet`: refused:"),
-        "{error}"
-    );
-    assert!(error.contains("boolean"), "{error}");
+    assert_eq!(ours(SRC, &templates).unwrap(), "<out>true</out>");
 }
 
 #[test]
@@ -1136,110 +1087,85 @@ fn template_local_parameter_types_follow_defaults_and_call_sites() {
     let t = r#"<xsl:template match="/"><out><xsl:variable name="v" select="false()"/><xsl:call-template name="first"><xsl:with-param name="p" select="$v"/></xsl:call-template></out></xsl:template><xsl:template name="first"><xsl:param name="p" select="true()"/><xsl:call-template name="second"><xsl:with-param name="q" select="$p"/></xsl:call-template></xsl:template><xsl:template name="second"><xsl:param name="q" select="true()"/><xsl:value-of select="$q"/></xsl:template>"#;
     assert_eq!(ours(SRC, t).unwrap(), "<out>false</out>");
 
-    for (default, supplied) in [("'text'", "true()"), ("false()", "'text'")] {
+    // Mixed boolean and string values, refused through 0.8.1 (#2520), are answered.
+    for (default, supplied, expected) in
+        [("'text'", "true()", "true"), ("false()", "'text'", "text")]
+    {
         let t = format!(
             r#"<xsl:template match="/"><out><xsl:call-template name="t"><xsl:with-param name="p" select="{supplied}"/></xsl:call-template></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
         );
-        let error = ours(SRC, &t).unwrap_err();
-        assert!(error.contains("may return a boolean"), "{error}");
-        assert!(!error.contains("ledger #"), "{error}");
-        assert!(error.contains("refused: use xsl:choose"), "{error}");
+        assert_eq!(ours(SRC, &t).unwrap(), format!("<out>{expected}</out>"));
     }
 }
 
 #[test]
 fn template_local_parameters_consider_apply_templates_conservatively() {
     for (default, supplied, expected) in [
-        ("'default'", "'hello'", Some("<out>default</out>")),
-        ("false()", "true()", Some("<out>false</out>")),
-        ("'default'", "true()", None),
+        ("'default'", "'hello'", "<out>default</out>"),
+        ("false()", "true()", "<out>false</out>"),
+        ("'default'", "true()", "<out>default</out>"),
     ] {
         let t = format!(
             r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/missing"><xsl:with-param name="p" select="{supplied}"/></xsl:apply-templates><xsl:call-template name="t"/></out></xsl:template><xsl:template name="t"><xsl:param name="p" select="{default}"/><xsl:value-of select="$p"/></xsl:template>"#
         );
-        match expected {
-            Some(expected) => assert_eq!(ours(SRC, &t).unwrap(), expected),
-            None => assert!(ours(SRC, &t).unwrap_err().contains("may return a boolean")),
-        }
+        assert_eq!(ours(SRC, &t).unwrap(), expected);
     }
 }
 
+/// Refused through 0.8.1 unless every call site supplied the namespace (#2520).
 #[test]
-fn named_template_namespace_requires_every_call_site_to_supply_it() {
+fn a_named_template_literal_attribute_is_answered_from_any_call_site() {
     let callee = r#"<xsl:template name="typed"><b rdf:datatype="x">1</b></xsl:template>"#;
-    let safe = format!(
-        r#"<xsl:template match="/"><rdf:RDF><xsl:call-template name="typed"/></rdf:RDF></xsl:template>{callee}"#
-    );
-    let expected = stock(SRC, &safe).unwrap();
-    assert!(expected.contains("datatype='x'"), "{expected}");
-    assert_eq!(ours(SRC, &safe).unwrap(), expected);
-
-    // One unsafe caller is enough, even when other callers provide the namespace.
-    let unsafe_call = safe.replace(
-        "</rdf:RDF>",
-        r#"</rdf:RDF><out><xsl:call-template name="typed"/></out>"#,
-    );
-    assert!(ours(SRC, &unsafe_call)
-        .unwrap_err()
-        .contains("without a result namespace"));
-
-    // A fragment is constructed separately from its eventual result parent.
-    let fragment = format!(
-        r#"<xsl:template match="/"><rdf:RDF><xsl:variable name="v"><xsl:call-template name="typed"/></xsl:variable><xsl:copy-of select="$v"/></rdf:RDF></xsl:template>{callee}"#
-    );
-    assert!(ours(SRC, &fragment)
-        .unwrap_err()
-        .contains("without a result namespace"));
-
-    // Named-and-matched templates also have dispatch entry points with unknown scope.
-    let matched = safe.replace(r#"name="typed"><b"#, r#"name="typed" match="doc"><b"#);
-    assert!(ours(SRC, &matched)
-        .unwrap_err()
-        .contains("without a result namespace"));
+    for caller in [
+        r#"<rdf:RDF><xsl:call-template name="typed"/></rdf:RDF><out><xsl:call-template name="typed"/></out>"#,
+        r#"<rdf:RDF><xsl:variable name="v"><xsl:call-template name="typed"/></xsl:variable><xsl:copy-of select="$v"/></rdf:RDF>"#,
+    ] {
+        let t = format!(r#"<xsl:template match="/"><r>{caller}</r></xsl:template>{callee}"#);
+        let answer = ours(SRC, &t).unwrap();
+        assert_eq!(answer, stock(SRC, &t).unwrap());
+        assert!(answer.contains("rdf:datatype='x'"), "{answer}");
+    }
 }
 
-/// #2487: the numeric adapter earns its keep on stock xrust, independently of
-/// the public-path regression matrix in numeric_conversion.rs.
+/// #2487: node and `string-length()` operands, through stock xrust and this crate.
 #[test]
 fn numeric_conversion_is_adapted_over_stock_xrust_nan() {
     let src = r#"<r><b n="x"><l d="t">12.5</l></b></r>"#;
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', string(/r/b/l), '][', number(/r/b/l), '][', number(string(/r/b/l)), '][', /r/b/l + 1, ']')"/></out></xsl:template>"#;
+    // xrust 2.3.0: [12.5][NaN][12.5][NaN]; the carried xrust converts nodes (ledger #3343).
     assert_eq!(
         stock(src, templates).unwrap(),
-        "<out>[12.5][NaN][12.5][NaN]</out>",
-        "if upstream fixed this, re-measure the numeric adapter and docs"
+        "<out>[12.5][12.5][12.5][13.5]</out>"
     );
     assert_eq!(
         ours(src, templates).unwrap(),
         "<out>[12.5][12.5][12.5][13.5]</out>"
     );
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="string-length('abc') - 1"/></out></xsl:template>"#;
-    assert_eq!(stock(src, templates).unwrap(), "<out>NaN</out>");
+    assert_eq!(stock(src, templates).unwrap(), "<out>2</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>2</out>");
 }
 
-/// #2668: keep the unadapted upstream defects visible beside the public fixes.
+/// #2668: keep the unadapted upstream defects visible beside the public fixes. xrust
+/// 2.3.0 also answered `NaN` for `number(true())`, `number(false())` and `true() + 1`; the
+/// carried xrust converts a boolean to 1 or 0, and no longer reverses a comparison with a
+/// node on its left, so `/r/v > 2` is true (ledger #3343).
 #[test]
 fn boolean_numeric_and_large_literal_upstream_causes() {
     let src = "<r><v>3</v></r>";
-    for (expression, wrong, correct) in [
-        ("number(true())", "NaN", "1"),
-        ("number(false())", "NaN", "0"),
-        ("true() + 1", "NaN", "2"),
-        ("number(/r/v &gt; 2) * 5", "NaN", "5"),
+    for (expression, stock_answer, correct) in [
+        ("number(true())", "1", "1"),
+        ("number(false())", "0", "0"),
+        ("true() + 1", "2", "2"),
+        ("number(/r/v &gt; 2) * 5", "5", "5"),
         ("100000000000000000000 + 1", "NaN", "100000000000000000000"),
-        (
-            "concat('[', string(true()), '][', string(false()), ']')",
-            "[][]",
-            "[true][false]",
-        ),
     ] {
         let templates = format!(
             r#"<xsl:template match="/"><out><xsl:value-of select="{expression}"/></out></xsl:template>"#
         );
         assert_eq!(
             stock(src, &templates).unwrap(),
-            format!("<out>{wrong}</out>"),
+            format!("<out>{stock_answer}</out>"),
             "upstream changed: {expression}; remeasure #2668"
         );
         assert_eq!(
@@ -1249,10 +1175,11 @@ fn boolean_numeric_and_large_literal_upstream_causes() {
         );
     }
     let templates = r#"<xsl:template match="/"><out><xsl:value-of select="concat('[', substring('yes', 1, number(/r/v &gt; 2) * 3), ']')"/></out></xsl:template>"#;
-    assert!(stock(src, templates).unwrap_err().contains("invalid digit"));
+    // 2.3.0 failed here ("invalid digit").
+    assert_eq!(stock(src, templates).unwrap(), "<out>[yes]</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>[yes]</out>");
     // Observe the comparison itself without going through boolean formatting.
     let templates = r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="/r/v &gt; 2">true</xsl:when><xsl:otherwise>false</xsl:otherwise></xsl:choose></out></xsl:template>"#;
-    assert_eq!(stock(src, templates).unwrap(), "<out>false</out>");
+    assert_eq!(stock(src, templates).unwrap(), "<out>true</out>");
     assert_eq!(ours(src, templates).unwrap(), "<out>true</out>");
 }

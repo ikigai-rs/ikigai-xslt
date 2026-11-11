@@ -257,10 +257,18 @@ impl fmt::Display for ValueData {
                     acc
                 },
             ),
+            ValueData::Boolean(b) => b.to_string(),
             _ => "".to_string(),
         };
         f.write_str(result.as_str())
     }
+}
+
+/// A string as a number, ignoring leading and trailing XML white space; NaN if it is not one.
+pub(crate) fn string_to_double(s: &str) -> f64 {
+    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .parse::<f64>()
+        .unwrap_or(f64::NAN)
 }
 
 impl Hash for Value {
@@ -322,11 +330,20 @@ impl Value {
     /// Convert the value to a double. If the value cannot be converted, returns Nan.
     pub fn to_double(&self) -> f64 {
         match &self.value {
-            ValueData::String(s) => s.parse::<f64>().unwrap_or(f64::NAN),
+            ValueData::String(s) => string_to_double(s),
             ValueData::Integer(i) => (*i) as f64,
             ValueData::Int(i) => (*i) as f64,
             ValueData::Double(d) => *d,
-            _ => f64::NAN,
+            ValueData::Boolean(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            // The other numeric types (string-length() gives an UnsignedLong), by their
+            // lexical form; anything else is not a number.
+            _ => string_to_double(&self.to_string()),
         }
     }
     pub fn value_type(&self) -> &'static str {

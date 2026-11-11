@@ -228,7 +228,10 @@ in no namespace an empty text child before calling `to_xml`, so xrust's own seri
 the end tag (`src/html.rs`). Void elements stay `<br/>`, not §16.2's `<br>`, and script and
 style content is still escaped.
 
-## 9. Whitespace-only xsl:text is dropped
+## 9. Whitespace-only xsl:text is dropped (fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343), as diagnosed below; the issue text and
+patch for upstream are [`upstream/xrust-xsl-text-whitespace.md`](upstream/xrust-xsl-text-whitespace.md).
 
 Input: `<doc/>`.
 
@@ -238,22 +241,21 @@ Input: `<doc/>`.
 
 - **Expected** (XSLT 1.0 §3.4 and §7.2: whitespace inside `xsl:text` is preserved):
   `<out>Meta Source</out>`
-- **Actual**: `<out>MetaSource</out>`, without an error, through both stock xrust 2.3.0
-  and ikigai-xslt. Two spaces, a tab followed by a newline, and `&#x20;` are also lost.
+- **Actual**: `<out>MetaSource</out>`, without an error, through stock xrust 2.3.0 and
+  ikigai-xslt before 0.9.0. Two spaces, a tab followed by a newline, and `&#x20;` are also lost.
 
 Nonblank text such as `<xsl:text>Meta </xsl:text>` retains its trailing space. Both
 `<xsl:value-of select="' '"/>` and `<xsl:value-of select="concat(., ' ')"/>` preserve the
-space and are tested workarounds. ikigai-xslt records this limitation in its subset table;
-it does not rewrite or refuse these stylesheets.
+space and were the workarounds; ikigai-xslt never refused these stylesheets.
 
-Likely cause, from inspecting xrust 2.3.0: `xslt::from_document` calls
+Cause, confirmed by the fix: `xslt::from_document` calls
 `transform::whitespace::strip_whitespace` with a wildcard strip rule and a preserve rule
 for `xsl:text`. In `strip_whitespace_node`, the preserve-rule branch assigns matching
 scores to `ss` (the strip score), leaving `ps` (the preserve score) at -1. Therefore the
 `xsl:text` children are visited with `keep = false`, and whitespace-only text is removed
 before the instruction compiles. The upstream fix should assign preserve scores to `ps`
 and test that stylesheet indentation still strips while `xsl:text` whitespace survives.
-This is an upstream report draft; nothing has been filed.
+Nothing has been filed.
 
 ## 10. A prefixed attribute's value is lowercased by the XML parser
 
@@ -319,7 +321,10 @@ stylesheet's author can see, so it is a feature request at most, and is not draf
 (`xsl:variable` inside a template, `string-length()`, `xsl:key` over prefixed names and a
 stylesheet whose first node is a comment were refused by 2.2.0 and work in 2.3.0.)
 
-## 11. Attribute whitespace character references normalize to spaces (#2520)
+## 11. Attribute whitespace character references normalize to spaces (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) as suggested below; the issue text and
+patch for upstream are [`upstream/xrust-attribute-references.md`](upstream/xrust-attribute-references.md).
 
 Measured on xrust 2.3.0, 2026-10-30. Source `<doc/>`; stylesheet body:
 
@@ -341,12 +346,13 @@ collapses and trims CDATA values. Suggested patch: normalize literal text chunks
 without the final whitespace replacement/collapse for CDATA attributes. Non-CDATA attribute
 normalization must remain a separate step. This needs XML parser conformance tests.
 
-ikigai-xslt refuses these references in **either input before parsing**, naming the attribute
-and argument. An exact repair after parsing cannot distinguish a reference from a literal
-space. RSS workaround (tested with text output): declare a variable containing dot, literal
-newline, dot; obtain the LF with `substring($lf-holder, 2, 1)`.
+0.5.0 through 0.8.0 of ikigai-xslt refused these references in either input before parsing;
+since the fix is carried, they are answered.
 
-## 12. Boolean string conversion is empty (#2520)
+## 12. Boolean string conversion is empty (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) with the one-line patch below; the issue
+text and patch for upstream are [`upstream/xrust-boolean-string.md`](upstream/xrust-boolean-string.md).
 
 Source `<doc/>`; stylesheet body:
 
@@ -369,16 +375,18 @@ The obvious upstream patch, before the fallback in `ValueData::fmt`, is:
 ValueData::Boolean(b) => b.to_string(),
 ```
 
-ikigai-xslt adapts known boolean `value-of` results to `xsl:choose` with literal `true` and
-`false` text. It follows variable declarations; results whose type cannot safely be known,
-including global boolean-default parameters that may be overridden by a string, are typed refusals.
-Template-local parameters are classified using their default and incoming `with-param`
-expressions at named calls and, conservatively, all `apply-templates` with that parameter
-name. Nonboolean-only inputs are accepted, boolean-only inputs are adapted, and mixed
-or unknown input types are refused.
-The general upstream string conversion defect remains outside this direct-result adaptation.
+Through 0.8.0 ikigai-xslt adapted known boolean `value-of` results to `xsl:choose` with
+literal `true` and `false` text, and refused results whose type it could not establish
+(global boolean-default parameters, mixed template parameters). With the fix carried, that
+adaptation and its refusals are gone, and implicit conversions such as
+`concat('[', true(), ']')` are right too.
 
-## 13. A literal prefixed attribute can panic in serialization (#2520)
+## 13. A literal prefixed attribute can panic in serialization (#2520; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) by the compiler patch suggested below; the
+serializer's panic on an unresolvable name is not changed (that needs an API change). The issue
+text and patch for upstream are
+[`upstream/xrust-literal-attribute-namespace.md`](upstream/xrust-literal-attribute-namespace.md).
 
 Source `<doc/>`; stylesheet declares `rdf` only on `xsl:stylesheet`:
 
@@ -401,15 +409,14 @@ for literal attributes' namespaces too (or copy the applicable in-scope namespac
 XSLT exclusion rules), rather than only the element namespace. The serializer should also
 return an error for an unresolvable QName instead of panicking; that needs an API change.
 
-ikigai-xslt refuses this before compilation as a typed `InvalidArgument` naming `stylesheet`.
-A literal element's own namespace, or an enclosing literal element in that namespace, satisfies
-the guard. Named-only templates are accepted when every call site supplies the namespace through
-a literal result ancestor, following at most `MAX_EXPR_DEPTH` calls. Matched-template
-dispatch, call cycles, and dynamically constructed namespace scopes remain conservative;
-the guard does not assume variable/parameter fragments are emitted at their declaration site. The stock panic
-and the admitted `rdf:RDF` workaround are both pinned in `tests/xrust_subset.rs`.
+0.5.0 through 0.8.0 of ikigai-xslt refused this before compilation; with the fix carried,
+it is answered.
 
-## 14. Numeric conversion rejects nodes and unsigned values (#2487)
+## 14. Numeric conversion rejects nodes and unsigned values (#2487; fixed in `ikigai-xrust`)
+
+Fixed in the xrust this crate carries (ledger #3343) as suggested below, taking a sequence's
+first item as XPath 1.0 does; the issue text and patch for upstream are
+[`upstream/xrust-numeric-nodes.md`](upstream/xrust-numeric-nodes.md).
 
 Measured on **xrust 2.3.0**. Source `<r><b n="x"><l d="t">12.5</l></b></r>`;
 stylesheet body (with text output):
@@ -474,7 +481,9 @@ There are four interacting upstream causes:
 
 * `Value::to_double` in `src/value.rs` has no `Boolean` arm, so arithmetic and
   `number()` fall through to `NaN` instead of converting true to 1 and false to 0.
-* `ValueData::fmt` also has no `Boolean` arm (case 12), so `string(true())` and
+  **Fixed in `ikigai-xrust`** (ledger #3343;
+  [`upstream/xrust-boolean-number.md`](upstream/xrust-boolean-number.md)).
+* `ValueData::fmt` also has no `Boolean` arm (case 12, **fixed in `ikigai-xrust`**), so `string(true())` and
   `string(false())` both produce the empty string. The #2487 numeric adapter's
   `normalize-space(string((X)[1]))` therefore cannot recover boolean operands.
 * `Item::compare` in `src/item.rs` handles a node on the left by calling
@@ -482,6 +491,8 @@ There are four interacting upstream causes:
   tests `2 > 3`, yielding false. Fixing conversion alone changed the two conditional
   examples from NaN/error to `0`/`[]`, exposing this separate cause. An `xsl:choose`
   in the stock test observes false directly, independently of boolean formatting.
+  **Fixed in `ikigai-xrust`** (ledger #3343;
+  [`upstream/xrust-node-comparison.md`](upstream/xrust-node-comparison.md)).
 * `integer_literal` in `src/parser/xpath/literals.rs` parses digits as `i64` and
   constructs `Transform::Error` on overflow. XPath 1.0 numbers are doubles, so
   this literal is valid. The arithmetic evaluation ends up answering `NaN`.
@@ -498,10 +509,10 @@ are evaluated once in their original context. This uses xrust's existing conditi
 expression support internally; the adapter's accepted caller grammar remains XPath 1.0.
 The literal strings `'true'` and `'false'` still convert to `NaN`, as XPath 1.0 requires.
 Variable aliases and template-local parameters share case 12's bounded type analysis;
-ambiguous boolean/nonboolean conversions are refused as typed `InvalidArgument`
-naming `stylesheet`, including global boolean-default parameters that request strings
-can override. Other implicit boolean string conversions, such as `concat('[', true(), ']')`,
-remain an upstream limitation; use explicit `string()`.
+through 0.8.0 ambiguous boolean/nonboolean conversions were refused as typed
+`InvalidArgument` naming `stylesheet`. With the boolean and node conversions fixed in the
+carried xrust (ledger #3343), such a value is left to xrust and answered, and implicit
+boolean string conversions such as `concat('[', true(), ']')` are right too.
 
 Relational comparisons map each operand's items to numbers with internal `for`
 expressions, then use xrust's general comparison on the numeric sequences. This

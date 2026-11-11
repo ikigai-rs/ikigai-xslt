@@ -30,7 +30,13 @@ name = "ikigai-xslt"
 # forwarded from a same-spelled one is no longer refused and two identical value-ofs no longer
 # share a binding (ledger #3398). An extension function inside string() is now refused, as it
 # already was elsewhere. ikigai-xrust is unchanged.
-version = "0.8.1"
+# 0.9.0: builds on ikigai-xrust 2.3.0-ikigai.2, which also fixes whitespace-only xsl:text,
+# booleans as strings and numbers, node and unsigned numeric conversion, a reversed node
+# comparison, attribute whitespace character references and
+# literal attributes in a namespace (ledger #3343). Their refusals and the boolean value-of
+# adaptation go: input 0.8.1 refused or rewrote is now answered. A behavior change, so a
+# minor release. Publish ikigai-xrust 2.3.0-ikigai.2 first.
+version = "0.9.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -52,8 +58,8 @@ async-trait = "0.1"
 # RFC 3986 resolution also works for urn:file: bases (url::Url::join does not).
 # This is the same IRI implementation already used by ikigai-core.
 oxiri = "0.2"
-# Carried in this repository as `ikigai-xrust` (ledger #3342): xrust 2.3.0 with one fix, the XML
-# parser keeping prefixed attribute values and `xml:id` as written (crates/xrust/README.md).
+# Carried in this repository as `ikigai-xrust` (ledger #3342, #3343): xrust 2.3.0 with the fixes
+# crates/xrust/README.md lists, each drafted for upstream in docs/upstream/.
 # The library is still named `xrust`, so no `use` line changes. A path dependency for builds
 # here, a version one once published: `cargo publish` keeps only the version. The history
 # below is xrust's, and still holds for the release this one is based on.
@@ -63,7 +69,7 @@ oxiri = "0.2"
 # below 2.3 compiles this crate, and every ikigai-xslt through 0.3.0 (`xrust = "2.1.0"`) stopped
 # building on a fresh resolve the day 2.3.0 shipped. ⚠ The caret admits a later 2.x, which may
 # break the same way: a fresh-resolve build is the only thing that would notice.
-xrust = { package = "ikigai-xrust", path = "crates/xrust", version = "2.3.0-ikigai.1" }
+xrust = { package = "ikigai-xrust", path = "crates/xrust", version = "2.3.0-ikigai.2" }
 # Only to NAME the types in xrust's `Node` trait, which `src/node_id.rs` implements (ledger
 # #1047): xrust does not re-export them. It must be the qualname xrust itself depends on — 0.0.1
 # for xrust 2.1 and 2.2, 0.0.2 for xrust 2.3 — and a `^0.0.2` pin is exactly `=0.0.2`. If a

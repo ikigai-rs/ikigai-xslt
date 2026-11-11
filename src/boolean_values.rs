@@ -1,9 +1,10 @@
-//! Work around xrust 2.3.0's missing Boolean arm in ValueData::fmt (#2520).
+//! The result kind of an XPath expression, for `numeric_values` (#2668).
 //! Inspect the parsed XPath result type, not comparison tokens in predicates or strings.
-//! Known boolean value-of and copy-of results become xsl:choose, evaluated once in
-//! the original context. In particular, copy-of must construct text rather than
-//! leak an atomic boolean into a variable's result tree fragment.
-//! Variable results that may change type (parameters, ambiguous bindings) are refused.
+//! Variable results that may change type (parameters, ambiguous bindings) are Unknown.
+//! Also makes a boolean `copy-of` construct text, and refuses an atomic `xsl:sequence`
+//! that may be boolean, so neither leaks into a result tree fragment (#3412).
+//! (Through 0.8.1 this also adapted boolean `value-of` results, which xrust 2.3.0 wrote as
+//! empty strings, #2520; the carried xrust writes `true` and `false`, ledger #3343.)
 //! Declarations are compared by identity: xrust's `==` on nodes is structural, so two
 //! templates' `<xsl:param name="iri"/>` would otherwise be one declaration (#3398).
 
@@ -246,9 +247,7 @@ fn reference_kind(declaration: &IdNode, seen: &mut Analysis) -> Kind {
     }
 }
 
-// A missing select denotes a result tree fragment or an empty string. prepare()
-// makes boolean copy-of construct text and refuses boolean/unknown xsl:sequence,
-// so xrust cannot leak those atomic values through a content declaration.
+// A missing select denotes a result tree fragment or an empty string.
 fn declaration_kind(node: &IdNode, seen: &mut Analysis) -> Kind {
     match node.get_attribute_node(&QName::try_from("select").unwrap()) {
         None => Kind::Other,
@@ -298,19 +297,19 @@ fn local_parameter_kind(param: &IdNode, seen: &mut Analysis, default: Kind) -> K
     result
 }
 
+// xrust stores an atomic boolean that copy-of or sequence returns inside a result tree
+// fragment as that boolean, not as a text node, so `boolean($v)` of a variable holding
+// `<xsl:copy-of select="false()"/>` would be false (#3412). A known boolean copy-of becomes
+// xsl:choose with explicit text, evaluated once in the original context; xsl:sequence
+// preserves atomic types by design, so a boolean or unknown one is refused, as is an unknown
+// copy-of. (value-of needs none of this: the carried xrust writes `true` and `false`.)
 pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
     let mut stack = vec![doc.clone()];
     let mut booleans = Vec::new();
     while let Some(n) = stack.pop() {
         stack.extend(n.child_iter());
         let sequence = is_xsl(&n, "sequence");
-        if !(is_xsl(&n, "value-of") || is_xsl(&n, "copy-of") || sequence) {
-            continue;
-        }
-        // Preserve xrust's validation of disable-output-escaping. Both valid choices
-        // are equivalent for the plain ASCII words this adaptation emits.
-        let escaping = attr(&n, "disable-output-escaping");
-        if is_xsl(&n, "value-of") && !matches!(escaping.as_str(), "" | "yes" | "no") {
+        if !(is_xsl(&n, "copy-of") || sequence) {
             continue;
         }
         let select = attr(&n, "select");
@@ -321,12 +320,9 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
         match result {
             Kind::Boolean if !sequence => booleans.push((n, select)),
             Kind::Other => {},
-            // xsl:sequence preserves atomic types. Turning its boolean into text
-            // would change subsequent boolean/numeric operations, so refuse it.
-            // Mixed values cannot safely use the boolean adaptation (ledger #2520).
             Kind::Boolean | Kind::Unknown => return Err(Error::InvalidArgument {
                 name: "stylesheet".into(),
-                detail: format!("refused: use xsl:choose with explicit true/false text, or supply a string. xsl:{} select=\"{select}\" may return a boolean whose string value xrust 2.3.0 drops; see README, The XSLT subset", n.name().unwrap().local_name().to_string()),
+                detail: format!("refused: use xsl:choose with explicit true/false text, or supply a string. xsl:{} select=\"{select}\" may return a boolean, which xrust 2.3.0 would keep as an atomic value inside a result tree fragment instead of text; see README, The XSLT subset", n.name().unwrap().local_name().to_string()),
             }),
         }
     }

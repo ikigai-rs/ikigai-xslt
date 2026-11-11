@@ -620,3 +620,39 @@ fn parser_xml_space_1() {
 
     assert!(parseresult.is_ok());
 }
+
+#[test]
+fn attribute_character_references_keep_their_characters() {
+    for (value, expected) in [
+        ("a&#10;b", "a\nb"),
+        ("a&#xA;b", "a\nb"),
+        ("a&#010;b", "a\nb"),
+        ("a&#9;b&#13;", "a\tb\r"),
+        ("&#32;a&#32;", " a "),
+        ("a\nb\tc\r\nd", "a b c d"),
+        ("a  b", "a  b"),
+    ] {
+        let doc = format!(r#"<doc v="{value}"/>"#);
+        let testxml = RNode::new_document();
+        xml::parse(
+            testxml.clone(),
+            &doc,
+            Some(|_: &_| {
+                Err(ParseError::MissingNameSpace {
+                    prefix: None,
+                    nsuri: None,
+                    message: Some(String::from("parser test")),
+                })
+            }),
+        )
+        .expect("unable to parse");
+        let element = testxml.first_child().expect("no document element");
+        let v = element
+            .attribute_iter()
+            .next()
+            .expect("no attribute")
+            .value()
+            .to_string();
+        assert_eq!(v, expected, "{value}");
+    }
+}

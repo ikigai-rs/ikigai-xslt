@@ -207,6 +207,19 @@ impl<N: item::Node> fmt::Display for Item<N> {
     }
 }
 
+/// The operator that gives the same answer with its operands exchanged: `a < b` is `b > a`.
+fn mirrored(op: Operator) -> Operator {
+    match op {
+        Operator::LessThan => Operator::GreaterThan,
+        Operator::LessThanEqual => Operator::GreaterThanEqual,
+        Operator::GreaterThan => Operator::LessThan,
+        Operator::GreaterThanEqual => Operator::LessThanEqual,
+        Operator::Before => Operator::After,
+        Operator::After => Operator::Before,
+        Operator::Equal | Operator::NotEqual | Operator::Is => op,
+    }
+}
+
 impl<N: Node> Item<N> {
     /// Serialize as XML
     pub fn to_xml(&self) -> String {
@@ -264,7 +277,8 @@ impl<N: Node> Item<N> {
     /// Gives the double value of the item. Returns NaN if the value cannot be converted to a double.
     pub fn to_double(&self) -> f64 {
         match self {
-            Item::Node(..) => f64::NAN,
+            // A node is converted by its string value.
+            Item::Node(..) => crate::value::string_to_double(&self.to_string()),
             Item::Function => f64::NAN,
             Item::Value(v) => v.to_double(),
         }
@@ -292,9 +306,11 @@ impl<N: Node> Item<N> {
                     String::from("type error comparing items: incompatible item types"),
                 )),
             },
-            Item::Node(..) => {
-                other.compare(&Item::Value(Rc::new(Value::from(self.to_string()))), op)
-            }
+            // The operands change places, so a directional operator is mirrored.
+            Item::Node(..) => other.compare(
+                &Item::Value(Rc::new(Value::from(self.to_string()))),
+                mirrored(op),
+            ),
             _ => Result::Err(Error::new(
                 ErrorKind::NotImplemented,
                 String::from("error comparing items: comparison not implemented"),

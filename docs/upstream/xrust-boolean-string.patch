@@ -1,0 +1,41 @@
+diff --git a/src/value.rs b/src/value.rs
+index 210d351..8b799f2 100644
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -257,6 +257,7 @@ impl fmt::Display for ValueData {
+                     acc
+                 },
+             ),
++            ValueData::Boolean(b) => b.to_string(),
+             _ => "".to_string(),
+         };
+         f.write_str(result.as_str())
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index f2ee28a..761f853 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -585,3 +585,24 @@ fn xslt_whitespace_only_text_is_preserved() {
+         );
+     }
+ }
++
++#[test]
++fn xslt_boolean_string_value() {
++    for (expr, answer) in [
++        ("1 &gt; 0", "true"),
++        ("1 &lt; 0", "false"),
++        ("true()", "true"),
++        ("not(true())", "false"),
++        ("string(true())", "true"),
++        ("concat('[', false(), ']')", "[false]"),
++    ] {
++        let style = stylesheet(&format!(
++            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
++        ));
++        assert_eq!(
++            transform_str("<doc/>", &style),
++            format!("<out>{answer}</out>"),
++            "{expr}"
++        );
++    }
++}

@@ -1,7 +1,9 @@
 //! Local parameters are classed by what their call sites can pass (ledger #3398): a
 //! declaration is itself, not every declaration spelled the same; a recursive template's
 //! own calls take part in a bounded fixed point; XPath 1.0 core functions have fixed
-//! result types. A parameter that can be a boolean or not is still refused (#2520, #2668).
+//! result types. A parameter that can be a boolean or not was refused through 0.8.1 (#2520,
+//! #2668); its value-of is now answered (ledger #3343), and its copy-of into content is still
+//! refused (#3412).
 
 const XSL: &str = "http://www.w3.org/1999/XSL/Transform";
 
@@ -106,28 +108,34 @@ fn a_recursive_call_passing_its_own_parameter_takes_the_other_sites_kind() {
 }
 
 #[test]
-fn a_genuinely_mixed_parameter_is_still_refused() {
+fn a_genuinely_mixed_parameter_is_answered_and_its_copy_refused() {
     // One outside caller passes true(): `iri` can be a boolean or a string.
-    assert_refused(&text_style(&format!(
-        "<xsl:template match='/'><xsl:call-template name='last-segment'>\
+    let answer = |style: &str| transform(SRC, style).unwrap();
+    assert_eq!(
+        answer(&text_style(&format!(
+            "<xsl:template match='/'><xsl:call-template name='last-segment'>\
          <xsl:with-param name='iri' select='string(doc/@iri)'/></xsl:call-template>\
          <xsl:call-template name='last-segment'><xsl:with-param name='iri' select='true()'/>\
          </xsl:call-template></xsl:template>{LAST_SEGMENT}"
-    )));
+        ))),
+        "ctrue"
+    );
     // The forwarding template's own caller passes true().
-    assert_refused(&text_style(&format!(
+    assert_eq!(answer(&text_style(&format!(
         "<xsl:template match='/'><xsl:call-template name='label'>\
          <xsl:with-param name='iri' select='true()'/></xsl:call-template>\
          <xsl:call-template name='last-segment'><xsl:with-param name='iri' select='string(doc/@iri)'/>\
          </xsl:call-template></xsl:template>\
          <xsl:template name='label'><xsl:param name='iri'/><xsl:call-template name='last-segment'>\
          <xsl:with-param name='iri' select='$iri'/></xsl:call-template></xsl:template>{LAST_SEGMENT}"
-    )));
+    ))), "truec");
+    // Copied into a variable, where an atomic boolean would leak (#3412), the analysis still
+    // decides. These two recurse without end once they run, so the refusal is all they give.
     // Only the recursion turns the string into a boolean: no guess holds.
     assert_refused(&text_style(
         "<xsl:template match='/'><xsl:call-template name='r'><xsl:with-param name='p' select=\"'s'\"/>\
          </xsl:call-template></xsl:template>\
-         <xsl:template name='r'><xsl:param name='p'/><xsl:value-of select='$p'/>\
+         <xsl:template name='r'><xsl:param name='p'/><xsl:variable name='c'><xsl:copy-of select='$p'/></xsl:variable>\
          <xsl:if test=\"$p = 's'\"><xsl:call-template name='r'>\
          <xsl:with-param name='p' select=\"$p = 's'\"/></xsl:call-template></xsl:if></xsl:template>",
     ));
@@ -135,7 +143,7 @@ fn a_genuinely_mixed_parameter_is_still_refused() {
     assert_refused(&text_style(
         "<xsl:template match='/'><xsl:call-template name='r'><xsl:with-param name='p' select=\"'s'\"/>\
          </xsl:call-template></xsl:template>\
-         <xsl:template name='r'><xsl:param name='p'/><xsl:value-of select='$p'/>\
+         <xsl:template name='r'><xsl:param name='p'/><xsl:variable name='c'><xsl:copy-of select='$p'/></xsl:variable>\
          <xsl:if test=\"$p = 's'\"><xsl:call-template name='r'>\
          <xsl:with-param name='p' select=\"if ($p = 's') then $p else true()\"/></xsl:call-template></xsl:if></xsl:template>",
     ));
@@ -158,7 +166,9 @@ fn mutually_recursive_parameters_are_admitted_and_bounded() {
 /// A chain of recursive templates, each forwarding its parameter to itself and to the next,
 /// from a caller passing true(). Each level's string guess fails before its boolean guess
 /// holds, and each guess analyzes the level below again, so the passes double per level.
-/// A total budget of declaration visits refuses it instead of running 2^n passes.
+/// A total budget of declaration visits refuses it instead of running 2^n passes. The sink
+/// is a copy-of into a variable, which the analysis still decides (#3412); a value-of no
+/// longer needs it (ledger #3343).
 #[test]
 fn deep_recursive_forwarding_is_bounded() {
     let depth = ikigai_xslt::limits::MAX_EXPR_DEPTH - 4;
@@ -176,7 +186,7 @@ fn deep_recursive_forwarding_is_bounded() {
         ));
     }
     templates.push_str(&format!(
-        "<xsl:template name='t{depth}'><xsl:param name='p'/><xsl:value-of select='$p'/></xsl:template>"
+        "<xsl:template name='t{depth}'><xsl:param name='p'/><xsl:variable name='c'><xsl:copy-of select='$p'/></xsl:variable></xsl:template>"
     ));
     let started = std::time::Instant::now();
     assert_refused(&text_style(&templates));
@@ -228,6 +238,8 @@ fn core_functions_have_their_fixed_result_types() {
         assert_eq!(transform(src, &style).unwrap(), expected, "{expression}");
     }
     // An extension function's result type is unknown, here and in a string conversion.
+    // Through 0.8.1 that was refused; now the value-of runs and xrust reports the
+    // function it does not know (ledger #3343).
     for select in ["$p", "string($p)", "ex:f()", "string(ex:f())"] {
         let style = format!(
             "<xsl:stylesheet xmlns:xsl='{XSL}' xmlns:ex='urn:ex' version='1.0'>\
@@ -238,7 +250,8 @@ fn core_functions_have_their_fixed_result_types() {
         );
         let error = transform("<doc/>", &style).unwrap_err();
         assert!(
-            error.starts_with("invalid argument `stylesheet`: refused:"),
+            error.starts_with("invalid argument `stylesheet`: refused:")
+                || error.contains("unknown callable \"{urn:ex}f\""),
             "{select}: {error}"
         );
     }

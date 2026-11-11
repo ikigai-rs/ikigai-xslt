@@ -1,0 +1,45 @@
+diff --git a/src/value.rs b/src/value.rs
+index 8b799f2..437db74 100644
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -327,6 +327,13 @@ impl Value {
+             ValueData::Integer(i) => (*i) as f64,
+             ValueData::Int(i) => (*i) as f64,
+             ValueData::Double(d) => *d,
++            ValueData::Boolean(b) => {
++                if *b {
++                    1.0
++                } else {
++                    0.0
++                }
++            }
+             _ => f64::NAN,
+         }
+     }
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index 761f853..ccfe644 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -606,3 +606,22 @@ fn xslt_boolean_string_value() {
+         );
+     }
+ }
++
++#[test]
++fn xslt_boolean_number_value() {
++    for (expr, answer) in [
++        ("number(true())", "1"),
++        ("number(false())", "0"),
++        ("true() + 1", "2"),
++        ("number(1 &gt; 0) * 5", "5"),
++    ] {
++        let style = stylesheet(&format!(
++            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
++        ));
++        assert_eq!(
++            transform_str("<doc/>", &style),
++            format!("<out>{answer}</out>"),
++            "{expr}"
++        );
++    }
++}

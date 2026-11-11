@@ -1,10 +1,12 @@
 //! XPath 1.0 numeric operands, adapted before xrust compiles them (#2487).
 //!
-//! xrust's Item::to_double rejects nodes and ValueData::UnsignedLong (the result of
-//! string-length), and booleans have no string value upstream. Convert known
-//! booleans before stringification; reject ambiguous conversions. Its
-//! number(string(...)) path works for nodes. Parse operator precedence so
-//! the adaptation applies to operands, never to names, string literals or AVT text.
+//! xrust 2.3.0's Item::to_double rejected nodes and ValueData::UnsignedLong (the result of
+//! string-length), and booleans had no string or number value. The xrust this crate carries
+//! fixes those (ledger #3343). What is still adapted here: relational comparisons, which
+//! XPath 1.0 makes numeric over every pair of items and xrust compares by the left operand's
+//! type (lexically for a string), and unary signs, which xrust does not evaluate. Known
+//! booleans and nodes are still converted explicitly, as before. Parse operator precedence
+//! so the adaptation applies to operands, never to names, string literals or AVT text.
 //!
 //! Why the shared parser cannot serve here (xrust 2.3.0; ledger #2669):
 //! `parser::xpath::parse` returns an editable `Transform`, and the standalone AST
@@ -105,7 +107,6 @@ struct Parser<'a> {
     changed: bool,
     depth: usize,
     node: Option<IdNode>,
-    ambiguous: bool,
     item_name: String,
 }
 
@@ -134,9 +135,14 @@ impl Parser<'_> {
                     numeric(&value.text)
                 }
             }
+            // A value that may be a boolean or not is left to xrust, which converts both
+            // since the carried xrust's boolean and node conversions (ledger #3343).
             Kind::Unknown => {
-                self.ambiguous = true;
-                value.text.clone()
+                if string {
+                    format!("string({value})")
+                } else {
+                    value.text.clone()
+                }
             }
         }
     }
@@ -412,14 +418,13 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
         changed: false,
         depth: 0,
         node: node.cloned(),
-        ambiguous: false,
         item_name,
     };
     let result = parser.expression(1);
     if result.is_none() || parser.pos != parser.tokens.len() {
         // xrust also accepts syntax outside this source adapter's grammar (for
         // example XPath 2.0 for/let bindings). Leaving a conversion in that syntax
-        // untouched would bypass the boolean guard. Refuse valid expressions that
+        // untouched would bypass the comparison and sign adaptations. Refuse valid expressions that
         // might need adaptation; malformed XPath remains the compiler's error.
         if node.is_some()
             && parser.tokens.iter().any(|t| {
@@ -438,13 +443,6 @@ fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> 
         return Ok(None);
     }
     let result = result.unwrap();
-    // Mixed parameter types need an explicit conversion (ledger #2668).
-    if parser.ambiguous {
-        return Err(Error::InvalidArgument {
-            name: "stylesheet".into(),
-            detail: format!("refused: use xsl:choose to convert mixed parameter values explicitly. Numeric/string conversion in `{source}` may receive a boolean or a nonboolean value"),
-        });
-    }
     Ok(parser.changed.then_some(result.text))
 }
 
@@ -584,7 +582,7 @@ mod tests {
                 .to_string()
         };
         let mut t = parse::<IdNode>("/r/v + 1", None, None).unwrap();
-        assert_eq!(evaluate(&t), "NaN");
+        assert_eq!(evaluate(&t), "13.5");
         let Transform::Arithmetic(operands) = &mut t else {
             panic!("expected arithmetic AST");
         };

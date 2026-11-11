@@ -1,0 +1,131 @@
+diff --git a/src/item.rs b/src/item.rs
+index 548b36c..cb44029 100644
+--- a/src/item.rs
++++ b/src/item.rs
+@@ -277,7 +277,8 @@ impl<N: Node> Item<N> {
+     /// Gives the double value of the item. Returns NaN if the value cannot be converted to a double.
+     pub fn to_double(&self) -> f64 {
+         match self {
+-            Item::Node(..) => f64::NAN,
++            // A node is converted by its string value.
++            Item::Node(..) => crate::value::string_to_double(&self.to_string()),
+             Item::Function => f64::NAN,
+             Item::Value(v) => v.to_double(),
+         }
+diff --git a/src/transform/numbers.rs b/src/transform/numbers.rs
+index 2f06661..36cd09f 100644
+--- a/src/transform/numbers.rs
++++ b/src/transform/numbers.rs
+@@ -170,22 +170,20 @@ pub fn number<
+     num: &Transform<N>,
+ ) -> Result<Sequence<N>, Error> {
+     let n = ctxt.dispatch(stctxt, num)?;
+-    match n.len() {
+-        1 => {
++    // As XPath 1.0 converts a node-set: by its first node, and NaN if it is empty.
++    match n.first() {
++        Some(first) => {
+             // First try converting to an integer
+-            match n[0].to_int() {
++            match first.to_int() {
+                 Ok(i) => Ok(vec![Item::Value(Rc::new(Value::from(i)))]),
+                 _ => {
+                     // Otherwise convert to double.
+                     // NB. This can't fail. At worst it returns NaN.
+-                    Ok(vec![Item::Value(Rc::new(Value::from(n[0].to_double())))])
++                    Ok(vec![Item::Value(Rc::new(Value::from(first.to_double())))])
+                 }
+             }
+         }
+-        _ => Err(Error::new(
+-            ErrorKind::TypeError,
+-            String::from("not a singleton sequence"),
+-        )),
++        None => Ok(vec![Item::Value(Rc::new(Value::from(f64::NAN)))]),
+     }
+ }
+ 
+@@ -446,11 +444,8 @@ pub(crate) fn arithmetic<
+                 break;
+             }
+         };
+-        if j.len() != 1 {
+-            acc = f64::NAN;
+-            break;
+-        }
+-        let u = j[0].to_double();
++        // An operand is converted as by number(): its first item, and NaN if it is empty.
++        let u = j.first().map_or(f64::NAN, |i| i.to_double());
+         match o.op {
+             ArithmeticOperator::Noop => acc = u,
+             ArithmeticOperator::Add => acc += u,
+diff --git a/src/value.rs b/src/value.rs
+index 437db74..3dc07f0 100644
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -264,6 +264,13 @@ impl fmt::Display for ValueData {
+     }
+ }
+ 
++/// A string as a number, ignoring leading and trailing XML white space; NaN if it is not one.
++pub(crate) fn string_to_double(s: &str) -> f64 {
++    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
++        .parse::<f64>()
++        .unwrap_or(f64::NAN)
++}
++
+ impl Hash for Value {
+     fn hash<H: Hasher>(&self, state: &mut H) {
+         format!("{:?}", self.value).hash(state)
+@@ -323,7 +330,7 @@ impl Value {
+     /// Convert the value to a double. If the value cannot be converted, returns Nan.
+     pub fn to_double(&self) -> f64 {
+         match &self.value {
+-            ValueData::String(s) => s.parse::<f64>().unwrap_or(f64::NAN),
++            ValueData::String(s) => string_to_double(s),
+             ValueData::Integer(i) => (*i) as f64,
+             ValueData::Int(i) => (*i) as f64,
+             ValueData::Double(d) => *d,
+@@ -334,7 +341,9 @@ impl Value {
+                     0.0
+                 }
+             }
+-            _ => f64::NAN,
++            // The other numeric types (string-length() gives an UnsignedLong), by their
++            // lexical form; anything else is not a number.
++            _ => string_to_double(&self.to_string()),
+         }
+     }
+     pub fn value_type(&self) -> &'static str {
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index 079fab5..0328b38 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -646,3 +646,27 @@ fn xslt_node_on_the_left_of_a_comparison() {
+         );
+     }
+ }
++
++#[test]
++fn xslt_number_of_nodes_and_unsigned_results() {
++    let src = r#"<r><b n=" 7 "><l>12.5</l><l>4</l></b><e/><t>x</t></r>"#;
++    for (expr, answer) in [
++        ("number(/r/b/l)", "12.5"),
++        ("/r/b/l + 1", "13.5"),
++        ("/r/b/@n * 2", "14"),
++        ("number(/r/missing)", "NaN"),
++        ("/r/missing + 1", "NaN"),
++        ("number(/r/t)", "NaN"),
++        ("string-length('abc') - 1", "2"),
++        ("string-length('abc') * 2", "6"),
++    ] {
++        let style = stylesheet(&format!(
++            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
++        ));
++        assert_eq!(
++            transform_str(src, &style),
++            format!("<out>{answer}</out>"),
++            "{expr}"
++        );
++    }
++}

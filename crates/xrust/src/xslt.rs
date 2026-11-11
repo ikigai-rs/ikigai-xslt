@@ -238,6 +238,8 @@ static ATTRFORMAT: LazyLock<QName> =
     LazyLock::new(|| QName::new_from_parts(NcName::try_from("format").unwrap(), None));
 static ATTRORDER: LazyLock<QName> =
     LazyLock::new(|| QName::new_from_parts(NcName::try_from("order").unwrap(), None));
+/// The namespace `xml:` names are in, which is never declared.
+const XMLNS_URI: &str = "http://www.w3.org/XML/1998/namespace";
 static ATTRELEMENTS: LazyLock<QName> =
     LazyLock::new(|| QName::new_from_parts(NcName::try_from("elements").unwrap(), None));
 
@@ -1460,6 +1462,38 @@ pub(crate) fn to_transform<N: Node>(
                         Box::new(Transform::Literal(Item::Value(Rc::new(Value::from(true))))),
                     ));
                 }
+
+                // And for each namespace an attribute's name is in, so that the result
+                // can serialize the attribute's prefix
+                let mut declared = vec![u.clone()];
+                n.attribute_iter()
+                    .filter_map(|e| e.name().unwrap().namespace_uri())
+                    .filter(|nsuri| Some(nsuri.clone()) != *XSLTNS && nsuri.to_string() != XMLNS_URI)
+                    .try_for_each(|nsuri| {
+                        if declared.contains(&Some(nsuri.clone())) {
+                            return Ok(());
+                        }
+                        declared.push(Some(nsuri.clone()));
+                        if let Some(p) = n
+                            .namespace_iter()
+                            .find(|nsd| nsd.as_namespace_uri().is_ok_and(|v| *v == nsuri))
+                        {
+                            if let Some(pp) = p.as_namespace_prefix()? {
+                                content.push(Transform::NamespaceDeclaration(
+                                    Some(Box::new(Transform::Literal(Item::Value(Rc::new(
+                                        Value::from(pp.to_string()),
+                                    ))))),
+                                    Box::new(Transform::Literal(Item::Value(Rc::new(
+                                        Value::from(nsuri),
+                                    )))),
+                                    Box::new(Transform::Literal(Item::Value(Rc::new(
+                                        Value::from(true),
+                                    )))),
+                                ));
+                            }
+                        }
+                        Ok::<(), Error>(())
+                    })?;
 
                 // Copy attributes to the result, except for XSLT directives
                 n.attribute_iter()

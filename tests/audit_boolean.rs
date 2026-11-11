@@ -72,8 +72,16 @@ fn atomic_sequences_cannot_leak_boolean_values_into_content_declarations() {
     assert_refused(&style("<xsl:variable name='v'><xsl:sequence select='true()'/></xsl:variable><xsl:value-of select='$v'/>"));
 }
 
+fn answer(sheet: &str) -> String {
+    transform_xml("<doc/>", sheet, true).unwrap()
+}
+
+/// Through 0.8.1 these value-ofs were refused because their result type could not be
+/// established. The carried xrust writes a boolean as `true`/`false`, so they are answered.
+/// xrust still discards a call's namespace when its local name is a core function's, so
+/// `ex:string(true())` runs `string(true())`; that is xrust's answer, pinned here.
 #[test]
-fn namespaced_core_function_spellings_are_unknown_too() {
+fn namespaced_core_function_spellings_are_answered_as_core_calls() {
     for select in [
         "ex:string(true())",
         "string(ex:string(true()))",
@@ -82,10 +90,14 @@ fn namespaced_core_function_spellings_are_unknown_too() {
         let sheet = style(&format!(
             "<xsl:value-of xmlns:ex='urn:extension' select='{select}'/>"
         ));
-        assert_refused(&sheet);
+        assert_eq!(answer(&sheet), "true", "{select}");
     }
     let sheet = style("<xsl:variable xmlns:ex='urn:extension' name='v' select='ex:string(true())'/><xsl:value-of select='$v'/>");
-    assert_refused(&sheet);
+    assert_eq!(answer(&sheet), "true");
+    // Copying one into content is still refused: its type is unknown there.
+    assert_refused(&style(
+        "<xsl:variable name='v'><xsl:copy-of xmlns:ex='urn:extension' select='ex:true()'/></xsl:variable><xsl:value-of select='$v'/>",
+    ));
     // Function spellings inside literals and ordinary QName/axis steps are not calls.
     assert_eq!(
         transform_xml(
@@ -101,19 +113,26 @@ fn namespaced_core_function_spellings_are_unknown_too() {
 }
 
 #[test]
-fn xpath_bindings_cannot_bypass_boolean_result_or_conversion_analysis() {
+fn xpath_bindings_cannot_bypass_conversion_analysis() {
+    // A boolean value-of is right without adaptation (ledger #3343).
+    for select in ["for $v in doc return true()", "let $v := true() return $v"] {
+        assert_eq!(
+            answer(&style(&format!("<xsl:value-of select='{select}'/>"))),
+            "true",
+            "{select}"
+        );
+    }
+    // A conversion in syntax outside the numeric adapter's grammar is still refused.
     for select in [
-        "for $v in doc return true()",
-        "let $v := true() return $v",
         "string(for $v in doc return true())",
         "number(let $v := true() return $v)",
         "(for $v in doc return true()) + 1",
     ] {
         assert_refused(&style(&format!("<xsl:value-of select='{select}'/>")));
     }
-    for select in ["$p", "string($p)", "number($p)"] {
+    for (select, expected) in [("$p", "true"), ("string($p)", "true"), ("number($p)", "1")] {
         let sheet = templates(&format!("<xsl:template match='/'><xsl:call-template name='show'/></xsl:template><xsl:template name='show'><xsl:param name='p' select='for $v in doc return true()'/><xsl:value-of select='{select}'/></xsl:template>"));
-        assert_refused(&sheet);
+        assert_eq!(answer(&sheet), expected, "{select}");
     }
 }
 
@@ -141,10 +160,16 @@ fn conditional_boolean_conversions_are_adapted() {
             "{select}"
         );
     }
-    for select in [
-        "string(if (true()) then true() else 0)",
-        "number(if (true()) then 0 else false())",
+    // Arms of different kinds, refused through 0.8.1, are left to xrust, which converts
+    // either (ledger #3343).
+    for (select, expected) in [
+        ("string(if (true()) then true() else 0)", "true"),
+        ("number(if (true()) then 0 else false())", "0"),
     ] {
-        assert_refused(&style(&format!("<xsl:value-of select='{select}'/>")));
+        assert_eq!(
+            answer(&style(&format!("<xsl:value-of select='{select}'/>"))),
+            expected,
+            "{select}"
+        );
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! xrust 2.3.0's XML parser matched on `value.to_lowercase()` to compare `xml:space`, and then
 //! built `xml:id` and every other prefixed attribute from that lowercased binding. This crate
-//! carries xrust as `ikigai-xrust` (`crates/xrust`) with that one fix, so the values below
+//! carries xrust as `ikigai-xrust` (`crates/xrust`) with that fix (among others, ledger #3343), so the values below
 //! come through as written, in the source and in the stylesheet alike.
 
 use ikigai_xslt::transform_xml;

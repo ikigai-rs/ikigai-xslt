@@ -535,3 +535,159 @@ fn xslt_avt_1() {
     )
     .expect("test failed")
 }
+
+/// Transform `src` with `style`, both XML text, as the `xslt` module documentation does,
+/// and serialize the result.
+fn transform_str(src: &str, style: &str) -> String {
+    use xrust::item::{Item, Node, SequenceTrait};
+    use xrust::transform::context::StaticContextBuilder;
+    use xrust::trees::smite::RNode;
+    use xrust::xdmerror::{Error, ErrorKind};
+    use xrust::xslt::from_document;
+
+    let srcdoc = smite::make_from_str(src).expect("unable to parse source");
+    let styledoc = smite::make_from_str(style).expect("unable to parse stylesheet");
+    let mut stctxt = StaticContextBuilder::new()
+        .message(|_| Ok(()))
+        .fetcher(|_| Err(Error::new(ErrorKind::NotImplemented, "no fetcher")))
+        .parser(|_| Err(Error::new(ErrorKind::NotImplemented, "no parser")))
+        .build();
+    let mut ctxt = from_document(styledoc, None, smite::make_from_str, |_| {
+        Err(Error::new(ErrorKind::NotImplemented, "no modules"))
+    })
+    .expect("unable to compile stylesheet");
+    ctxt.context(vec![Item::Node(srcdoc)], 0);
+    ctxt.result_document(RNode::new_document());
+    ctxt.evaluate(&mut stctxt)
+        .expect("unable to evaluate stylesheet")
+        .to_xml()
+}
+
+/// `templates` inside an XSLT 1.0 stylesheet with XML output.
+fn stylesheet(templates: &str) -> String {
+    format!(
+        r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:output method="xml"/>{templates}</xsl:stylesheet>"#
+    )
+}
+
+#[test]
+fn xslt_whitespace_only_text_is_preserved() {
+    for text in [" ", "  ", "\t\n", "&#x20;"] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/">
+  <out>Meta<xsl:text>{text}</xsl:text>Source</out>
+</xsl:template>"#
+        ));
+        let kept = if text == "&#x20;" { " " } else { text };
+        assert_eq!(
+            transform_str("<doc/>", &style),
+            format!("<out>Meta{kept}Source</out>")
+        );
+    }
+}
+
+#[test]
+fn xslt_boolean_string_value() {
+    for (expr, answer) in [
+        ("1 &gt; 0", "true"),
+        ("1 &lt; 0", "false"),
+        ("true()", "true"),
+        ("not(true())", "false"),
+        ("string(true())", "true"),
+        ("concat('[', false(), ']')", "[false]"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<doc/>", &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}
+
+#[test]
+fn xslt_boolean_number_value() {
+    for (expr, answer) in [
+        ("number(true())", "1"),
+        ("number(false())", "0"),
+        ("true() + 1", "2"),
+        ("number(1 &gt; 0) * 5", "5"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<doc/>", &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}
+
+#[test]
+fn xslt_node_on_the_left_of_a_comparison() {
+    for (test, answer) in [
+        ("/r/v &gt; 2", "yes"),
+        ("/r/v &lt; 2", "no"),
+        ("/r/v &gt;= 3", "yes"),
+        ("/r/v &lt;= 2", "no"),
+        ("2 &lt; /r/v", "yes"),
+        ("/r/v = 3", "yes"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="{test}">yes</xsl:when><xsl:otherwise>no</xsl:otherwise></xsl:choose></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str("<r><v>3</v></r>", &style),
+            format!("<out>{answer}</out>"),
+            "{test}"
+        );
+    }
+}
+
+#[test]
+fn xslt_number_of_nodes_and_unsigned_results() {
+    let src = r#"<r><b n=" 7 "><l>12.5</l><l>4</l></b><e/><t>x</t></r>"#;
+    for (expr, answer) in [
+        ("number(/r/b/l)", "12.5"),
+        ("/r/b/l + 1", "13.5"),
+        ("/r/b/@n * 2", "14"),
+        ("number(/r/missing)", "NaN"),
+        ("/r/missing + 1", "NaN"),
+        ("number(/r/t)", "NaN"),
+        ("string-length('abc') - 1", "2"),
+        ("string-length('abc') * 2", "6"),
+    ] {
+        let style = stylesheet(&format!(
+            r#"<xsl:template match="/"><out><xsl:value-of select="{expr}"/></out></xsl:template>"#
+        ));
+        assert_eq!(
+            transform_str(src, &style),
+            format!("<out>{answer}</out>"),
+            "{expr}"
+        );
+    }
+}
+#[test]
+fn xslt_literal_attribute_namespace_is_declared() {
+    use xrust::item::Node;
+    let rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+    for body in [
+        r#"<out><b rdf:datatype="x">1</b></out>"#,
+        r#"<out><b xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:datatype="x">1</b></out>"#,
+        r#"<out><b rdf:datatype="x" rdf:about="y" xml:lang="en">1</b></out>"#,
+    ] {
+        let style = format!(
+            r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:rdf="{rdf}"><xsl:template match="/">{body}</xsl:template></xsl:stylesheet>"#
+        );
+        let result = transform_str("<doc/>", &style);
+        assert!(
+            result.contains(&format!("xmlns:rdf='{rdf}'")) && result.contains("rdf:datatype='x'"),
+            "{body}: {result}"
+        );
+        let reparsed = smite::make_from_str(&result).expect("the result is namespace-well-formed");
+        assert!(reparsed.to_xml().contains("rdf:datatype='x'"), "{result}");
+    }
+}

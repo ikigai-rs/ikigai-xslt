@@ -105,15 +105,15 @@ refuses: it is what it evaluates **wrongly, with no error**. A stylesheet's auth
 discover those from errors, so since 0.3.0 this crate **refuses** the constructs in the refusal table
 below, before xrust compiles the stylesheet. Every row below was measured on
 **xrust 2.3.0** (2026-10-14, ledger #1492; first on 2.2.0, ledger #193;
-whitespace-only `xsl:text` added 2026-10-23, ledger #2146; attribute whitespace references,
-boolean conversion and literal attribute namespaces added 2026-10-30, ledger #2520) by
+whitespace-only `xsl:text` added 2026-10-23, ledger #2146; attribute whitespace references
+and literal attribute namespaces added 2026-10-30, ledger #2520) by
 `tests/xrust_subset.rs`, and each wrong answer is
 also reproduced against stock xrust, without this crate in the way, in
 [`docs/upstream-xrust.md`](docs/upstream-xrust.md). Those tests pin stock xrust's wrong
 answers, so the day xrust fixes one, a test fails and says so: that is the signal to drop
 the refusal and update this table. "Stock" xrust is the xrust this crate carries,
-`ikigai-xrust` 2.3.0-ikigai.1: xrust 2.3.0 with one fix, prefixed attribute values kept as
-written (below); every other answer is xrust 2.3.0's own. The measured release is a record
+`ikigai-xrust` 2.3.0-ikigai.2: xrust 2.3.0 with the fixes [`crates/xrust/README.md`](crates/xrust/README.md) lists (since 0.9.0, ledger #3343), the first of them prefixed attribute values kept as
+written (below); every answer not named as fixed is xrust 2.3.0's own. The measured release is a record
 (`ikigai_xslt::subset::XRUST_MEASURED_ON`), not a gate: a newer xrust on crates.io is a
 warning in the ecosystem's daily scan, not a red build.
 
@@ -184,7 +184,6 @@ a shell.
 | a [last()] predicate — `item[last()]`, `(…)[last()]`, `{item[last()]/@id}` | the last node | the **first** node, since `last()` is 1 | `item[count(../item)]` |
 | position() or last() away from the root: inside `for-each`, `apply-templates`, a named template; and `last()` inside any predicate | 1, 2, 3 … / the count | always **1**, so `test="position() = 2"` is never true | compute it outside and hand it in as data; `position()` inside a predicate works |
 | a leading // away from the root: `count(//item)` inside a nested or named template, a `for-each` body or a predicate | from the document root | from the **context node**, so usually nothing | `/doc//name` |
-| a literal attribute without a result namespace declaration: `<out><b rdf:datatype="x">1</b></out>`, with `rdf` declared on the stylesheet | a namespaced attribute | serialization panics: `unable to find namespace`; xrust only emits namespace declarations for element names | put the element or an enclosing literal result element in that namespace, e.g. `<rdf:RDF>` |
 
 "Away from the root" is everywhere but the body of `xsl:template match="/"` outside any
 `xsl:for-each`, and a top-level `xsl:variable` or `xsl:param`: there the context node is the
@@ -197,29 +196,27 @@ parser lowercases every prefixed attribute value (`rdf:about`, `rdf:resource`, `
 `rdf:datatype`, `xml:id`, `xml:base`, `xml:lang`, and the variable names inside a prefixed
 attribute's value template, `f:k="{$camelVar}"`), in the source and the stylesheet alike.
 0.5.0 through 0.7.0 refused such a value (ledger #2519). This crate now builds on
-`ikigai-xrust` ([`crates/xrust`](crates/xrust)), xrust 2.3.0 with that one defect fixed, so
+`ikigai-xrust` ([`crates/xrust`](crates/xrust)), xrust 2.3.0 with that defect fixed (among others), so
 those values come through exactly as written, and nothing is refused for their case.
 `xml:space` is still compared without regard to case, as xrust 2.3.0 compares it. The fix is
 written up for upstream in [`docs/upstream/xrust-attribute-case.md`](docs/upstream/xrust-attribute-case.md).
 
-**Refused before parsing either input** (ledger #2520):
-
-| construct | XML/XSLT answer | stock xrust 2.3.0 answer | instead, write |
-| --- | --- | --- | --- |
-| a tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`, `&#13;`, including hexadecimal and leading-zero forms) | retain the referenced character | replaces it with a space | for the RSS newline, declare `<xsl:variable name="lf-holder">.` followed by a literal newline and `.</xsl:variable>`, then use `substring($lf-holder, 2, 1)` |
-
-The whitespace-reference refusal (#2520) also applies to **unprefixed** attributes in either
-input, before parsing, and names the argument and attribute. There is no exact repair after
-parsing: a reference and a literal space have already become indistinguishable. Text-node
-references, escaped `&amp;#10;`, comments, CDATA and processing instructions are unaffected.
-The RSS workaround above produces one line per item with `method="text"` (tested).
-
-This guard also applies to `CompiledStylesheet::compile` and `transform`.
+**Attribute whitespace character references** (ledger #2520): stock xrust 2.3.0 reads a
+tab, line feed or carriage return character reference in any attribute (`&#9;`, `&#10;`,
+`&#13;`, hexadecimal and leading-zero forms too) as a space, and 0.5.0 through 0.8.0 refused
+one in either input before parsing. The xrust this crate carries keeps the referenced
+character, as XML 1.0 §3.3.3 says, and no longer collapses or trims runs of spaces in an
+attribute value (ledger #3343), so nothing is refused and `select="concat(., '&#10;')"` ends a
+line. The fix is written up for upstream in
+[`docs/upstream/xrust-attribute-references.md`](docs/upstream/xrust-attribute-references.md).
 
 **Numeric conversion (#2487, since 0.5.0):** `number(/r/v)` and arithmetic on
 selected nodes or `string-length()` results work through this crate, including in chart
-attribute value templates such as `cx="{/r/v + 1}"`. Stock xrust 2.3.0 returns `NaN` for
-these operands. Before compilation, this crate converts each numeric operand through the
+attribute value templates such as `cx="{/r/v + 1}"`. xrust 2.3.0 returns `NaN` for
+these operands; the xrust this crate carries converts nodes, `string-length()` results and
+booleans itself, and no longer reverses a comparison with a node on its left (ledger #3343;
+the fixes are written up for upstream in [`docs/upstream/`](docs/upstream/README.md)).
+Before compilation, this crate converts each numeric operand through the
 string value of its first item, trimming XML whitespace; empty selections and nonnumeric
 text yield `NaN`. `number()` without an argument uses the context node. XPath 1.0 operator
 precedence, predicates, variable references, names and string literals are preserved.
@@ -230,64 +227,50 @@ obey `MAX_EXPR_DEPTH` too: a near-limit expression may be refused because the co
 adds brackets. Boolean operands convert directly to `1`/`0` (#2668), so
 `substring('yes', 1, number(/r/v > 2) * 3)` works. Relational comparisons convert every
 pair of selected items to numbers, preserving XPath 1.0's existential semantics and
-avoiding xrust's reversed node comparison. Integer literals larger than `i64` use
-floating-point parsing. `string(true())` / `string(false())` return `true` / `false`;
+xrust's lexical comparison of strings. Integer literals larger than `i64`, which xrust
+refuses on purpose (its own `xpath_bigint` test), are rewritten to `number('…')`. `string(true())` / `string(false())` return `true` / `false`;
 the strings `'true'` and `'false'` still convert to `NaN`. Variable and parameter types
-use the bounded analysis below; ambiguous boolean/nonboolean numeric or string conversions
-are refused as `InvalidArgument` naming `stylesheet`. `tests/numeric_conversion.rs` covers
-the public path; `tests/xrust_subset.rs` pins the unadapted upstream failures.
+use the bounded analysis below; one that may be boolean or not (refused through 0.8.1) is
+left to xrust, which converts either. What still needs the adapter is the relational
+comparisons, which xrust makes lexical for a string on the left (`'10' < '2'` is true) and
+an error for nonnumeric text (`/r/bad > 0`), and unary signs, which xrust does not
+evaluate. `tests/numeric_conversion.rs` covers the public path; `tests/xrust_subset.rs` pins
+xrust's own answers.
 
-**Boolean `xsl:value-of` and `xsl:copy-of` (#2520, #3412):** this crate converts known boolean results to explicit
-`true` / `false` text with `xsl:choose`, preserving the expression's context and evaluating it
-once. It reads xrust's parsed XPath, so comparisons inside predicates and string literals do
-not trigger this adaptation. Boolean variables are followed through their lexical declarations,
-up to `MAX_EXPR_DEPTH` bindings; longer or cyclic chains are refused. A template-local
-parameter combines its default with every `with-param` from calls to its named template
-and, conservatively, every `apply-templates` passing that parameter name. Each declaration
-is its own: two templates' identically written `xsl:param` are not one (#3398). A recursive
-template's own calls passing its parameter on are checked against a guess, string and then
-boolean, which holds only if every call site gives exactly that kind under it; the whole
-analysis of one expression visits at most `16 × MAX_EXPR_DEPTH` declarations. XPath 1.0
-core functions have their fixed result types (`lang` boolean, `namespace-uri` string
-included); extension functions are unknown, in `xsl:value-of` and in numeric or string
-conversion alike. Expressions containing namespace-qualified function calls remain
-conservatively unknown even when the local name matches a core function: xrust otherwise
-discards that namespace during parsing. String-only parameters remain accepted; consistently boolean parameters
-are adapted; mixed or unknown types are refused. Global parameters retain the request-argument rule: strings can override
-the default, so a boolean default is refused. Boolean `copy-of` constructs text even in
-variable or parameter content, rather than letting xrust store an atomic boolean in a
-result tree fragment. Boolean or unknown `xsl:sequence` results are refused because that
-instruction preserves atomic types. XPath `for` and `let` binding results are unknown;
-their local bindings are outside this stylesheet-declaration analysis.
+**Boolean string values (#2520):** stock xrust 2.3.0 writes a boolean's string value as
+the empty string, so `<xsl:value-of select="1 &gt; 0"/>`, `string(true())` and
+`concat('[', true(), ']')` lost it. Through 0.8.1 this crate rewrote known boolean
+`value-of` and `copy-of` results to `xsl:choose` and refused those whose type it could not
+establish (global boolean-default parameters, mixed template parameters, long alias chains,
+boolean `xsl:sequence`). The xrust
+it carries writes `true` and `false` (ledger #3343), so every one of those is answered and
+none is refused. The fix is written up for upstream in
+[`docs/upstream/xrust-boolean-string.md`](docs/upstream/xrust-boolean-string.md).
 
-| construct | XSLT 1.0 answer / this crate | stock xrust 2.3.0 answer | handling |
-| --- | --- | --- | --- |
-| `<xsl:value-of select="1 &gt; 0"/>` (also `false()`, comparisons and boolean functions) | `true` (or `false`) | empty string for either boolean | adapted before compilation |
-| `<xsl:variable name="v"><xsl:copy-of select="false()"/></xsl:variable>` followed by `value-of $v` | `false` | empty string | boolean `copy-of` constructs text before compilation; also covers parameter content and defaults |
-| `xsl:value-of` of a template-local parameter whose default and all call-site values are nonboolean | the supplied/default string or node value | correct | accepted; pinned with CMS links, gonk, and RSS stylesheet fixtures |
-| `xsl:value-of` of a template-local parameter whose default and all call-site values are boolean | `true` / `false` | empty string | adapted before compilation |
-| `xsl:value-of` of a global boolean-default parameter, a local parameter with mixed boolean/nonboolean incoming values, or another expression whose result type cannot be established | explicit refusal here | a boolean becomes empty | typed `InvalidArgument` naming `stylesheet`; write `xsl:choose` with explicit true/false text, or supply a string |
+**A boolean in a result tree fragment (#3412):** xrust keeps an atomic boolean that
+`xsl:copy-of` or `xsl:sequence` returns as that value inside a variable's or parameter's
+content, so `boolean($v)` of `<xsl:variable name="v"><xsl:copy-of select="false()"/></xsl:variable>`
+would be `false` where XSLT 1.0 says `true`. This crate makes a known boolean `copy-of`
+construct `true` / `false` text with `xsl:choose`, and refuses as `InvalidArgument` naming
+`stylesheet` a `copy-of` whose type it cannot establish and a boolean or unknown
+`xsl:sequence`, which preserves atomic types by design.
 
-Direct boolean results of `value-of` and `copy-of`, and explicit `string()` conversions, are adapted.
-Other implicit boolean-to-string conversions (for example `concat('[', true(), ']')`)
-remain defective; use `string(true())` explicitly. A literal attribute namespace
-must be supplied by its own or an enclosing literal element's **name**, even if `xmlns:rdf`
-is written on that element: xrust does not copy that declaration by itself. The guard is
-conservative across dynamic element construction and matched-template dispatch. Named-only
-templates are accepted when every call site supplies the namespace through a literal
-result ancestor (following at most `MAX_EXPR_DEPTH` template calls). A variable/parameter
-fragment can be emitted elsewhere, so the guard does not count its outer literal ancestors.
+**A literal attribute in a namespace** (#2520): stock xrust 2.3.0 declared namespaces only for
+a literal element's own name, so `<out><b rdf:datatype="x"/></out>` panicked in
+serialization (`unable to find namespace`), and 0.5.0 through 0.8.1 refused it unless a literal
+element in that namespace enclosed it on every path. The xrust this crate carries declares the
+attribute's namespace on its element (ledger #3343), so nothing is refused. The fix is written
+up for upstream in
+[`docs/upstream/xrust-literal-attribute-namespace.md`](docs/upstream/xrust-literal-attribute-namespace.md).
 
-⚠ **Still silently wrong: an answer, no error.** These cases are recorded limitations;
-they are not refused here. Whether a path selects one node or several is a property of
+⚠ **Still silently wrong: an answer, no error.** This case is a recorded limitation;
+it is not refused here. Whether a path selects one node or several is a property of
 the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
-`item` often is not). Whitespace-only `xsl:text` is lost during stylesheet compilation,
-including a space written as `&#x20;`:
+`item` often is not).
 
 | construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
 | --- | --- | --- | --- |
 | `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
-| `xsl:text` containing only whitespace: `Meta<xsl:text> </xsl:text>Source` | `Meta Source` | `MetaSource` (the explicit whitespace is dropped) | `<xsl:value-of select="' '"/>`, or append a space with `concat(., ' ')` |
 
 ### `method="html"` is serialized as HTML
 

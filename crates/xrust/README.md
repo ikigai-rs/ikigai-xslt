@@ -1,11 +1,28 @@
-> **This is `ikigai-xrust` 2.3.0-ikigai.1, not xrust.** It is xrust 2.3.0, as published on
-> crates.io, with one change: the XML parser keeps every prefixed attribute value, and
-> `xml:id`, as written. 2.3.0 lowercases them, because `src/parser/xml/attribute.rs` matches
-> on `value.to_lowercase()` to compare `xml:space` and then builds those attributes from the
-> lowercased value. Here only the two `xml:space` comparisons ignore case. It is carried by
-> [ikigai-xslt](https://github.com/ikigai-rs/ikigai-xslt) (ledger #3342) until a release of
-> xrust includes the fix, which is drafted for upstream in that repository's
-> `docs/upstream/xrust-attribute-case.md`. The library is still named `xrust`, so code that
+> **This is `ikigai-xrust` 2.3.0-ikigai.2, not xrust.** It is xrust 2.3.0, as published on
+> crates.io, with the fixes below, carried by
+> [ikigai-xslt](https://github.com/ikigai-rs/ikigai-xslt) until a release of xrust includes
+> them. Each is drafted for upstream, as issue text and a patch, in that repository's
+> `docs/upstream/` (its `README.md` gives the order the patches apply in), with a test here
+> that fails on 2.3.0:
+>
+> - the XML parser keeps every prefixed attribute value, and `xml:id`, as written; 2.3.0
+>   lowercased them (`src/parser/xml/attribute.rs`; 2.3.0-ikigai.1, ledger #3342);
+> - whitespace-only `xsl:text` is kept; 2.3.0 stripped it with the stylesheet's
+>   indentation (`src/transform/whitespace.rs`; ledger #1693);
+> - a boolean's string value is `true` or `false`, and its number 1 or 0; 2.3.0 gave the
+>   empty string and NaN (`src/value.rs`; #2520, #2668);
+> - a comparison with a node on its left mirrors its operator; 2.3.0 evaluated `/r/v > 2`
+>   as `2 > 3` (`src/item.rs`; #2668);
+> - a character reference to a tab, LF or CR in an attribute keeps its character, and
+>   attribute values are not collapsed; 2.3.0 made them spaces
+>   (`src/parser/xml/attribute.rs`; #2520);
+> - `number()` and arithmetic convert a node by its string value, any numeric type by its
+>   lexical form, and a sequence by its first item; 2.3.0 gave NaN
+>   (`src/item.rs`, `src/value.rs`, `src/transform/numbers.rs`; #2487);
+> - a literal result element declares the namespaces of its attributes' names; 2.3.0
+>   panicked serializing them (`src/xslt.rs`; #2520).
+>
+> No public API changes. The library is still named `xrust`, so code that
 > uses it does not change. It is licensed, like xrust, under the Apache License 2.0
 > ([LICENSE](./LICENSE)); xrust 2.3.0 ships no NOTICE file. The packaging differs from
 > 2.3.0's in four ways that do not touch the library: the manifest names the package

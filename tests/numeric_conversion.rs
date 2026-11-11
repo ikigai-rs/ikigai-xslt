@@ -205,22 +205,22 @@ fn boolean_variables_parameters_predicates_and_avts_are_adapted() {
     assert!(result.ends_with(">2[true][1]</out>"), "{result}");
 }
 
+/// Refused through 0.8.1, when xrust gave a boolean no number or string value (#2668);
+/// the carried xrust converts either kind itself (ledger #3343).
 #[test]
-fn ambiguous_parameter_conversions_are_refused_explicitly() {
-    for conversion in ["number($flag)", "$flag + 1", "string($flag)"] {
+fn parameter_conversions_that_may_be_boolean_are_answered() {
+    for (conversion, expected) in [
+        ("number($flag)", "1"),
+        ("$flag + 1", "2"),
+        ("string($flag)", "true"),
+    ] {
         let stylesheet = format!(
             r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:param name="flag" select="true()"/><xsl:template match="/"><xsl:value-of select="{conversion}"/></xsl:template></xsl:stylesheet>"#
         );
-        let error = transform_xml("<r/>", &stylesheet, true).unwrap_err();
-        assert!(!error.contains("ledger #"), "{error}");
-        assert!(error.contains("refused: use xsl:choose"), "{error}");
-        assert!(
-            error.starts_with("invalid argument `stylesheet`:"),
-            "{error}"
-        );
-        assert!(
-            error.contains("boolean") && error.contains("xsl:choose"),
-            "{error}"
+        assert_eq!(
+            transform_xml("<r/>", &stylesheet, true).unwrap(),
+            expected,
+            "{conversion}"
         );
     }
 }

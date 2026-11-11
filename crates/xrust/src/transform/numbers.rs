@@ -170,22 +170,20 @@ pub fn number<
     num: &Transform<N>,
 ) -> Result<Sequence<N>, Error> {
     let n = ctxt.dispatch(stctxt, num)?;
-    match n.len() {
-        1 => {
+    // As XPath 1.0 converts a node-set: by its first node, and NaN if it is empty.
+    match n.first() {
+        Some(first) => {
             // First try converting to an integer
-            match n[0].to_int() {
+            match first.to_int() {
                 Ok(i) => Ok(vec![Item::Value(Rc::new(Value::from(i)))]),
                 _ => {
                     // Otherwise convert to double.
                     // NB. This can't fail. At worst it returns NaN.
-                    Ok(vec![Item::Value(Rc::new(Value::from(n[0].to_double())))])
+                    Ok(vec![Item::Value(Rc::new(Value::from(first.to_double())))])
                 }
             }
         }
-        _ => Err(Error::new(
-            ErrorKind::TypeError,
-            String::from("not a singleton sequence"),
-        )),
+        None => Ok(vec![Item::Value(Rc::new(Value::from(f64::NAN)))]),
     }
 }
 
@@ -446,11 +444,8 @@ pub(crate) fn arithmetic<
                 break;
             }
         };
-        if j.len() != 1 {
-            acc = f64::NAN;
-            break;
-        }
-        let u = j[0].to_double();
+        // An operand is converted as by number(): its first item, and NaN if it is empty.
+        let u = j.first().map_or(f64::NAN, |i| i.to_double());
         match o.op {
             ArithmeticOperator::Noop => acc = u,
             ArithmeticOperator::Add => acc += u,

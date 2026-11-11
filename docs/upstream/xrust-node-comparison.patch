@@ -1,0 +1,68 @@
+diff --git a/src/item.rs b/src/item.rs
+index ca09742..548b36c 100644
+--- a/src/item.rs
++++ b/src/item.rs
+@@ -207,6 +207,19 @@ impl<N: item::Node> fmt::Display for Item<N> {
+     }
+ }
+ 
++/// The operator that gives the same answer with its operands exchanged: `a < b` is `b > a`.
++fn mirrored(op: Operator) -> Operator {
++    match op {
++        Operator::LessThan => Operator::GreaterThan,
++        Operator::LessThanEqual => Operator::GreaterThanEqual,
++        Operator::GreaterThan => Operator::LessThan,
++        Operator::GreaterThanEqual => Operator::LessThanEqual,
++        Operator::Before => Operator::After,
++        Operator::After => Operator::Before,
++        Operator::Equal | Operator::NotEqual | Operator::Is => op,
++    }
++}
++
+ impl<N: Node> Item<N> {
+     /// Serialize as XML
+     pub fn to_xml(&self) -> String {
+@@ -292,9 +305,11 @@ impl<N: Node> Item<N> {
+                     String::from("type error comparing items: incompatible item types"),
+                 )),
+             },
+-            Item::Node(..) => {
+-                other.compare(&Item::Value(Rc::new(Value::from(self.to_string()))), op)
+-            }
++            // The operands change places, so a directional operator is mirrored.
++            Item::Node(..) => other.compare(
++                &Item::Value(Rc::new(Value::from(self.to_string()))),
++                mirrored(op),
++            ),
+             _ => Result::Err(Error::new(
+                 ErrorKind::NotImplemented,
+                 String::from("error comparing items: comparison not implemented"),
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index ccfe644..079fab5 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -625,3 +625,24 @@ fn xslt_boolean_number_value() {
+         );
+     }
+ }
++
++#[test]
++fn xslt_node_on_the_left_of_a_comparison() {
++    for (test, answer) in [
++        ("/r/v &gt; 2", "yes"),
++        ("/r/v &lt; 2", "no"),
++        ("/r/v &gt;= 3", "yes"),
++        ("/r/v &lt;= 2", "no"),
++        ("2 &lt; /r/v", "yes"),
++        ("/r/v = 3", "yes"),
++    ] {
++        let style = stylesheet(&format!(
++            r#"<xsl:template match="/"><out><xsl:choose><xsl:when test="{test}">yes</xsl:when><xsl:otherwise>no</xsl:otherwise></xsl:choose></out></xsl:template>"#
++        ));
++        assert_eq!(
++            transform_str("<r><v>3</v></r>", &style),
++            format!("<out>{answer}</out>"),
++            "{test}"
++        );
++    }
++}
