@@ -162,12 +162,11 @@ fn the_endpoint_serves_html() {
     );
 }
 
-/// Not done, on purpose, and pinned so the day it changes is a decision: XSLT 1.0 §16.2 writes
-/// `script` and `style` content unescaped, and this crate (like xrust) escapes it, so an
-/// INLINE script with a quote or a `<` in it is broken. See `src/html.rs`.
+/// HTML raw-text elements cannot contain XML entity escapes. Refuse code whose
+/// characters the XML serializer would change, before returning any document.
 #[test]
-fn inline_script_text_is_still_escaped() {
-    let out = transform_xml(
+fn inline_script_text_requiring_escaping_is_refused() {
+    let error = transform_xml(
         SRC,
         &style(
             Some("html"),
@@ -175,6 +174,10 @@ fn inline_script_text_is_still_escaped() {
         ),
         false,
     )
-    .expect("renders");
-    assert_eq!(out, "<script>if (a &lt; b) { x = &apos;y&apos;; }</script>");
+    .unwrap_err();
+    assert!(
+        error.starts_with("invalid argument `stylesheet`:"),
+        "{error}"
+    );
+    assert!(error.contains("Inline script"), "{error}");
 }

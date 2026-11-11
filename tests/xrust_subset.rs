@@ -106,26 +106,10 @@ fn stock_stylesheet(src: &str, stylesheet: &str) -> Result<String, String> {
         .map_err(|e| format!("transform: {}", e.message))
 }
 
-/// Pin a silent case: today's answer is `wrong`, through this crate and through stock xrust
-/// alike, with no error; XSLT 1.0 says `correct`.
-fn pin_silent(src: &str, templates: &str, wrong: &str, correct: &str) {
-    assert_ne!(wrong, correct, "a silent case pins a WRONG answer");
-    for (path, answer) in [
-        ("ikigai-xslt", ours(src, templates)),
-        ("stock xrust", stock(src, templates)),
-    ] {
-        let answer = answer.unwrap_or_else(|e| {
-            panic!("{path}: xrust now REFUSES this (`{e}`), which is better than a wrong answer: move it to the refused table in README.md and docs/upstream-xrust.md")
-        });
-        assert!(
-            answer != correct,
-            "{path}: xrust {MEASURED_ON}'s silent defect is FIXED (it now answers the XSLT 1.0 `{correct}`): update README.md's subset table and docs/upstream-xrust.md"
-        );
-        assert_eq!(
-            answer, wrong,
-            "{path}: xrust's answer changed but is still not `{correct}`: re-measure and update README.md and docs/upstream-xrust.md"
-        );
-    }
+/// Pin a repaired XPath 1.0 conversion beside the carried engine's differing behavior.
+fn pin_string_conversion(src: &str, templates: &str, engine: &str, correct: &str) {
+    assert_eq!(stock(src, templates).unwrap(), engine);
+    assert_eq!(ours(src, templates).unwrap(), correct);
 }
 
 /// Pin a construct this crate refuses because xrust answers it wrongly: through this crate it
@@ -392,8 +376,8 @@ fn a_leading_comment_before_the_stylesheet_is_admitted() {
 /// is not `xsl:value-of`'s alone: `string-length()` of several nodes measures them all
 /// concatenated (`onetwothree`, 11), where XSLT 1.0 measures the first (`one`, 3).
 #[test]
-fn silent_string_of_a_node_set_concatenates_every_node() {
-    pin_silent(
+fn string_of_a_node_set_uses_the_first_node() {
+    pin_string_conversion(
         SRC,
         r#"<xsl:template match="/"><out><xsl:value-of select="string-length(doc/item)"/></out></xsl:template>"#,
         "<out>11</out>",
@@ -415,15 +399,15 @@ fn refused_a_predicate_in_a_match_pattern() {
     );
 }
 
-/// With two templates for one name, the FIRST declared wins whatever its predicate: XSLT
-/// gives `item[@k='1']` priority 0.5 over `item`'s 0, and xrust ignores both the predicate
+/// The carried engine now resolves ties in declaration order, but still ignores the
+/// predicate: XSLT gives `item[@k='1']` priority 0.5 over `item`'s 0, and xrust ignores both the predicate
 /// and the priority. Refused as the match predicate it holds.
 #[test]
 fn refused_template_priority_by_its_predicate() {
     pin_refused(
         SRC,
         r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/item"/></out></xsl:template><xsl:template match="item"><other/></xsl:template><xsl:template match="item[@k='1']"><one/></xsl:template>"#,
-        "<out><other/><other/><other/></out>",
+        "<out><one/><one/><one/></out>",
         "<out><one/><other/><one/></out>",
         "a predicate in a match pattern",
     );
@@ -584,8 +568,8 @@ fn the_endpoint_refuses_with_a_typed_invalid_argument() {
 /// `xsl:value-of` of several nodes concatenates them all with no separator. XSLT 1.0 takes
 /// the FIRST node's string value (and a 2.0+ processor running a 1.0 stylesheet does too).
 #[test]
-fn silent_value_of_a_node_set_concatenates_every_node() {
-    pin_silent(
+fn value_of_a_node_set_uses_the_first_node() {
+    pin_string_conversion(
         SRC,
         r#"<xsl:template match="/"><out><xsl:value-of select="doc/item"/></out></xsl:template>"#,
         "<out>onetwothree</out>",

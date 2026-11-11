@@ -424,6 +424,20 @@ fn split_union_templates(
         let node = &declaration.node;
         let pattern = attribute(node, "match");
         let parts = alternatives(&pattern);
+        if named(node, "template")
+            && parts.iter().any(|part| {
+                crate::numeric_values::tokens(part).is_some_and(|tokens| {
+                    tokens
+                        .windows(3)
+                        .any(|w| w[0] == "processing-instruction" && w[1] == "(" && w[2] != ")")
+                })
+            })
+        {
+            return Err(invalid("processing-instruction with a target in a match pattern is not supported; match processing-instruction() and test name() inside the template"));
+        }
+        if named(node, "template") && parts.iter().any(|part| part.trim_start().starts_with("//")) {
+            return Err(invalid("a leading // in a match pattern is not supported; use an unanchored name pattern such as item"));
+        }
         if !named(node, "template") || !attribute(node, "priority").is_empty() || parts.len() == 1 {
             expanded.push(declaration);
             continue;

@@ -5,8 +5,7 @@ has been filed**: filing is an outward-facing action and is Brian's call (ledger
 
 Each case below is a stylesheet and an input that xrust evaluates to a wrong answer
 **without an error**, or panics on instead of producing the XSLT 1.0 result. ikigai-xslt refuses cases 2 to 6 before xrust compiles them
-(`src/subset.rs`), so these drafts reproduce through stock xrust only; cases 7 and 9 are still
-answered. Case 10 is fixed in the xrust this crate carries, `ikigai-xrust` (`crates/xrust`,
+(`src/subset.rs`), so these drafts reproduce through stock xrust only; case 7 is now adapted to first-node string conversion, and case 9 is fixed in the carried fork. Case 10 is fixed in the xrust this crate carries, `ikigai-xrust` (`crates/xrust`,
 ledger #3342); 0.5.0 through 0.7.0 refused it before either input was parsed (ledger #2519).
 Case 1, and the literal `[n]` half of case 4, were first measured wrong on xrust 2.2.0
 (2026-10-10) and are **fixed in 2.3.0**. Everything here was re-measured on **xrust 2.3.0**
@@ -17,6 +16,14 @@ and pins the answers, so if any of them changes, a test fails and this file is d
 Case 9 was added on 2026-10-23 (ledger #2146), also measured on xrust 2.3.0.
 Cases 11–13 were added on 2026-10-30 (#2520): a pre-parse refusal, boolean value-of
 adaptation (or typed refusal), and a typed refusal before a serialization panic, respectively.
+
+The [2026-11-11 audit](audit-3493.md) adds four carried-engine fixes and upstream
+patch drafts: text escaping, template tie recovery, built-in templates and child-pattern
+node types. Case 3 now returns `<one/>` for every item through the engine, because the
+last declaration wins; its ignored predicate is still wrong and still refused here.
+Case 7 and `string-length()` now return the XPath 1.0 answer through ikigai-xslt's
+adapter, while the direct engine still concatenates. Historical Actual lines below
+refer to stock xrust 2.3.0 unless explicitly updated.
 
 ## The harness
 

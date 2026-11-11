@@ -263,14 +263,25 @@ attribute's namespace on its element (ledger #3343), so nothing is refused. The 
 up for upstream in
 [`docs/upstream/xrust-literal-attribute-namespace.md`](docs/upstream/xrust-literal-attribute-namespace.md).
 
-⚠ **Still silently wrong: an answer, no error.** This case is a recorded limitation;
-it is not refused here. Whether a path selects one node or several is a property of
-the data, not of the stylesheet (`ik:title` is usually one node; `../@title` always is;
-`item` often is not).
+**XPath 1.0 string conversion**: `xsl:value-of` and the XPath string functions
+use the first selected node, including an empty selection's empty string. The source
+adapter inserts a first-item selection before xrust compiles these expressions. Thus
+`value-of select="item"` returns `one`, and `string-length(item)` returns 3, for
+items `one`, `two`, `three`; earlier releases silently concatenated all three.
+`xsl:copy-of` still copies every selected node.
 
-| construct | XSLT 1.0 answer | xrust 2.3.0 answer | instead, write |
-| --- | --- | --- | --- |
-| `xsl:value-of` over several nodes, and any other place several nodes become a string (`string-length(item)`) | the **first** node's string value | **all** of them concatenated, no separator (`string-length(item)` is 11 for `one`, `two`, `three`) | `select="item[1]"` |
+**Additional named refusals**: `xsl:namespace-alias`, escaped braces (`{{` or `}}`) in
+attribute value templates, a leading `//` in a match pattern, and a targeted
+`processing-instruction('target')` match pattern are refused as `InvalidArgument`
+naming `stylesheet`. Use literal result names in the target namespace, `xsl:attribute`
+with `xsl:text` for literal braces, an unanchored name pattern, or an untargeted
+`processing-instruction()` pattern with a `name()` test in its body, respectively.
+Output is UTF-8 and XML is serialized without a declaration: an explicit non-UTF-8
+`xsl:output encoding` or `omit-xml-declaration="no"` is refused by name.
+Recursion past the engine's evaluation-depth bound is also an `InvalidArgument`
+naming `stylesheet`, with no partial document returned.
+
+The [2026-11-11 synthetic audit](docs/audit-3493.md) records coverage and limits.
 
 ### `method="html"` is serialized as HTML
 
@@ -288,11 +299,12 @@ alike:
   makes the output byte for byte what gonk's own pass wrote (`ikigai-gonk/src/render.rs`);
 - an element in a namespace (inline SVG) is XML, as XSLT 1.0 §16.2 says: `<path/>`.
 
-Everything else (escaping, quoting, namespace declarations) is xrust's, unchanged. ⚠ One
-part of §16.2 is not done: `script` and `style` content is still escaped, so an INLINE script
-with a `'` or a `<` in it breaks (`'` becomes `&apos;`). Writing it raw would make any data a
-stylesheet copies into a script executable markup, so it stays a host's decision; keep scripts
-and styles in their own files.
+Escaping, quoting and namespace serialization otherwise follow xrust. HTML boolean
+attributes keep XML-style values (`checked='checked'`); this is equivalent HTML,
+although XSLT 1.0 recommends minimizing them. Inline `script` or `style` text whose
+characters require XML escaping is refused as an `InvalidArgument` naming
+`stylesheet`: keep that code in external files. Earlier releases silently escaped
+it, breaking the code. Text output and namespaced elements do not use this HTML guard.
 
 What the gaps cost a real stylesheet, and how one is written around them, is measured in
 gonk's renderer: everything a template would compute arrives as data on the node it

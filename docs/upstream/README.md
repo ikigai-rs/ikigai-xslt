@@ -6,8 +6,8 @@ been filed**: filing is Brian's call. Issues and merge requests go to
 read-only. Check GitLab's `main` before filing each one.
 
 The patches are a series. Applied with `git apply`, in this order, to the xrust 2.3.0 source
-as published on crates.io, they give exactly the `src/` this repository carries (checked
-2026-11-09); each adds its test to `tests/smite-xslt.rs` or `tests/parser.rs`, and the later
+as published on crates.io, they give exactly the `src/` this repository carries (updated
+2026-11-11); each adds its test to `tests/smite-xslt.rs` or `tests/parser.rs`, and the later
 `tests/smite-xslt.rs` tests use the helper the second patch adds. Each test fails on stock
 2.3.0 and passes with its fix.
 
@@ -26,9 +26,9 @@ as published on crates.io, they give exactly the `src/` this repository carries 
 | 11 | [missing built-in templates](xrust-builtin-templates.md) | [patch](xrust-builtin-templates.patch) | #3493 |
 | 12 | [child name patterns match attributes](xrust-pattern-node-types.md) | [patch](xrust-pattern-node-types.patch) | #3493 |
 
-Patch 6 changes the same file as patch 1 and applies only on top of it; the others touch
-different code and can be filed in any order, though a test in patches 3 to 8 needs patch
-2's `transform_str` helper in `tests/smite-xslt.rs` (or a copy of it).
+Among patches 1–8, patch 6 depends on patch 1; tests in patches 3–8 need patch 2's
+`transform_str` helper. Patches 9–12 follow the numbered series, touching overlapping
+compiler and test code. Check their preceding patches before applying or submitting them.
 
 Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger (ledger
 #3343's hand-back says why):
@@ -37,7 +37,7 @@ Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger 
   `QName` is in xrust's public API;
 - import and include modules (#192): the empty document came from ikigai-xslt's own fetcher,
   which since 0.6.0 resolves modules itself; xrust's `from_document` took what it was given;
-- match-pattern predicates and template priority (cases 2 and 3), `position()`, `last()` and
+- match-pattern predicates (cases 2 and 3), `position()`, `last()` and
   `[last()]` (cases 4 and 5), and a leading `//` away from the root (case 6): each needs a
   change to how patterns or the focus are evaluated, a design call for upstream;
 - an integer literal past `i64` (#2668): xrust's own `xpath_bigint` test requires it to be an
@@ -45,3 +45,9 @@ Not drafted, from [`../upstream-xrust.md`](../upstream-xrust.md) and the ledger 
 - `xsl:value-of` over several nodes (case 7), XPath 1.0 relational comparison of strings, and
   unary `-`/`+`: XPath 1.0 and 2.0 disagree on the first two, which is a design call; unary
   signs were not reached.
+
+The #3493 audit adds patches 9–12, each in its own commit. Template conflict recovery,
+built-in templates and child-pattern node types are fixed in the carried engine;
+pattern predicates still require an upstream design decision. The XPath 1.0
+multi-node string conversion is adapted in ikigai-xslt, without changing xrust's
+newer-version sequence semantics. See [the audit](../audit-3493.md).

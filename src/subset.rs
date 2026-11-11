@@ -36,11 +36,8 @@
 //! template (its caller decides its context), the body of an `xsl:for-each`, an `xsl:sort` key,
 //! an `xsl:key`'s `use` — the context is some other node, and xrust's answer is wrong there.
 //!
-//! Not refused, on purpose: `xsl:value-of` over several nodes, which xrust concatenates where
-//! XSLT 1.0 takes the first. Whether a path selects one node or several is a property of the
-//! DATA (`ik:title` is usually one node and may be three), so no lexical rule tells the two
-//! apart: refusing a multi-step path would refuse `../@title`, which is always one node, and
-//! still admit `item`, which is often several. It stays a README row with its workaround.
+//! XPath 1.0 string conversions, including `xsl:value-of`, select the first item through
+//! the source adapter in `numeric_values`; a multiple-node selection is no longer concatenated.
 //! Whitespace-only `xsl:text`, which xrust 2.3.0 dropped (ledger #2146), is kept by the
 //! xrust this crate carries (ledger #3343).
 //!
@@ -304,6 +301,9 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
     for (attribute, _, value) in attrs.iter().filter(|(_, plain, _)| *plain) {
         match (local.as_str(), attribute.as_str()) {
             ("template" | "key", "match") => {
+                if value.trim_start().starts_with("//") {
+                    report(Construct::LeadingDoubleSlash, attribute, value);
+                }
                 if tokens(value).contains(&Tok::Open('[')) {
                     report(Construct::MatchPredicate, attribute, value);
                 }

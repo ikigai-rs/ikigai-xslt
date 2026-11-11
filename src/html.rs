@@ -19,13 +19,13 @@
 //! - an element **in a namespace** (inline SVG, MathML) is XML, as §16.2 says, and keeps
 //!   `<path/>`, which an HTML parser reads correctly inside foreign content.
 //!
-//! ⚠ Not done: §16.2 also writes the text of `script` and `style` unescaped, and xrust escapes
-//! it (`'` becomes `&apos;`, `<` becomes `&lt;`), so an INLINE script or style with a quote or a
-//! `<` in it is broken. Writing it raw would make any data a stylesheet copies into a script
-//! element executable markup, so that is a decision for a host, not a serializer default: keep
-//! scripts and styles in their own files (`<script src='…'>`).
+//! Inline `script` and `style` text containing characters this XML serializer would
+//! escape is refused by name, before returning a result. Keep that code in external
+//! files. Text output and namespaced elements are unaffected.
 
 use std::rc::Rc;
+
+use ikigai_core::{Error, Result};
 
 use xrust::item::{Item, Node, NodeType, Sequence};
 use xrust::value::Value;
@@ -79,7 +79,7 @@ fn first_element_is_html(seq: &Sequence<IdNode>) -> bool {
 /// Give every empty, non-void element in no namespace under `seq` an empty text child, so
 /// that xrust's serializer writes its end tag. Walks with an explicit stack: a result can nest
 /// far deeper than a stylesheet (README, "Caller XML is bounded").
-pub(crate) fn open_empty_elements(seq: &Sequence<IdNode>) -> Result<(), String> {
+pub(crate) fn open_empty_elements(seq: &Sequence<IdNode>) -> Result<()> {
     let mut stack: Vec<IdNode> = seq
         .iter()
         .filter_map(|item| match item {
@@ -92,6 +92,16 @@ pub(crate) fn open_empty_elements(seq: &Sequence<IdNode>) -> Result<(), String> 
         match node.node_type() {
             NodeType::Document => stack.extend(node.child_iter()),
             NodeType::Element => {
+                if let Some(name) = node.name().filter(|n| n.namespace_uri().is_none()) {
+                    let local = name.local_name().to_string().to_ascii_lowercase();
+                    if matches!(local.as_str(), "script" | "style")
+                        && node.to_string().contains(['&', '<', '>', '\'', '"'])
+                    {
+                        return Err(crate::output_subset::invalid(format!(
+                            "Inline {local} text requiring escaping is not supported by the html output method; keep code in an external file"
+                        )));
+                    }
+                }
                 if node.first_child().is_none() {
                     if needs_end_tag(&node) {
                         empty.push(node);
@@ -107,10 +117,10 @@ pub(crate) fn open_empty_elements(seq: &Sequence<IdNode>) -> Result<(), String> 
     for mut element in empty {
         let text = element
             .new_text(Rc::new(Value::from("")))
-            .map_err(|e| format!("html serialization: {}", e.message))?;
+            .map_err(|e| Error::Endpoint(format!("html serialization: {}", e.message)))?;
         element
             .push(text)
-            .map_err(|e| format!("html serialization: {}", e.message))?;
+            .map_err(|e| Error::Endpoint(format!("html serialization: {}", e.message)))?;
     }
     Ok(())
 }

@@ -28,6 +28,9 @@
 //! visitor, or operand spans. See docs/numeric-cost.md for API evidence, the AST
 //! experiment, and chart-sized wrapper costs beside PR 39's RSS measurements.
 
+//! XPath 1.0 string(), value-of and string-taking function arguments also select the
+//! first item here; xrust's newer-version sequence string conversion concatenates them.
+
 use crate::{
     boolean_values::{self, Kind},
     node_id::IdNode,
@@ -130,7 +133,7 @@ impl Parser<'_> {
             }
             Kind::Other => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     numeric(&value.text)
                 }
@@ -139,7 +142,7 @@ impl Parser<'_> {
             // since the carried xrust's boolean and node conversions (ledger #3343).
             Kind::Unknown => {
                 if string {
-                    format!("string({value})")
+                    format!("string(({value})[1])")
                 } else {
                     value.text.clone()
                 }
@@ -342,6 +345,18 @@ impl Parser<'_> {
                             converted
                         })
                     } else {
+                        for (index, arg) in args.iter_mut().enumerate() {
+                            let string_argument = match token.as_str() {
+                                "concat" | "starts-with" | "contains" | "substring-before"
+                                | "substring-after" | "translate" => true,
+                                "string-length" | "normalize-space" | "substring" => index == 0,
+                                _ => false,
+                            };
+                            if string_argument {
+                                self.changed = true;
+                                arg.text = format!("({})[1]", arg.text);
+                            }
+                        }
                         let text = format!(
                             "{token}({})",
                             args.iter()
@@ -525,6 +540,9 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<()> {
                 ) && matches!(attr_local.as_str(), "name" | "namespace"))
             {
                 Some(avt_at(&source, Some(&node))?)
+            } else if local == "value-of" && attr_local == "select" {
+                let expression = expression_at(&source, Some(&node))?.unwrap_or(source.clone());
+                Some(format!("({expression})[1]"))
             } else if matches!(attr_local.as_str(), "select" | "test" | "use" | "value") {
                 expression_at(&source, Some(&node))?
             } else {
@@ -601,7 +619,7 @@ mod tests {
     fn avt_text_escaped_braces_and_quoted_braces_are_preserved() {
         let source = "é + 1 {{number(/r)}} {concat('}', /r + 1)} {{x}}";
         let expected = format!(
-            "é + 1 {{{{number(/r)}}}} {{concat('}}', ({} + {}))}} {{{{x}}}}",
+            "é + 1 {{{{number(/r)}}}} {{concat(('}}')[1], (({} + {}))[1])}} {{{{x}}}}",
             numeric("/r"),
             numeric("1")
         );

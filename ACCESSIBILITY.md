@@ -35,8 +35,9 @@ host that serves the result owns the page around it.
 
 ## The rules that output follows
 
-- **The result is the stylesheet's.** Apart from the end tags above, nothing is added to or
-  removed from it: no `lang`, no style, no script, and escaping is xrust's, unchanged.
+- **The result is the stylesheet's.** Nothing adds `lang`, style or script. Empty HTML
+  elements keep the end tags above; XPath 1.0 string conversion keeps the first selected node;
+  `xsl:text` characters are escaped once. Unsupported output features produce named refusals.
 - **Errors are typed and name their input.** A refusal of the caller's input is an
   `InvalidArgument` naming `src`, `content` or `stylesheet`; a missing input is a
   `MissingArgument` naming it; time and capacity refusals are `Timeout` and `Unavailable`.
@@ -49,7 +50,7 @@ host that serves the result owns the page around it.
 - `tests/html_output.rs`: `an_empty_non_void_element_keeps_its_end_tag_and_a_void_one_has_none`,
   `an_element_in_a_namespace_is_serialized_as_xml`, `escaping_is_unchanged`,
   `with_no_output_method_an_html_root_means_html`, `the_endpoint_serves_html` and
-  `inline_script_text_is_still_escaped` pin the html method's serialization.
+  `inline_script_text_requiring_escaping_is_refused` pin the html method's serialization.
 - `tests/xml_depth.rs`, `tests/time_budget.rs`
   (`a_transform_is_answered_within_its_budget_and_overdue_work_is_capped`),
   `tests/engine_panic.rs` (`copying_the_document_node_is_an_error_not_a_panic` and the rest),
@@ -66,9 +67,10 @@ host that serves the result owns the page around it.
 
 Found by reading the source on 2026-10-31, not by testing with people or assistive technology:
 
-- `script` and `style` text in an html-method result is still escaped (`'` becomes `&apos;`), so
-  an inline script or style with a quote or a `<` in it breaks; keep them in their own files. This
-  is a deliberate choice, recorded in `src/html.rs` and pinned by a test.
+- Inline `script` and `style` text that requires XML escaping in an html-method result is
+  refused with an `InvalidArgument` naming `stylesheet` and the element. Keep that code in
+  external files. Earlier releases escaped it and silently broke it. The refusal is pinned
+  in `tests/html_output.rs` and `tests/unled_audit.rs`.
 - The panic refusal is a single paragraph of several sentences.
 - The examples' reports align columns with spaces (`{label:<18}`), so their meaning depends on
   position.
@@ -97,3 +99,6 @@ security-sensitive goes through
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-11 | Removed internal tracking numbers from refusals and put caller actions first in time, capacity, attribute, boolean and numeric refusals. Regression tests check the text; no assistive technology testing. |
+
+The 2026-11-11 audit added named output-feature refusals and preserved typed recursion
+errors; synthetic tests cover them. No browser or assistive technology testing was performed.

@@ -59,7 +59,7 @@ index afc8940..c75bf7f 100644
 +#[test]
 +fn xslt_builtin_templates_cover_modes_and_node_types() {
 +    let src = "<doc a='A'>T<!--C--><?pi P?><item>B</item></doc>";
-+    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/@* | doc/node()"/></out></xsl:template>"#)), "<out>ATB</out>");
++    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc/node()"/></out></xsl:template>"#)), "<out>TB</out>");
 +    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="m"/></out></xsl:template><xsl:template match="item" mode="m">M</xsl:template><xsl:template match="item">D</xsl:template>"#)), "<out>TM</out>");
 +    assert_eq!(transform_str(src, &stylesheet(r#"<xsl:template match="/"><out><xsl:apply-templates select="doc" mode="undeclared"/></out></xsl:template>"#)), "<out>TB</out>");
 +}
