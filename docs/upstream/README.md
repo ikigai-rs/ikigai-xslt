@@ -49,3 +49,4 @@ Apply after patches 1–8 above. Versions are unchanged; nothing is published.
 | issue | patch | ledger |
 | --- | --- | --- |
 | [xsl:text escapes twice](xrust-text-escaping.md) | [patch](xrust-text-escaping.patch) | #3493 |
+| [child-axis name patterns match attributes](xrust-pattern-node-type.md) | [patch](xrust-pattern-node-type.patch) | #3493 |

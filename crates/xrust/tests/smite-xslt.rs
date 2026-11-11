@@ -703,3 +703,11 @@ fn xslt_text_escapes_once_and_honors_disable_output_escaping() {
         assert_eq!(transform_str("<doc/>", &style), format!("<out>{expected}</out>"));
     }
 }
+
+#[test]
+fn xslt_element_name_patterns_do_not_match_attributes() {
+    for pattern in ["v", "*", "child::v", "child::*"] {
+        let style = stylesheet(&format!("<xsl:template match='/'><xsl:apply-templates select='doc/@v'/></xsl:template><xsl:template match='{pattern}' priority='1'>WRONG</xsl:template><xsl:template match='@*'>attribute</xsl:template>"));
+        assert_eq!(transform_str("<doc v='A'/>", &style), "attribute", "{pattern}");
+    }
+}

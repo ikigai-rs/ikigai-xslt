@@ -1,0 +1,46 @@
+diff --git a/src/pattern.rs b/src/pattern.rs
+index eca5ab1..0206597 100644
+--- a/src/pattern.rs
++++ b/src/pattern.rs
+@@ -258,18 +258,13 @@ fn is_match<N: Node>(a: &Axis, nt: &NodeTest, i: &Item<N>) -> bool {
+             }
+         }
+         Axis::SelfAxis => {
+-            // Select item if it is an element-type node
+-            nt.matches_item(i)
+-            /*            match i {
+-                Item::Node(n) => {
+-                    if n.node_type() == NodeType::Element {
+-                        nt.matches(i)
+-                    } else {
+-                        false
+-                    }
+-                }
+-                _ => false,
+-            }*/
++            // A child-axis NameTest has element as its principal node type.
++            // Kind tests still match text, comments and processing instructions.
++            match (nt, i) {
++                (NodeTest::Name(_), Item::Node(n)) if n.node_type() == NodeType::Element => nt.matches_item(i),
++                (NodeTest::Name(_), _) => false,
++                _ => nt.matches_item(i),
++            }
+         }
+         Axis::Parent => {
+             // Select the parent node
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index b8fcd24..de70c88 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -703,3 +703,11 @@ fn xslt_text_escapes_once_and_honors_disable_output_escaping() {
+         assert_eq!(transform_str("<doc/>", &style), format!("<out>{expected}</out>"));
+     }
+ }
++
++#[test]
++fn xslt_element_name_patterns_do_not_match_attributes() {
++    for pattern in ["v", "*", "child::v", "child::*"] {
++        let style = stylesheet(&format!("<xsl:template match='/'><xsl:apply-templates select='doc/@v'/></xsl:template><xsl:template match='{pattern}' priority='1'>WRONG</xsl:template><xsl:template match='@*'>attribute</xsl:template>"));
++        assert_eq!(transform_str("<doc v='A'/>", &style), "attribute", "{pattern}");
++    }
++}

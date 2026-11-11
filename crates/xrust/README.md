@@ -166,3 +166,5 @@ Status of [standards implementation](https://gitlab.gnome.org/World/Rust/markup-
 The unpublished audit of 2026-11-11 also fixes `xsl:text` double escaping and honors
 its `disable-output-escaping` hint. See `docs/upstream/xrust-text-escaping.md` in
 the containing repository for the reproduction and upstream patch.
+Child-axis name patterns now require an element, so `match="v"` and `match="*"`
+do not match attributes. See `docs/upstream/xrust-pattern-node-type.md`.
