@@ -396,8 +396,8 @@ and on `wasm32-wasip1` at three linker stack sizes:
 
 So a release wasm build runs the walkthrough, and any expression or tree nesting the bounds
 admit, in the default 1 MiB. What no lexical bound covers is a template that recurses, nesting
-its result again on every call; a host that runs such stylesheets on wasm still sizes its stack
-for them, as `limits::STACK_PER_RESULT_LEVEL` does natively.
+its result again on every call (`limits::STACK_PER_RESULT_LEVEL` sizes the native thread for
+it); that cost is evaluation's, unchanged by this, and not measured on wasm here.
 
 Real input is far inside the bounds: gonk's 98 KB stylesheet nests 14 elements, the reading
 room's stylesheets 5 to 9, and their expressions two or three brackets. Neither layer bounds
