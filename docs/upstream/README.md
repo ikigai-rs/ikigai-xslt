@@ -54,3 +54,11 @@ Apply after patches 1–8 above. Versions are unchanged; nothing is published.
 | [built-in template rules and modes](xrust-builtins.md) | [patch](xrust-builtins.patch) | #3493 |
 | [escaped and quoted braces in AVTs](xrust-avt-braces.md) | [patch](xrust-avt-braces.patch) | #3493 |
 | [union order and duplicate nodes](xrust-union-order.md) | [patch](xrust-union-order.patch) | #3493 |
+
+## Stack (2026-11-17)
+
+Apply after the audit additions. Unpublished, in 2.3.0-ikigai.2.
+
+| issue | patch | ledger |
+| --- | --- | --- |
+| [the XPath parser needs ~150 KiB of stack a bracket, with no bound](xrust-parser-stack.md) | [patch](xrust-parser-stack.patch) | #3702 |

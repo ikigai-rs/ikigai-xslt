@@ -392,3 +392,7 @@ all = "allow"
 
 [lints.rustdoc]
 all = "allow"
+
+[[test]]
+name = "xpath_nesting"
+path = "tests/xpath_nesting.rs"

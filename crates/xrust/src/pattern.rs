@@ -475,6 +475,7 @@ impl<'a, N: Node> TryFrom<(String, N)> for Pattern<N> {
 }
 
 fn pattern_driver<N: Node>(e: &str, n: Option<N>) -> Result<Pattern<N>, Error> {
+    crate::parser::xpath::check_nesting(e)?;
     let state = n.clone().map_or_else(
         || ParserState::new(),
         |m| ParserStateBuilder::new().doc(m).build(),

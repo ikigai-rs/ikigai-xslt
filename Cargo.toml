@@ -36,6 +36,9 @@ name = "ikigai-xslt"
 # literal attributes in a namespace (ledger #3343). Their refusals and the boolean value-of
 # adaptation go: input 0.8.1 refused or rewrote is now answered. A behavior change, so a
 # minor release. Publish ikigai-xrust 2.3.0-ikigai.2 first.
+# Also unpublished in 0.9.0 (ledger #3702): ikigai-xrust's XPath parser costs ~20 KiB of stack
+# a bracket in release instead of ~150 KiB, so the RSS walkthrough runs on wasm's default
+# 1 MiB stack, and xslt_stack_size() drops to ~35 MiB release, ~320 MiB debug.
 version = "0.9.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"

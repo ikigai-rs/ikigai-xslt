@@ -80,7 +80,62 @@ use crate::transform::Transform;
 use crate::xdmerror::{Error, ErrorKind};
 use qualname::{NamespaceMap, NamespacePrefix, NamespaceUri};
 
+/// The deepest the brackets `(`, `[` and `{` may nest in one XPath expression or pattern:
+/// **64**. The parser descends its whole grammar once per bracket, by recursion, and a stack
+/// overflow aborts the process rather than returning an error, so [parse] and pattern
+/// compilation refuse deeper input before parsing it (ikigai-xrust, ledger #3702).
+///
+/// Ordinary expressions nest two to five brackets. Measured on Linux x86_64: about 20 KiB of
+/// stack a bracket in a release build, so 64 levels parse in about 1.3 MiB.
+pub const MAX_NESTING: usize = 64;
+
+/// Refuse an expression whose brackets nest deeper than [MAX_NESTING], by one scan without
+/// recursion. Brackets inside string literals are not counted, and comments `(: … :)`, which
+/// nest, are skipped. Unbalanced brackets are left for the parser to report.
+pub(crate) fn check_nesting(input: &str) -> Result<(), Error> {
+    let bytes = input.as_bytes();
+    let (mut depth, mut comments, mut quote) = (0usize, 0usize, None);
+    let mut i = 0;
+    while i < bytes.len() {
+        let (b, next) = (bytes[i], bytes.get(i + 1).copied());
+        match (quote, comments, b, next) {
+            // A doubled quote inside a literal closes and reopens it: the same state.
+            (Some(q), _, b, _) if b == q => quote = None,
+            (Some(_), _, _, _) => {}
+            (None, _, b'(', Some(b':')) => {
+                comments += 1;
+                i += 1;
+            }
+            (None, 1.., b':', Some(b')')) => {
+                comments -= 1;
+                i += 1;
+            }
+            (None, 1.., _, _) => {}
+            (None, 0, b'\'' | b'"', _) => quote = Some(b),
+            (None, 0, b'(' | b'[' | b'{', _) => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return Err(Error::new(
+                        ErrorKind::LimitExceeded,
+                        format!(
+                            "XPath expression nests brackets deeper than {} levels",
+                            MAX_NESTING
+                        ),
+                    ));
+                }
+            }
+            (None, 0, b')' | b']' | b'}', _) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 /// Parse an XPath expression to produce a [Transform]. The optional [Node] or [NamespaceMap] may be used to resolve XML Namespaces (The [Node] will be searched first).
+///
+/// An expression nesting brackets deeper than [MAX_NESTING] is refused with
+/// [ErrorKind::LimitExceeded] before it is parsed.
 pub fn parse<N: Node>(
     input: &str,
     n: Option<N>,
@@ -90,6 +145,7 @@ pub fn parse<N: Node>(
     if input.is_empty() {
         return Ok(Transform::Empty);
     }
+    check_nesting(input)?;
 
     let state = n.clone().map_or_else(
         || ParserState::new(),

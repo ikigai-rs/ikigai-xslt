@@ -1,0 +1,342 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index e5d945d..b644666 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -392,3 +392,7 @@ all = "allow"
+ 
+ [lints.rustdoc]
+ all = "allow"
++
++[[test]]
++name = "xpath_nesting"
++path = "tests/xpath_nesting.rs"
+diff --git a/src/parser/mod.rs b/src/parser/mod.rs
+index 517ca78..a7582ff 100644
+--- a/src/parser/mod.rs
++++ b/src/parser/mod.rs
+@@ -11,6 +11,8 @@ use crate::xmldecl::DTD;
+ use qualname::{NamespaceMap, NamespacePrefix, NamespaceUri};
+ use std::collections::HashSet;
+ use std::fmt;
++use std::ops::{Deref, DerefMut};
++use std::rc::Rc;
+ 
+ pub mod avt;
+ pub mod combinators;
+@@ -143,9 +145,32 @@ where
+     }
+ }
+ 
+-/// Parser state that can be cloned
++/// Parser state that can be cloned.
++///
++/// Every combinator takes and returns its [ParseInput] by value, so the state is copied into
++/// each frame of the parser's recursion. Its fields live behind one shared pointer, copied on
++/// the first write after a clone: a frame holds a pointer, not the ~600 bytes of fields, and a
++/// clone no longer deep-copies the DTD's tables. Reads and writes go through [Deref] and
++/// [DerefMut] (ikigai-xrust, ledger #3702).
+ #[derive(Clone)]
+-pub struct ParserState<N: Node> {
++pub struct ParserState<N: Node>(Rc<ParserStateFields<N>>);
++
++impl<N: Node> Deref for ParserState<N> {
++    type Target = ParserStateFields<N>;
++    fn deref(&self) -> &ParserStateFields<N> {
++        &self.0
++    }
++}
++
++impl<N: Node> DerefMut for ParserState<N> {
++    fn deref_mut(&mut self) -> &mut ParserStateFields<N> {
++        Rc::make_mut(&mut self.0)
++    }
++}
++
++/// The fields of a [ParserState].
++#[derive(Clone)]
++pub struct ParserStateFields<N: Node> {
+     // Document node to use to create nodes
+     doc: Option<N>,
+     // Element to use to determine in-scope namespaces
+@@ -198,7 +223,7 @@ impl<N: Node> Default for ParserState<N> {
+ 
+ impl<N: Node> ParserState<N> {
+     pub fn new() -> Self {
+-        ParserState {
++        ParserState(Rc::new(ParserStateFields {
+             doc: None,
+             cur: None,
+             dtd: DTD::new(),
+@@ -216,7 +241,7 @@ impl<N: Node> ParserState<N> {
+             ext_entities_to_parse: vec![],
+             docloc: None,
+             currentlyexternal: false,
+-        }
++        }))
+     }
+ 
+     /// Get the result document
+diff --git a/src/parser/xml/dtd/mod.rs b/src/parser/xml/dtd/mod.rs
+index 21f45e5..286a6d4 100644
+--- a/src/parser/xml/dtd/mod.rs
++++ b/src/parser/xml/dtd/mod.rs
+@@ -75,7 +75,7 @@ where
+             }
+             /*
+             Same again, with Internal subset */
+-            for (k, (v, _)) in state1.clone().dtd.generalentities {
++            for (k, (v, _)) in state1.dtd.generalentities.clone() {
+                 if v != *"<" {
+                     /* A single < on its own will generate an error if used, but doesn't actually generate a not well formed error! */
+                     let i = ["&".to_string(), k, ";".to_string()].join("");
+@@ -87,10 +87,13 @@ where
+                 }
+             }
+ 
+-            for (elname, eldecl) in &state1.dtd.elements {
+-                match &state1.dtd.attlists.get(elname) {
++            // One mutable borrow of the fields, so the loop reads `elements` and `attlists`
++            // while it writes `patterns` (ParserState derefs to them, ledger #3702).
++            let dtd = &mut state1.dtd;
++            for (elname, eldecl) in &dtd.elements {
++                match &dtd.attlists.get(elname) {
+                     None => {
+-                        state1.dtd.patterns.insert(
++                        dtd.patterns.insert(
+                             elname.clone(),
+                             DTDPattern::Element(elname.clone(), Box::new(eldecl.clone())),
+                         );
+@@ -144,7 +147,7 @@ where
+                                 }
+                             }
+                         }
+-                        state1.dtd.patterns.insert(
++                        dtd.patterns.insert(
+                             elname.clone(),
+                             DTDPattern::Element(
+                                 elname.clone(),
+diff --git a/src/parser/xpath/mod.rs b/src/parser/xpath/mod.rs
+index fcf71b4..4be56ac 100644
+--- a/src/parser/xpath/mod.rs
++++ b/src/parser/xpath/mod.rs
+@@ -80,7 +80,62 @@ use crate::transform::Transform;
+ use crate::xdmerror::{Error, ErrorKind};
+ use qualname::{NamespaceMap, NamespacePrefix, NamespaceUri};
+ 
++/// The deepest the brackets `(`, `[` and `{` may nest in one XPath expression or pattern:
++/// **64**. The parser descends its whole grammar once per bracket, by recursion, and a stack
++/// overflow aborts the process rather than returning an error, so [parse] and pattern
++/// compilation refuse deeper input before parsing it (ikigai-xrust, ledger #3702).
++///
++/// Ordinary expressions nest two to five brackets. Measured on Linux x86_64: about 20 KiB of
++/// stack a bracket in a release build, so 64 levels parse in about 1.3 MiB.
++pub const MAX_NESTING: usize = 64;
++
++/// Refuse an expression whose brackets nest deeper than [MAX_NESTING], by one scan without
++/// recursion. Brackets inside string literals are not counted, and comments `(: … :)`, which
++/// nest, are skipped. Unbalanced brackets are left for the parser to report.
++pub(crate) fn check_nesting(input: &str) -> Result<(), Error> {
++    let bytes = input.as_bytes();
++    let (mut depth, mut comments, mut quote) = (0usize, 0usize, None);
++    let mut i = 0;
++    while i < bytes.len() {
++        let (b, next) = (bytes[i], bytes.get(i + 1).copied());
++        match (quote, comments, b, next) {
++            // A doubled quote inside a literal closes and reopens it: the same state.
++            (Some(q), _, b, _) if b == q => quote = None,
++            (Some(_), _, _, _) => {}
++            (None, _, b'(', Some(b':')) => {
++                comments += 1;
++                i += 1;
++            }
++            (None, 1.., b':', Some(b')')) => {
++                comments -= 1;
++                i += 1;
++            }
++            (None, 1.., _, _) => {}
++            (None, 0, b'\'' | b'"', _) => quote = Some(b),
++            (None, 0, b'(' | b'[' | b'{', _) => {
++                depth += 1;
++                if depth > MAX_NESTING {
++                    return Err(Error::new(
++                        ErrorKind::LimitExceeded,
++                        format!(
++                            "XPath expression nests brackets deeper than {} levels",
++                            MAX_NESTING
++                        ),
++                    ));
++                }
++            }
++            (None, 0, b')' | b']' | b'}', _) => depth = depth.saturating_sub(1),
++            _ => {}
++        }
++        i += 1;
++    }
++    Ok(())
++}
++
+ /// Parse an XPath expression to produce a [Transform]. The optional [Node] or [NamespaceMap] may be used to resolve XML Namespaces (The [Node] will be searched first).
++///
++/// An expression nesting brackets deeper than [MAX_NESTING] is refused with
++/// [ErrorKind::LimitExceeded] before it is parsed.
+ pub fn parse<N: Node>(
+     input: &str,
+     n: Option<N>,
+@@ -90,6 +145,7 @@ pub fn parse<N: Node>(
+     if input.is_empty() {
+         return Ok(Transform::Empty);
+     }
++    check_nesting(input)?;
+ 
+     let state = n.clone().map_or_else(
+         || ParserState::new(),
+diff --git a/src/pattern.rs b/src/pattern.rs
+index 0206597..5562701 100644
+--- a/src/pattern.rs
++++ b/src/pattern.rs
+@@ -475,6 +475,7 @@ impl<'a, N: Node> TryFrom<(String, N)> for Pattern<N> {
+ }
+ 
+ fn pattern_driver<N: Node>(e: &str, n: Option<N>) -> Result<Pattern<N>, Error> {
++    crate::parser::xpath::check_nesting(e)?;
+     let state = n.clone().map_or_else(
+         || ParserState::new(),
+         |m| ParserStateBuilder::new().doc(m).build(),
+diff --git a/crates/xrust/tests/xpath_nesting.rs b/tests/xpath_nesting.rs
+new file mode 100644
+index 0000000..0eea396
+--- /dev/null
++++ b/tests/xpath_nesting.rs
+@@ -0,0 +1,132 @@
++//! An XPath expression's bracket nesting is bounded before it is parsed, and what the bound
++//! admits parses on a small stack (ikigai-xrust, ledger #3702).
++//!
++//! The parser descends its whole grammar, by recursion, once per bracket. In xrust 2.3.0 that
++//! cost ~150 KiB of stack a bracket in a release build, because every combinator frame held a
++//! copy of the ~600-byte parser state, so an RSS stylesheet's `substring(concat(…), …)`
++//! overflowed a 1 MiB wasm stack. A stack overflow aborts the process, so each probe runs in a
++//! CHILD process: this test binary re-executed with the probe named in its environment.
++
++use std::process::Command;
++use xrust::parser::xpath::{parse, MAX_NESTING};
++use xrust::trees::smite::RNode;
++use xrust::ErrorKind;
++
++const PROBE: &str = "XRUST_NESTING_PROBE";
++
++/// The stack the deepest admitted expression must parse in: 2 MiB in release, a tokio
++/// worker's, and 8 MiB with `debug_assertions`, the default main thread's.
++const STACK: usize = if cfg!(debug_assertions) { 8 << 20 } else { 2 << 20 };
++
++fn parens(n: usize) -> String {
++    format!("{}1{}", "(".repeat(n), ")".repeat(n))
++}
++
++fn predicates(n: usize) -> String {
++    format!("count({}x{})", "*[".repeat(n - 1), "]".repeat(n - 1))
++}
++
++fn calls(n: usize) -> String {
++    format!("{}'a'{}", "concat('(', ".repeat(n), ")".repeat(n))
++}
++
++/// A match pattern of `n` nested predicates: `a[a[…x]]`.
++fn pattern(n: usize) -> String {
++    format!("{}x{}", "a[".repeat(n), "]".repeat(n))
++}
++
++fn expression(case: &str, n: usize) -> String {
++    match case {
++        "pattern" => pattern(n),
++        "parens" => parens(n),
++        "predicates" => predicates(n),
++        "calls" => calls(n),
++        other => panic!("no probe named {other}"),
++    }
++}
++
++/// Parse `e` as a pattern for the `pattern` probe, as an expression for every other.
++fn compile(case: &str, e: &str) -> Result<(), xrust::Error> {
++    if case == "pattern" {
++        xrust::Pattern::<RNode>::try_from(e).map(|_| ())
++    } else {
++        parse::<RNode>(e, None, None).map(|_| ())
++    }
++}
++
++/// The child's half: inert unless a parent named a probe.
++#[test]
++fn probe_child() {
++    let Ok(spec) = std::env::var(PROBE) else {
++        return;
++    };
++    let (case, n) = spec.split_once(':').unwrap();
++    let case = case.to_string();
++    let e = expression(&case, n.parse().unwrap());
++    let outcome = std::thread::Builder::new()
++        .stack_size(STACK)
++        .spawn(move || match compile(&case, &e) {
++            Ok(()) => "ok".to_string(),
++            Err(e) if e.kind == ErrorKind::LimitExceeded => format!("limit {}", e.message),
++            Err(e) => format!("err {}", e.message),
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++    println!("\nOUTCOME {outcome}");
++    std::process::exit(0);
++}
++
++fn probe(case: &str, n: usize) -> String {
++    let out = Command::new(std::env::current_exe().unwrap())
++        .args(["--exact", "probe_child", "--nocapture", "--test-threads=1"])
++        .env(PROBE, format!("{case}:{n}"))
++        .output()
++        .unwrap();
++    let stdout = String::from_utf8_lossy(&out.stdout);
++    assert!(
++        out.status.success(),
++        "{case} {n}: the child died ({}): {}",
++        out.status,
++        String::from_utf8_lossy(&out.stderr)
++    );
++    let at = stdout.find("\nOUTCOME ").expect("the child reported");
++    stdout[at + "\nOUTCOME ".len()..].lines().next().unwrap().to_string()
++}
++
++#[test]
++fn the_deepest_admitted_expression_parses_on_a_small_stack() {
++    for case in ["parens", "predicates", "calls", "pattern"] {
++        assert_eq!(probe(case, MAX_NESTING), "ok", "{case}");
++    }
++}
++
++#[test]
++fn one_bracket_past_the_bound_is_refused_before_parsing() {
++    for case in ["parens", "predicates", "calls", "pattern"] {
++        let outcome = probe(case, MAX_NESTING + 1);
++        assert!(
++            outcome.starts_with("limit ") && outcome.contains("deeper than 64"),
++            "{case}: {outcome}"
++        );
++    }
++    // Far past it: refused by the scan, which does not recurse, so nothing overflows.
++    assert!(probe("parens", 100_000).starts_with("limit "));
++}
++
++#[test]
++fn brackets_in_strings_and_comments_are_not_counted() {
++    let deep = "(".repeat(MAX_NESTING + 1);
++    for e in [
++        format!("concat('{deep}', 'x')"),
++        format!("concat(\"{deep}\", 'x')"),
++        format!("concat('it''s {deep}', 'x')"),
++        format!("1 (: {deep} don't (: nested :) :) + 1"),
++    ] {
++        assert!(parse::<RNode>(&e, None, None).is_ok(), "{e}");
++    }
++    // A comment does not hide what follows it.
++    let e = format!("1 (: 'quote :) + {}", parens(MAX_NESTING + 1));
++    let refused = parse::<RNode>(&e, None, None).err().expect("refused");
++    assert_eq!(refused.kind, ErrorKind::LimitExceeded);
++}

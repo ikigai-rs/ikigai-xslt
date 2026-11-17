@@ -75,7 +75,7 @@ where
             }
             /*
             Same again, with Internal subset */
-            for (k, (v, _)) in state1.clone().dtd.generalentities {
+            for (k, (v, _)) in state1.dtd.generalentities.clone() {
                 if v != *"<" {
                     /* A single < on its own will generate an error if used, but doesn't actually generate a not well formed error! */
                     let i = ["&".to_string(), k, ";".to_string()].join("");
@@ -87,10 +87,13 @@ where
                 }
             }
 
-            for (elname, eldecl) in &state1.dtd.elements {
-                match &state1.dtd.attlists.get(elname) {
+            // One mutable borrow of the fields, so the loop reads `elements` and `attlists`
+            // while it writes `patterns` (ParserState derefs to them, ledger #3702).
+            let dtd = &mut state1.dtd;
+            for (elname, eldecl) in &dtd.elements {
+                match &dtd.attlists.get(elname) {
                     None => {
-                        state1.dtd.patterns.insert(
+                        dtd.patterns.insert(
                             elname.clone(),
                             DTDPattern::Element(elname.clone(), Box::new(eldecl.clone())),
                         );
@@ -144,7 +147,7 @@ where
                                 }
                             }
                         }
-                        state1.dtd.patterns.insert(
+                        dtd.patterns.insert(
                             elname.clone(),
                             DTDPattern::Element(
                                 elname.clone(),

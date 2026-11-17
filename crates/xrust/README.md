@@ -20,9 +20,15 @@
 >   lexical form, and a sequence by its first item; 2.3.0 gave NaN
 >   (`src/item.rs`, `src/value.rs`, `src/transform/numbers.rs`; #2487);
 > - a literal result element declares the namespaces of its attributes' names; 2.3.0
->   panicked serializing them (`src/xslt.rs`; #2520).
+>   panicked serializing them (`src/xslt.rs`; #2520);
+> - the parser's state is shared between its frames, copied only when written, so an XPath
+>   bracket costs ~20 KiB of stack in release instead of ~150 KiB, and an XPath expression or
+>   pattern nesting brackets deeper than `parser::xpath::MAX_NESTING` (64) is refused with
+>   `LimitExceeded` by a scan before it is parsed; 2.3.0 overflowed the stack, aborting the
+>   process (`src/parser/mod.rs`, `src/parser/xpath/mod.rs`, `src/pattern.rs`; #3702).
 >
-> No public API changes. The library is still named `xrust`, so code that
+> The public API adds `parser::xpath::MAX_NESTING`, and `ParserState` now dereferences to a
+> public `ParserStateFields` that holds its fields; nothing is removed. The library is still named `xrust`, so code that
 > uses it does not change. It is licensed, like xrust, under the Apache License 2.0
 > ([LICENSE](./LICENSE)); xrust 2.3.0 ships no NOTICE file. The packaging differs from
 > 2.3.0's in four ways that do not touch the library: the manifest names the package
