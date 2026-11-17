@@ -365,13 +365,39 @@ expands entities as content and the tag scan cannot see what they build. The dec
 RDF/XML uses — a name for a namespace IRI — is admitted. No external DTD is ever fetched.
 
 Then the transform runs on a **thread whose stack holds anything the bounds admit**
-in that build (`limits::xslt_stack_size()`: ~45 MiB release, ~338 MiB debug — reserved
+in that build (`limits::xslt_stack_size()`: ~35 MiB release, ~320 MiB debug — reserved
 address space, committed only as it is touched), so a call from a 2 MiB async worker is as
 safe as any other. That covers what no lexical bound can: a template that calls itself
 nests its result once a call, up to xrust's own 200 calls. Each stylesheet's transforms run
 on that stylesheet's own thread (see [Concurrent transforms](#concurrent-transforms-take-turns-per-stylesheet)),
 because its compiled form lives there. On wasm there is no thread, so only the bounds apply
 there.
+
+### On wasm, a transform runs on the module's own stack
+
+On wasm a transform runs inline, on the stack the module was linked with: 1 MiB unless the
+host's build says otherwise. Through 0.8.1 the RSS walkthrough's `items.xsl` trapped there
+(`memory access out of bounds`, inside xrust's XPath parser), because every frame of that
+parser held its own copy of the ~600-byte parser state, and the grammar descends about twenty
+rules per bracket: ~150 KiB of stack for each level of `(`, `[` or `{`. ikigai-xrust
+2.3.0-ikigai.2 shares the state instead, and the same level costs ~20 KiB (ledger #3702).
+The smallest stack that runs each transform, measured with
+`cargo run --release --example stack-need -- <stylesheet.xsl> [source.xml]` on Linux x86_64,
+and on `wasm32-wasip1` at three linker stack sizes:
+
+| transform | release, before | release, now | debug, before | debug, now | wasm, now |
+| --- | ---: | ---: | ---: | ---: | --- |
+| the walkthrough's `items.xsl` over a feed | 2,731 KiB | 371 KiB | 4,567 KiB | 735 KiB | runs in 256 KiB (traps in 1 MiB before) |
+| `feeds-local.xsl` over the directory | 1,387 KiB | 203 KiB | | 487 KiB | runs in 256 KiB |
+| `page.xsl` | 1,263 KiB | 207 KiB | 2,335 KiB | 631 KiB | runs in 256 KiB |
+| an XPath of 30 nested parentheses (`MAX_EXPR_DEPTH` admits 30 with the adapter's two) | | 663 KiB | | 1,255 KiB | runs in 512 KiB, traps in 256 KiB |
+| 64 nested source elements through the identity transform | | 239 KiB | | 1,283 KiB | runs in 256 KiB |
+| a stylesheet nesting 62 literal elements | | 287 KiB | | 2,291 KiB | runs in 256 KiB |
+
+So a release wasm build runs the walkthrough, and any expression or tree nesting the bounds
+admit, in the default 1 MiB. What no lexical bound covers is a template that recurses, nesting
+its result again on every call; a host that runs such stylesheets on wasm still sizes its stack
+for them, as `limits::STACK_PER_RESULT_LEVEL` does natively.
 
 Real input is far inside the bounds: gonk's 98 KB stylesheet nests 14 elements, the reading
 room's stylesheets 5 to 9, and their expressions two or three brackets. Neither layer bounds

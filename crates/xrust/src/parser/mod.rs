@@ -11,6 +11,8 @@ use crate::xmldecl::DTD;
 use qualname::{NamespaceMap, NamespacePrefix, NamespaceUri};
 use std::collections::HashSet;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 pub mod avt;
 pub mod combinators;
@@ -143,9 +145,32 @@ where
     }
 }
 
-/// Parser state that can be cloned
+/// Parser state that can be cloned.
+///
+/// Every combinator takes and returns its [ParseInput] by value, so the state is copied into
+/// each frame of the parser's recursion. Its fields live behind one shared pointer, copied on
+/// the first write after a clone: a frame holds a pointer, not the ~600 bytes of fields, and a
+/// clone no longer deep-copies the DTD's tables. Reads and writes go through [Deref] and
+/// [DerefMut] (ikigai-xrust, ledger #3702).
 #[derive(Clone)]
-pub struct ParserState<N: Node> {
+pub struct ParserState<N: Node>(Rc<ParserStateFields<N>>);
+
+impl<N: Node> Deref for ParserState<N> {
+    type Target = ParserStateFields<N>;
+    fn deref(&self) -> &ParserStateFields<N> {
+        &self.0
+    }
+}
+
+impl<N: Node> DerefMut for ParserState<N> {
+    fn deref_mut(&mut self) -> &mut ParserStateFields<N> {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
+/// The fields of a [ParserState].
+#[derive(Clone)]
+pub struct ParserStateFields<N: Node> {
     // Document node to use to create nodes
     doc: Option<N>,
     // Element to use to determine in-scope namespaces
@@ -198,7 +223,7 @@ impl<N: Node> Default for ParserState<N> {
 
 impl<N: Node> ParserState<N> {
     pub fn new() -> Self {
-        ParserState {
+        ParserState(Rc::new(ParserStateFields {
             doc: None,
             cur: None,
             dtd: DTD::new(),
@@ -216,7 +241,7 @@ impl<N: Node> ParserState<N> {
             ext_entities_to_parse: vec![],
             docloc: None,
             currentlyexternal: false,
-        }
+        }))
     }
 
     /// Get the result document

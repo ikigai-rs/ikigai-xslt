@@ -99,8 +99,10 @@ pub const MAX_ASSEMBLED_STYLESHEET_BYTES: usize = 8 * 1024 * 1024;
 /// The deepest the brackets `(`, `[` and `{` may nest inside any one attribute value of a
 /// stylesheet — **32**. That is where XPath lives (`select`, `test`, `match`, and the `{…}`
 /// of an attribute value template), and xrust's XPath parser is the costliest recursion per
-/// level measured: ~250 KiB of stack a level in a debug build, so 7 levels overflow a 2 MiB
-/// thread. Real stylesheets nest two or three.
+/// level measured: ~35 KiB of stack a level in a debug build, ~20 KiB in release (through
+/// xrust 2.3.0, ~250 KiB and ~145 KiB, so 7 levels overflowed a 2 MiB thread). Real
+/// stylesheets nest two to five. ikigai-xrust refuses past its own `MAX_NESTING`, 64, which
+/// this bound keeps well inside.
 ///
 /// A character reference that decodes to a bracket counts as one, and a reference to a
 /// declared entity counts every opening bracket of its value, closing nothing — it may count
@@ -471,24 +473,28 @@ fn entity<'t>(
 pub const STACK_BASE: usize = 8 << 20;
 
 /// The stack reserved per level of element nesting, per [`MAX_XML_DEPTH`] level of each of the
-/// two inputs: 128 KiB in a build with `debug_assertions`, 32 KiB without. Measured
-/// (`tests/xml_depth.rs`, `measure_stack`, xrust 2.2.0) at ~82 KiB a level in a debug build and
-/// ~18 KiB in release — parsing dominates; evaluating, copying and serializing the same tree
-/// cost no more.
+/// two inputs: 64 KiB in a build with `debug_assertions`, 8 KiB without. Measured
+/// (`examples/stack-need.rs`, ikigai-xrust 2.3.0-ikigai.2, ledger #3702) at ~36 KiB a level of
+/// stylesheet and ~19 KiB of source in a debug build, ~4.3 and ~3.4 KiB in release. Parsing
+/// dominates; evaluating, copying and serializing the same tree cost no more. Through xrust
+/// 2.3.0 it was ~82 KiB and ~18 KiB, until ikigai-xrust stopped copying the parser's state
+/// into every frame.
 pub const STACK_PER_ELEMENT: usize = if cfg!(debug_assertions) {
-    128 << 10
+    64 << 10
 } else {
-    32 << 10
+    8 << 10
 };
 
 /// The stack reserved per level of bracket nesting in an expression, per [`MAX_EXPR_DEPTH`]
-/// level: 384 KiB with `debug_assertions`, 256 KiB without. Measured at ~250 KiB a level in a
-/// debug build and ~145 KiB in RELEASE — parentheses, predicates, and the `{…}` of an
-/// attribute value template alike — so 13 levels overflowed a 2 MiB thread even optimized.
+/// level: 64 KiB with `debug_assertions`, 32 KiB without. Measured (`examples/stack-need.rs`,
+/// ledger #3702) at ~35 KiB a level in a debug build and ~20 KiB in release — parentheses,
+/// predicates, and the `{…}` of an attribute value template alike. Through xrust 2.3.0 it was
+/// ~250 KiB and ~145 KiB, so 13 levels overflowed a 2 MiB thread even optimized: every parser
+/// frame held a copy of the ~600-byte parser state, and ikigai-xrust now shares it instead.
 pub const STACK_PER_EXPR: usize = if cfg!(debug_assertions) {
-    384 << 10
+    64 << 10
 } else {
-    256 << 10
+    32 << 10
 };
 
 /// The stack reserved per level of the RESULT tree's nesting: 24 KiB with `debug_assertions`,
@@ -505,7 +511,7 @@ pub const STACK_PER_RESULT_LEVEL: usize = if cfg!(debug_assertions) {
 };
 
 /// The stack every [`on_xslt_stack`] thread gets: enough for anything the bounds admit, in
-/// this build — ~45 MiB in release and ~338 MiB with `debug_assertions`. A thread's stack is
+/// this build — ~35 MiB in release and ~320 MiB with `debug_assertions`. A thread's stack is
 /// reserved address space, committed only as it is touched (and kept, once touched, for as
 /// long as the pooled thread lives: [`release_idle_threads`] lets them go).
 ///
@@ -513,7 +519,7 @@ pub const STACK_PER_RESULT_LEVEL: usize = if cfg!(debug_assertions) {
 /// use ikigai_xslt::limits::xslt_stack_size;
 /// // A doctest's own `debug_assertions` need not match the library's build, so: either size.
 /// let mib = xslt_stack_size() >> 20;
-/// assert!(mib == 45 || mib == 337, "{mib}");
+/// assert!(mib == 35 || mib == 319, "{mib}");
 /// ```
 ///
 /// `debug_assertions` stands in for "xrust is unoptimized", as in ikigai-store's
