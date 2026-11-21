@@ -39,7 +39,8 @@ name = "ikigai-xslt"
 # Also unpublished in 0.9.0 (ledger #3702): ikigai-xrust's XPath parser costs ~20 KiB of stack
 # a bracket in release instead of ~150 KiB, so the RSS walkthrough runs on wasm's default
 # 1 MiB stack, and xslt_stack_size() drops to ~35 MiB release, ~320 MiB debug.
-version = "0.9.0"
+# 0.10.0: public API types move to ikigai-core 0.4 (ledger #3924).
+version = "0.10.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -54,9 +55,8 @@ keywords = ["ikigai", "roc", "xslt", "xml", "transform"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.3.0: content holds are scoped to the delivering principal; put/put_replay are root-only
-# (ledger #2965). Core types appear in our public API.
-ikigai-core = "0.3.0"
+# core 0.4.0: scope opacity, structured denials; the cascade (ledger #3924).
+ikigai-core = "0.4.0"
 async-trait = "0.1"
 # RFC 3986 resolution also works for urn:file: bases (url::Url::join does not).
 # This is the same IRI implementation already used by ikigai-core.
@@ -85,9 +85,8 @@ qualname = "0.0.2"
 # resolve `urn:xslt:transform` against it. These deps are optional and behind the feature,
 # so a normal (native/linked) consumer of the library never pulls wasm-bindgen et al.
 [dependencies.ikigai-module]
-# 0.6.0 uses ikigai-core 0.3 and its scoped content store (ledger #2965),
-# matching the library and dev-dependency so builds link one core.
-version = "0.6.0"
+# Matches the library and dev-dependency on core 0.4.
+version = "0.7.0"
 optional = true
 [dependencies.wasm-bindgen]
 # EXACT on purpose (ledger #1342, after ikigai-jsonld's #1193), unlike every other pin here.
@@ -134,11 +133,10 @@ futures = "0.3"
 # For the `uds-server` / `uds-client` examples: run this XSLT space as a standalone
 # out-of-process module behind a Unix socket. A dev-dependency, so it never enters the
 # published library's dependency graph. Same pin as the optional dependency above.
-ikigai-module = "0.6.0"
+ikigai-module = "0.7.0"
 # The module recipe as one test (`tests/conformance.rs`): walks `space()` and reports
-# every violation at once. 0.14.0 uses ikigai-core 0.3 and its scoped content store
-# (ledger #2965), keeping the test build on the same core as the library.
-ikigai-conformance = "0.14.0"
+# every violation at once, using the same core as the library.
+ikigai-conformance = "0.15.0"
 
 # ikigai-xrust, carried here (ledger #3342). Its gates run with this crate's; see its manifest.
 [workspace]
