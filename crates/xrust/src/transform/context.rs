@@ -71,20 +71,23 @@ pub struct Context<N: Node> {
     // Built-in templates have no priority and no document order
     pub(crate) templates: Vec<Rc<Template<N>>>,
     pub(crate) current_templates: Vec<Rc<Template<N>>>,
-    // Named templates and functions
-    pub(crate) callables: HashMap<QName, Callable<N>>,
+    // Named templates and functions.
+    // ikigai (ledger #4053): this, `pre_vars` and `keys` are fixed once the stylesheet is
+    // compiled, and a context is cloned for every step of a path, so they are shared rather than
+    // copied with it. A write after a clone copies first (`Rc::make_mut`).
+    pub(crate) callables: Rc<HashMap<QName, Callable<N>>>,
     // Variables, with scoping
     pub(crate) vars: RefCell<HashMap<String, Vec<Sequence<N>>>>,
     // Stylesheet variables, to be evaluated before template processing.
     // (name, value) pairs
-    pub(crate) pre_vars: Vec<(String, Transform<N>)>,
+    pub(crate) pre_vars: Rc<Vec<(String, Transform<N>)>>,
     // Grouping
     pub(crate) current_grouping_key: Option<Rc<Value>>,
     pub(crate) current_group: Sequence<N>,
     // Keys
     // The declaration of a key. Keys are named, and each key can have multiple definitions.
     // Each definition is the pattern that matches nodes and the expression that computes the key value.
-    pub(crate) keys: HashMap<String, Vec<(Pattern<N>, Transform<N>)>>,
+    pub(crate) keys: Rc<HashMap<String, Vec<(Pattern<N>, Transform<N>)>>>,
     // The calculated values of keys. These are each associated with a document.
     // The hashmap key is a concatenation of the key name and document identifier.
     //pub(crate) key_values: RefCell<HashMap<String, HashMap<String, Vec<N>>>>,
@@ -120,12 +123,12 @@ impl<N: Node> Context<N> {
             rd: None,
             templates: vec![],
             current_templates: vec![],
-            callables: HashMap::new(),
+            callables: Rc::new(HashMap::new()),
             vars: RefCell::new(HashMap::new()),
-            pre_vars: Vec::new(),
+            pre_vars: Rc::new(Vec::new()),
             current_grouping_key: None,
             current_group: Sequence::new(),
-            keys: HashMap::new(),
+            keys: Rc::new(HashMap::new()),
             od: OutputDefinition::new(),
             base_url: None,
             namespaces: None,
@@ -158,10 +161,11 @@ impl<N: Node> Context<N> {
     }
     /// Declare a key
     pub fn declare_key(&mut self, name: String, m: Pattern<N>, u: Transform<N>) {
-        if let Some(v) = self.keys.get_mut(&name) {
+        let keys = Rc::make_mut(&mut self.keys);
+        if let Some(v) = keys.get_mut(&name) {
             v.push((m, u))
         } else {
-            self.keys.insert(name.clone(), vec![(m, u)]);
+            keys.insert(name.clone(), vec![(m, u)]);
         }
     }
     pub fn dump_keys<
@@ -221,12 +225,12 @@ impl<N: Node> Context<N> {
     }
     /// Add a stylesheet variable
     pub fn pre_var_push(&mut self, name: String, x: Transform<N>) {
-        self.pre_vars.push((name, x));
+        Rc::make_mut(&mut self.pre_vars).push((name, x));
     }
 
     /// Callable components: named templates and user-defined functions
     pub fn callable_push(&mut self, qn: QName, c: Callable<N>) {
-        self.callables.insert(qn, c);
+        Rc::make_mut(&mut self.callables).insert(qn, c);
     }
     /// Find the callable component with the given QName
     pub fn callable_get(&self, qn: &QName) -> Option<Callable<N>> {
@@ -416,7 +420,7 @@ impl<N: Node> Context<N> {
             );
             // Populate the context with stylesheet-level variables.
             // Each variable creates a new context for the evaluation of subsequent variables.
-            for (name, x) in &self.pre_vars {
+            for (name, x) in self.pre_vars.iter() {
                 ctxt.var_push(name.clone(), ctxt.dispatch(stctxt, x)?);
             }
             let result = ctxt.evaluate_internal(stctxt)?;
@@ -684,10 +688,10 @@ impl<N: Node> From<Sequence<N>> for Context<N> {
             rd: None,
             templates: vec![],
             current_templates: vec![],
-            callables: HashMap::new(),
+            callables: Rc::new(HashMap::new()),
             vars: RefCell::new(HashMap::new()),
-            pre_vars: Vec::new(),
-            keys: HashMap::new(),
+            pre_vars: Rc::new(Vec::new()),
+            keys: Rc::new(HashMap::new()),
             current_grouping_key: None,
             current_group: Sequence::new(),
             od: OutputDefinition::new(),
@@ -794,7 +798,7 @@ impl<N: Node> ContextBuilder<N> {
         self
     }
     pub fn callable(mut self, qn: QName, c: Callable<N>) -> Self {
-        self.0.callables.insert(qn, c);
+        Rc::make_mut(&mut self.0.callables).insert(qn, c);
         self
     }
     pub fn namespaces(mut self, nm: NamespaceMap) -> Self {

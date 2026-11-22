@@ -40,7 +40,12 @@ name = "ikigai-xslt"
 # a bracket in release instead of ~150 KiB, so the RSS walkthrough runs on wasm's default
 # 1 MiB stack, and xslt_stack_size() drops to ~35 MiB release, ~320 MiB debug.
 # 0.10.0: public API types move to ikigai-core 0.4 (ledger #3924).
-version = "0.10.0"
+# 0.10.1: builds on ikigai-xrust 2.3.0-ikigai.3, whose path steps share the compiled
+# stylesheet's named templates, stylesheet variables and keys instead of deep-copying them on
+# every step, so a transform no longer slows with every named template declared (ledger
+# #4053). Faster, no API or behavior change, so a patch release. Publish ikigai-xrust
+# 2.3.0-ikigai.3 first.
+version = "0.10.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -72,7 +77,7 @@ oxiri = "0.2"
 # below 2.3 compiles this crate, and every ikigai-xslt through 0.3.0 (`xrust = "2.1.0"`) stopped
 # building on a fresh resolve the day 2.3.0 shipped. ⚠ The caret admits a later 2.x, which may
 # break the same way: a fresh-resolve build is the only thing that would notice.
-xrust = { package = "ikigai-xrust", path = "crates/xrust", version = "2.3.0-ikigai.2" }
+xrust = { package = "ikigai-xrust", path = "crates/xrust", version = "2.3.0-ikigai.3" }
 # Only to NAME the types in xrust's `Node` trait, which `src/node_id.rs` implements (ledger
 # #1047): xrust does not re-export them. It must be the qualname xrust itself depends on — 0.0.1
 # for xrust 2.1 and 2.2, 0.0.2 for xrust 2.3 — and a `^0.0.2` pin is exactly `=0.0.2`. If a
