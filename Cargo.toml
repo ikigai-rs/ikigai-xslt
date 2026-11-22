@@ -40,7 +40,7 @@ name = "ikigai-xslt"
 # a bracket in release instead of ~150 KiB, so the RSS walkthrough runs on wasm's default
 # 1 MiB stack, and xslt_stack_size() drops to ~35 MiB release, ~320 MiB debug.
 # 0.10.0: public API types move to ikigai-core 0.4 (ledger #3924).
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -58,6 +58,7 @@ crate-type = ["cdylib", "rlib"]
 # core 0.4.0: scope opacity, structured denials; the cascade (ledger #3924).
 ikigai-core = "0.4.0"
 async-trait = "0.1"
+mediatype = "0.23"
 # RFC 3986 resolution also works for urn:file: bases (url::Url::join does not).
 # This is the same IRI implementation already used by ikigai-core.
 oxiri = "0.2"

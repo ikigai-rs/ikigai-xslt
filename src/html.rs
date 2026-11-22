@@ -54,7 +54,7 @@ fn first_element_is_html(seq: &Sequence<IdNode>) -> bool {
         match item {
             Item::Node(n) if n.node_type() == NodeType::Document => top.extend(n.child_iter()),
             Item::Node(n) => top.push(n.clone()),
-            Item::Value(v) if v.to_string().trim().is_empty() => {}
+            Item::Value(v) if crate::is_xml_whitespace(&v.to_string()) => {}
             _ => return false,
         }
     }
@@ -66,7 +66,7 @@ fn first_element_is_html(seq: &Sequence<IdNode>) -> bool {
                         && qn.local_name().to_string().eq_ignore_ascii_case("html")
                 })
             }
-            NodeType::Text if node.to_string().trim().is_empty() => {}
+            NodeType::Text if crate::is_xml_whitespace(&node.to_string()) => {}
             NodeType::Comment | NodeType::ProcessingInstruction => {}
             _ => return false,
         }

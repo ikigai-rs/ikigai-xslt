@@ -82,3 +82,47 @@ fn stylesheet_media_type_only_labels_the_serialized_result() {
     assert_eq!(rep.repr_type.media_type, "text/plain");
     assert_eq!(rep.bytes, b"<page>text</page>");
 }
+
+#[test]
+fn media_type_parameters_describe_the_utf8_bytes() {
+    for (output, as_media) in [
+        (
+            r#"<xsl:output method='text' media-type='text/plain; profile="A;B"; CHARSET=iso-8859-1'/>"#,
+            None,
+        ),
+        (
+            "<xsl:output method='text'/>",
+            Some(r#"text/plain; profile="A;B"; CHARSET=iso-8859-1"#),
+        ),
+    ] {
+        let rep = result(output, "café", as_media);
+        assert_eq!(rep.bytes, "café".as_bytes());
+        assert_eq!(
+            rep.repr_type.canonical(),
+            r#"text/plain;charset=utf-8;profile="A;B""#
+        );
+    }
+}
+
+#[test]
+fn non_xml_whitespace_before_html_keeps_the_xml_default() {
+    let rep = result("", "<xsl:text>&#160;</xsl:text><html/>", None);
+    assert_eq!(rep.repr_type.media_type, "application/xml");
+    assert_eq!(rep.bytes, "\u{a0}<html/>".as_bytes());
+}
+
+#[test]
+fn an_as_argument_that_is_not_utf8_is_refused() {
+    let stylesheet = br#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:template match="/"><out/></xsl:template></xsl:stylesheet>"#;
+    let request = Request::new(Verb::Source, Iri::parse("urn:xslt:transform").unwrap())
+        .with_arg("src", ArgRef::Inline(b"<doc/>".to_vec()))
+        .with_arg("stylesheet", ArgRef::Inline(stylesheet.to_vec()))
+        .with_arg("as", ArgRef::Inline(vec![0xff]));
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    let result = block_on(kernel.issue(request, &Capability::root()));
+    assert!(
+        matches!(&result, Err(ikigai_core::Error::InvalidArgument { name, .. })
+        if name == "as"),
+        "{result:?}"
+    );
+}

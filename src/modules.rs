@@ -88,8 +88,10 @@ fn references(doc: &IdNode) -> Result<Vec<String>> {
 
 fn parse(text: &str) -> Result<IdNode> {
     limits::check_stylesheet(text, "stylesheet")?;
-    parse_xml(text)
-        .map_err(|error| Error::Endpoint(format!("stylesheet parse error: {}", error.message)))
+    let doc = parse_xml(text)
+        .map_err(|error| Error::Endpoint(format!("stylesheet parse error: {}", error.message)))?;
+    crate::subset::check_extension_declarations(&doc)?;
+    Ok(doc)
 }
 
 // Store only static hrefs, never fetched resources or xrust trees. Without this
