@@ -1,0 +1,299 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index b644666..fbf1a7a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -331,6 +331,12 @@ name = "bench_smite"
+ path = "benches/bench_smite.rs"
+ harness = false
+ 
++# ikigai (ledger #4053): what a path step costs as the stylesheet grows.
++[[bench]]
++name = "bench_context"
++path = "benches/bench_context.rs"
++harness = false
++
+ [dependencies.chrono]
+ version = "0.4.42"
+ 
+diff --git a/benches/bench_context.rs b/benches/bench_context.rs
+new file mode 100644
+index 0000000..6d7b9b7
+--- /dev/null
++++ b/benches/bench_context.rs
+@@ -0,0 +1,136 @@
++//! ikigai (ledger #4053): what a path step costs as a stylesheet grows.
++//!
++//! A path step derives a new `Context` from the old one, so whatever `Context` holds by value is
++//! copied and dropped once per step. This bench runs one match template whose rows evaluate four
++//! multi-step paths, over a document of `ROWS` rows, through stylesheets that add N named
++//! templates, N stylesheet variables or N key declarations. None of them is ever called, read or
++//! used, so the time per row should not depend on N.
++//!
++//! `cargo bench -p ikigai-xrust --bench bench_context`; divide the reported time by `ROWS` for
++//! the time per row.
++
++use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
++use std::hint::black_box;
++
++use xrust::item::{Item, Node};
++use xrust::parser::ParseError;
++use xrust::parser::xml::parse;
++use xrust::transform::context::{Context, StaticContextBuilder};
++use xrust::trees::smite::RNode;
++use xrust::xdmerror::{Error, ErrorKind};
++use xrust::xslt::from_document;
++
++const ROWS: usize = 200;
++
++fn make_from_str(s: &str) -> Result<RNode, Error> {
++    let doc = RNode::new_document();
++    parse(
++        doc.clone(),
++        s,
++        Some(|_: &_| {
++            Err(ParseError::MissingNameSpace {
++                prefix: None,
++                nsuri: None,
++                message: None,
++            })
++        }),
++    )?;
++    Ok(doc)
++}
++
++fn source() -> String {
++    let mut s = String::from("<doc>");
++    for i in 0..ROWS {
++        s.push_str(&format!(
++            "<row><a><b><c>c{i}</c><d>d{i}</d></b></a><e><f>f{i}</f></e></row>"
++        ));
++    }
++    s.push_str("</doc>");
++    s
++}
++
++/// The stylesheet, with `extra` (N unused declarations) beside its two match templates.
++fn stylesheet(extra: &str) -> String {
++    format!(
++        r#"<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
++<xsl:output method="xml"/>
++{extra}
++<xsl:template match="/"><out><xsl:apply-templates select="doc/row"/></out></xsl:template>
++<xsl:template match="row"><r><xsl:value-of select="a/b/c"/>,<xsl:value-of select="a/b/d"/>,<xsl:value-of select="e/f"/>,<xsl:value-of select="count(a/b/*)"/></r></xsl:template>
++</xsl:stylesheet>"#
++    )
++}
++
++fn named_templates(n: usize) -> String {
++    (0..n)
++        .map(|i| {
++            format!(
++                r#"<xsl:template name="t{i}"><xsl:param name="p"/><div class="c{i}"><xsl:if test="$p"><span><xsl:value-of select="concat($p, '-{i}')"/></span></xsl:if></div></xsl:template>"#
++            )
++        })
++        .collect()
++}
++
++fn variables(n: usize) -> String {
++    (0..n)
++        .map(|i| format!(r#"<xsl:variable name="g{i}" select="concat('v', '{i}')"/>"#))
++        .collect()
++}
++
++fn keys(n: usize) -> String {
++    (0..n)
++        .map(|i| format!(r#"<xsl:key name="k{i}" match="row" use="e/f"/>"#))
++        .collect()
++}
++
++fn compile(extra: &str) -> Context<RNode> {
++    let styledoc = make_from_str(&stylesheet(extra)).expect("unable to parse stylesheet");
++    from_document(styledoc, None, make_from_str, |_| {
++        Err(Error::new(ErrorKind::NotImplemented, "no modules"))
++    })
++    .expect("unable to compile stylesheet")
++}
++
++fn run(compiled: &Context<RNode>, src: &RNode) -> RNode {
++    let mut stctxt = StaticContextBuilder::new()
++        .message(|_| Ok(()))
++        .fetcher(|_| Err(Error::new(ErrorKind::NotImplemented, "no fetcher")))
++        .parser(|_| Err(Error::new(ErrorKind::NotImplemented, "no parser")))
++        .build();
++    let mut ctxt = compiled.clone();
++    ctxt.context(vec![Item::Node(src.clone())], 0);
++    let rd = RNode::new_document();
++    ctxt.result_document(rd.clone());
++    ctxt.evaluate(&mut stctxt)
++        .expect("unable to evaluate stylesheet");
++    rd
++}
++
++fn path_steps(c: &mut Criterion) {
++    let src = make_from_str(&source()).expect("unable to parse source");
++    let mut group = c.benchmark_group("context-per-step");
++    group.sample_size(20);
++    let kinds: [(&str, fn(usize) -> String); 3] = [
++        ("named-templates", named_templates),
++        ("variables", variables),
++        ("keys", keys),
++    ];
++    for (kind, extra) in kinds {
++        for n in [0usize, 10, 40] {
++            let compiled = compile(&extra(n));
++            // The answer does not depend on N.
++            let first = run(&compiled, &src).first_child().expect("no output");
++            assert_eq!(
++                first.first_child().expect("no row").to_string(),
++                "c0,d0,f0,2"
++            );
++            group.bench_with_input(BenchmarkId::new(kind, n), &n, |b, _| {
++                b.iter(|| black_box(run(&compiled, &src)))
++            });
++        }
++    }
++    group.finish();
++}
++
++criterion_group!(benches, path_steps);
++criterion_main!(benches);
+diff --git a/src/transform/context.rs b/src/transform/context.rs
+index 37962b0..70acf32 100644
+--- a/src/transform/context.rs
++++ b/src/transform/context.rs
+@@ -71,20 +71,23 @@ pub struct Context<N: Node> {
+     // Built-in templates have no priority and no document order
+     pub(crate) templates: Vec<Rc<Template<N>>>,
+     pub(crate) current_templates: Vec<Rc<Template<N>>>,
+-    // Named templates and functions
+-    pub(crate) callables: HashMap<QName, Callable<N>>,
++    // Named templates and functions.
++    // ikigai (ledger #4053): this, `pre_vars` and `keys` are fixed once the stylesheet is
++    // compiled, and a context is cloned for every step of a path, so they are shared rather than
++    // copied with it. A write after a clone copies first (`Rc::make_mut`).
++    pub(crate) callables: Rc<HashMap<QName, Callable<N>>>,
+     // Variables, with scoping
+     pub(crate) vars: RefCell<HashMap<String, Vec<Sequence<N>>>>,
+     // Stylesheet variables, to be evaluated before template processing.
+     // (name, value) pairs
+-    pub(crate) pre_vars: Vec<(String, Transform<N>)>,
++    pub(crate) pre_vars: Rc<Vec<(String, Transform<N>)>>,
+     // Grouping
+     pub(crate) current_grouping_key: Option<Rc<Value>>,
+     pub(crate) current_group: Sequence<N>,
+     // Keys
+     // The declaration of a key. Keys are named, and each key can have multiple definitions.
+     // Each definition is the pattern that matches nodes and the expression that computes the key value.
+-    pub(crate) keys: HashMap<String, Vec<(Pattern<N>, Transform<N>)>>,
++    pub(crate) keys: Rc<HashMap<String, Vec<(Pattern<N>, Transform<N>)>>>,
+     // The calculated values of keys. These are each associated with a document.
+     // The hashmap key is a concatenation of the key name and document identifier.
+     //pub(crate) key_values: RefCell<HashMap<String, HashMap<String, Vec<N>>>>,
+@@ -120,12 +123,12 @@ impl<N: Node> Context<N> {
+             rd: None,
+             templates: vec![],
+             current_templates: vec![],
+-            callables: HashMap::new(),
++            callables: Rc::new(HashMap::new()),
+             vars: RefCell::new(HashMap::new()),
+-            pre_vars: Vec::new(),
++            pre_vars: Rc::new(Vec::new()),
+             current_grouping_key: None,
+             current_group: Sequence::new(),
+-            keys: HashMap::new(),
++            keys: Rc::new(HashMap::new()),
+             od: OutputDefinition::new(),
+             base_url: None,
+             namespaces: None,
+@@ -158,10 +161,11 @@ impl<N: Node> Context<N> {
+     }
+     /// Declare a key
+     pub fn declare_key(&mut self, name: String, m: Pattern<N>, u: Transform<N>) {
+-        if let Some(v) = self.keys.get_mut(&name) {
++        let keys = Rc::make_mut(&mut self.keys);
++        if let Some(v) = keys.get_mut(&name) {
+             v.push((m, u))
+         } else {
+-            self.keys.insert(name.clone(), vec![(m, u)]);
++            keys.insert(name.clone(), vec![(m, u)]);
+         }
+     }
+     pub fn dump_keys<
+@@ -221,12 +225,12 @@ impl<N: Node> Context<N> {
+     }
+     /// Add a stylesheet variable
+     pub fn pre_var_push(&mut self, name: String, x: Transform<N>) {
+-        self.pre_vars.push((name, x));
++        Rc::make_mut(&mut self.pre_vars).push((name, x));
+     }
+ 
+     /// Callable components: named templates and user-defined functions
+     pub fn callable_push(&mut self, qn: QName, c: Callable<N>) {
+-        self.callables.insert(qn, c);
++        Rc::make_mut(&mut self.callables).insert(qn, c);
+     }
+     /// Find the callable component with the given QName
+     pub fn callable_get(&self, qn: &QName) -> Option<Callable<N>> {
+@@ -416,7 +420,7 @@ impl<N: Node> Context<N> {
+             );
+             // Populate the context with stylesheet-level variables.
+             // Each variable creates a new context for the evaluation of subsequent variables.
+-            for (name, x) in &self.pre_vars {
++            for (name, x) in self.pre_vars.iter() {
+                 ctxt.var_push(name.clone(), ctxt.dispatch(stctxt, x)?);
+             }
+             let result = ctxt.evaluate_internal(stctxt)?;
+@@ -684,10 +688,10 @@ impl<N: Node> From<Sequence<N>> for Context<N> {
+             rd: None,
+             templates: vec![],
+             current_templates: vec![],
+-            callables: HashMap::new(),
++            callables: Rc::new(HashMap::new()),
+             vars: RefCell::new(HashMap::new()),
+-            pre_vars: Vec::new(),
+-            keys: HashMap::new(),
++            pre_vars: Rc::new(Vec::new()),
++            keys: Rc::new(HashMap::new()),
+             current_grouping_key: None,
+             current_group: Sequence::new(),
+             od: OutputDefinition::new(),
+@@ -794,7 +798,7 @@ impl<N: Node> ContextBuilder<N> {
+         self
+     }
+     pub fn callable(mut self, qn: QName, c: Callable<N>) -> Self {
+-        self.0.callables.insert(qn, c);
++        Rc::make_mut(&mut self.0.callables).insert(qn, c);
+         self
+     }
+     pub fn namespaces(mut self, nm: NamespaceMap) -> Self {
+diff --git a/tests/smite-xslt.rs b/tests/smite-xslt.rs
+index 3a2f0aa..ccbba40 100644
+--- a/tests/smite-xslt.rs
++++ b/tests/smite-xslt.rs
+@@ -742,3 +742,26 @@ fn xslt_union_is_in_document_order_without_duplicate_nodes() {
+         assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), format!("<out>{expected}</out>"));
+     }
+ }
++
++/// ikigai (ledger #4053): the compiled stylesheet (named templates, stylesheet variables and
++/// key declarations) is shared between the contexts each path step derives, not copied into
++/// each. What a named template sees must not change: called from inside nested paths, it
++/// still gets its parameters, the caller's focus, the stylesheet variables and the keys, and a
++/// local variable in one row does not leak into the next.
++#[test]
++fn xslt_named_template_from_nested_path_sees_its_scope() {
++    let style = stylesheet(
++        r#"<xsl:key name="byf" match="row" use="e/f"/>
++<xsl:variable name="g" select="'G'"/>
++<xsl:template match="/"><out><xsl:for-each select="doc/row"><xsl:variable name="v" select="a/b/c"/><xsl:call-template name="show"><xsl:with-param name="p" select="e/f"/><xsl:with-param name="q" select="$v"/></xsl:call-template></xsl:for-each></out></xsl:template>
++<xsl:template name="show"><xsl:param name="p"/><xsl:param name="q"/><r><xsl:value-of select="concat($g, ':', $p, ':', $q, ':', a/b/d, ':', key('byf', $p)/a/b/c)"/><xsl:call-template name="inner"><xsl:with-param name="p" select="concat($p, '!')"/></xsl:call-template></r></xsl:template>
++<xsl:template name="inner"><xsl:param name="p"/>[<xsl:value-of select="concat($p, $g, a/b/d)"/>]</xsl:template>"#,
++    );
++    assert_eq!(
++        transform_str(
++            "<doc><row><a><b><c>c0</c><d>d0</d></b></a><e><f>f0</f></e></row><row><a><b><c>c1</c><d>d1</d></b></a><e><f>f1</f></e></row></doc>",
++            &style
++        ),
++        "<out><r>G:f0:c0:d0:c0[f0!Gd0]</r><r>G:f1:c1:d1:c1[f1!Gd1]</r></out>"
++    );
++}

@@ -62,3 +62,11 @@ Apply after the audit additions. Unpublished, in 2.3.0-ikigai.2.
 | issue | patch | ledger |
 | --- | --- | --- |
 | [the XPath parser needs ~150 KiB of stack a bracket, with no bound](xrust-parser-stack.md) | [patch](xrust-parser-stack.patch) | #3702 |
+
+## Context sharing (2026-11-22)
+
+Apply after the stack patch. Unpublished, in 2.3.0-ikigai.3.
+
+| issue | patch | ledger |
+| --- | --- | --- |
+| [every path step deep-copies the stylesheet's named templates, variables and keys](xrust-context-share.md) | [patch](xrust-context-share.patch) | #4053 |

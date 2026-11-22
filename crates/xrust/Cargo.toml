@@ -17,7 +17,7 @@
 [package]
 edition = "2024"
 name = "ikigai-xrust"
-version = "2.3.0-ikigai.2"
+version = "2.3.0-ikigai.3"
 authors = [
     "Steve Ball <Steve.Ball@explain.com.au>",
     "Daniel Murphy <daniel@devasta.ie>",
