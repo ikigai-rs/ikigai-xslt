@@ -331,6 +331,12 @@ name = "bench_smite"
 path = "benches/bench_smite.rs"
 harness = false
 
+# ikigai (ledger #4053): what a path step costs as the stylesheet grows.
+[[bench]]
+name = "bench_context"
+path = "benches/bench_context.rs"
+harness = false
+
 [dependencies.chrono]
 version = "0.4.42"
 
