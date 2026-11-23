@@ -92,11 +92,17 @@ A `method="text"` stylesheet is serialized as text whatever `as=` says, and `as=
 selects text serialization for any stylesheet. `as=` may relabel the markup with a type the
 declaration does not list (`image/svg+xml` for an SVG-emitting stylesheet); the declared
 three are the defaults when neither `as=` nor `media-type` supplies a label.
+Media type parameters are preserved, with a single `charset=utf-8` matching the
+serialized bytes.
 
 `document()` is not supported: the transform runs synchronously and a kernel resolution
 does not, so the engine's fetcher refuses every URL. A stylesheet that calls it fails with
 a typed `Endpoint` error naming the function, and the referenced resource is never
 resolved — there is no read for a capability to gate.
+
+Clock and timezone functions are refused in XPath expressions and attribute value
+templates. Pass the date, time, or timezone as a stylesheet parameter so the result
+can be cached against the request inputs.
 
 ## The XSLT subset: what xrust runs, refuses, and gets wrong silently
 
@@ -151,6 +157,8 @@ the same XML bounds, subset checks, and boolean/numeric/parameter adaptations as
 main stylesheet. `xsl:apply-imports` is refused when imports are present because xrust
 cannot apply the assembled import hierarchy; use distinct modes or named templates.
 This remains the measured XSLT subset, not full XSLT conformance.
+Extension element declarations (`extension-element-prefixes`) are refused in every
+module. Use standard XSLT instructions or literal result elements.
 
 For an I/O-free native or wasm call, `transform_xml_with_modules` takes a
 `BTreeMap<String, String>` from absolute module href IRIs to XML texts. The main sheet
@@ -271,8 +279,8 @@ only the first selected node. Empty selections become an empty string. Union sel
 are in document order without duplicate nodes. The compatibility adapter enforces the
 1.0 conversions without changing xrust's later-version sequence model.
 
-**Output refusals (unpublished audit):** namespace aliasing (`xsl:namespace-alias`),
-non-UTF-8 output encodings and explicit `omit-xml-declaration="no"` are refused as
+**Output refusals:** namespace aliasing (`xsl:namespace-alias`), output methods other
+than `xml`, `html`, or `text`, non-UTF-8 encodings, and explicit `omit-xml-declaration="no"` are refused as
 `InvalidArgument` naming `stylesheet` and the construct. XML output omits the declaration;
 use `omit-xml-declaration="yes"` and UTF-8. A leading `//` in a match pattern is also
 refused by name; a name pattern already matches that name at any depth.

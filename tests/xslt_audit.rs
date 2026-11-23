@@ -295,3 +295,82 @@ fn output_method_inspection_agrees_with_compilation_after_merging() {
         Some("text")
     );
 }
+
+#[test]
+fn an_unsupported_output_method_is_refused() {
+    for method in ["json", "p:custom"] {
+        let sheet = style(&format!("<xsl:output method='{method}'/>"), "<out/>");
+        let result = issue(SRC, &sheet);
+        assert!(
+            matches!(&result, Err(Error::InvalidArgument { name, detail })
+                if name == "stylesheet" && detail.contains("xsl:output method") && detail.contains(method)),
+            "{method}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn message_termination_fails_the_transform() {
+    let sheet = style(
+        "",
+        "<out>partial<xsl:message terminate='yes'>stop here</xsl:message></out>",
+    );
+    let result = issue(SRC, &sheet);
+    assert!(
+        matches!(&result, Err(Error::Endpoint(message)) if message.contains("stop here")),
+        "{result:?}"
+    );
+    assert_eq!(
+        issue(SRC, &sheet.replace("terminate='yes'", "terminate='no'")).unwrap(),
+        "<out>partial</out>"
+    );
+}
+
+#[test]
+fn unsupported_extension_instructions_are_refused() {
+    let sheet = style(
+        "",
+        "<out xsl:extension-element-prefixes='p'><p:instruction/></out>",
+    );
+    let result = issue(SRC, &sheet);
+    assert!(
+        matches!(&result, Err(Error::InvalidArgument { name, detail }) if name == "stylesheet" && detail.contains("extension-element-prefixes")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn clock_functions_are_refused_in_cacheable_transforms() {
+    for function in [
+        "current-dateTime",
+        "current-date",
+        "current-time",
+        "implicit-timezone",
+        "p:current-date",
+    ] {
+        for body in [
+            format!("<xsl:value-of select='{function}()'/>"),
+            format!("<out date='{{{function}()}}'/>"),
+        ] {
+            let result = issue(SRC, &style("", &body));
+            assert!(
+                matches!(&result, Err(Error::InvalidArgument { name, detail })
+                    if name == "stylesheet" && detail.contains("stylesheet parameter")),
+                "{body}: {result:?}"
+            );
+        }
+    }
+    let literal = style("", r#"<xsl:value-of select="'current-date()'"/>"#);
+    assert_eq!(issue(SRC, &literal).unwrap(), "current-date()");
+}
+
+#[test]
+fn context_sensitive_refusals_cover_processing_instruction_name_templates() {
+    let sheet = style("", "<xsl:for-each select='doc/v'><xsl:processing-instruction name=\"p{position()}\">data</xsl:processing-instruction></xsl:for-each>");
+    let result = issue(SRC, &sheet);
+    assert!(
+        matches!(&result, Err(Error::InvalidArgument { name, detail })
+        if name == "stylesheet" && detail.contains("position()") && detail.contains("processing-instruction")),
+        "{result:?}"
+    );
+}

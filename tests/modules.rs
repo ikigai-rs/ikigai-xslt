@@ -35,6 +35,22 @@ fn an_absolute_import_reaches_its_module() {
     );
 }
 
+#[test]
+fn included_extension_declarations_are_checked_before_removing_the_module_wrapper() {
+    let module = style("<xsl:template match='/'><p:instruction/></xsl:template>").replace(
+        "version='1.0'",
+        "version='1.0' xmlns:p='urn:extension' extension-element-prefixes='p'",
+    );
+    let kernel = kernel(&[("urn:style:extension", module)]);
+    let main = style("<xsl:include href='urn:style:extension'/>");
+    let result = issue(&kernel, &main);
+    assert!(
+        matches!(&result, Err(Error::InvalidArgument { name, detail })
+            if name == "stylesheet" && detail.contains("extension-element-prefixes")),
+        "{result:?}"
+    );
+}
+
 use ikigai_core::{Description, EndpointSpace, Error};
 use std::collections::BTreeMap;
 use std::sync::RwLock;

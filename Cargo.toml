@@ -45,7 +45,10 @@ name = "ikigai-xslt"
 # every step, so a transform no longer slows with every named template declared (ledger
 # #4053). Faster, no API or behavior change, so a patch release. Publish ikigai-xrust
 # 2.3.0-ikigai.3 first.
-version = "0.10.1"
+# 0.10.2: eight endpoint defects from the unled audit (ledger #4015): output methods, the HTML
+# root test, charset labels, `as`, foreign extension instructions, position() in a PI name,
+# date/time functions refused on a cacheable request, and a param's select beside content.
+version = "0.10.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -63,6 +66,7 @@ crate-type = ["cdylib", "rlib"]
 # core 0.4.0: scope opacity, structured denials; the cascade (ledger #3924).
 ikigai-core = "0.4.0"
 async-trait = "0.1"
+mediatype = "0.23"
 # RFC 3986 resolution also works for urn:file: bases (url::Url::join does not).
 # This is the same IRI implementation already used by ikigai-core.
 oxiri = "0.2"

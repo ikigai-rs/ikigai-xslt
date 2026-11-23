@@ -465,15 +465,28 @@ impl Parser<'_> {
 }
 
 fn expression_at(source: &str, node: Option<&IdNode>) -> Result<Option<String>> {
+    let Some(tokens) = tokens(source) else {
+        return Ok(None);
+    };
+    for call in tokens.windows(2).filter(|pair| pair[1] == "(") {
+        // xrust can dispatch a prefixed function by its local name too.
+        let local = call[0].rsplit(':').next().unwrap();
+        if matches!(
+            local,
+            "current-dateTime" | "current-date" | "current-time" | "implicit-timezone"
+        ) {
+            return Err(Error::InvalidArgument {
+                name: "stylesheet".into(),
+                detail: format!("refused: {local}() depends on the environment; pass the date, time, or timezone as a stylesheet parameter"),
+            });
+        }
+    }
     let mut item_name = "__ikigai_numeric_item".to_string();
     while source.contains(&item_name) {
         item_name.push('_');
     }
     let mut parser = Parser {
-        tokens: match tokens(source) {
-            Some(t) => t,
-            None => return Ok(None),
-        },
+        tokens,
         pos: 0,
         changed: false,
         depth: 0,

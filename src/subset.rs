@@ -196,6 +196,41 @@ pub(crate) fn check(doc: &IdNode) -> Result<(), Error> {
     }
 }
 
+/// Check each module before assembly can discard its stylesheet wrapper.
+pub(crate) fn check_extension_declarations(doc: &IdNode) -> Result<(), Error> {
+    let plain = qualname::QName::try_from("extension-element-prefixes").unwrap();
+    let qualified = qualname::QName::new_from_parts(
+        plain.local_name().clone(),
+        Some(qualname::NamespaceUri::try_from(XSL_NS).unwrap()),
+    );
+    let mut stack = vec![doc.clone()];
+    while let Some(node) = stack.pop() {
+        stack.extend(node.child_iter().filter(Node::is_element));
+        let Some(name) = node.name() else { continue };
+        let in_xsl = name
+            .namespace_uri()
+            .is_some_and(|ns| ns.to_string() == XSL_NS);
+        let attribute = if in_xsl {
+            if !matches!(
+                name.local_name().to_string().as_str(),
+                "stylesheet" | "transform"
+            ) {
+                continue;
+            }
+            &plain
+        } else {
+            &qualified
+        };
+        if !crate::is_xml_whitespace(&node.get_attribute(attribute).to_string()) {
+            return Err(Error::InvalidArgument {
+                name: "stylesheet".into(),
+                detail: "refused: extension-element-prefixes is unsupported; use standard XSLT instructions or literal result elements".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Every construct, in document order.
 fn scan(doc: &IdNode) -> Vec<Silent> {
     let mut found = Vec::new();
@@ -315,7 +350,8 @@ fn visit(element: &IdNode, at_root: bool, found: &mut Vec<Silent>) -> bool {
                 }
             }
             // The attribute value templates an XSL element takes.
-            ("attribute" | "element", "name" | "namespace") => {
+            ("attribute" | "element", "name" | "namespace")
+            | ("processing-instruction", "name") => {
                 for expr in avt_expressions(value) {
                     for construct in expression(&expr, own_at_root) {
                         report(construct, attribute, value);

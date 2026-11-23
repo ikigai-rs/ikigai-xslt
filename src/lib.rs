@@ -203,7 +203,11 @@ impl Endpoint for XsltEndpoint {
         // `!Send`, and it lives and dies on that thread — which is also what lets the
         // endpoint's future stay `Send`. Cacheable — the result inherits the src +
         // stylesheet and all imported/included module threads.
-        let as_media = inv.inline_str("as").ok().map(str::to_string);
+        let as_media = match inv.inline_str("as") {
+            Ok(media) => Some(output_contract::media_type(media, "as")?),
+            Err(Error::MissingArgument(_)) => None,
+            Err(error) => return Err(error),
+        };
         let mut params = BTreeMap::new();
         for name in inv.request.args.keys() {
             if !matches!(name.as_str(), "src" | "stylesheet" | "content" | "as") {
@@ -219,13 +223,9 @@ impl Endpoint for XsltEndpoint {
             &key,
             limits::DEFAULT_TIME_BUDGET,
             forget_compiled,
-            move || render(&source, &stylesheet, as_media.as_deref(), &params, &modules),
+            move || render(&source, &stylesheet, as_media, &params, &modules),
         )??;
-        Ok(Representation::new(
-            ReprType::new(media).with_param("charset", "utf-8"),
-            out.into_bytes(),
-        )
-        .cacheable())
+        Ok(Representation::new(media, out.into_bytes()).cacheable())
     }
 
     fn name(&self) -> &str {
@@ -823,23 +823,34 @@ pub fn transform_xml_within(
 fn render(
     source: &str,
     stylesheet: &str,
-    as_media: Option<&str>,
+    as_media: Option<ReprType>,
     params: &BTreeMap<String, String>,
     modules: &modules::Modules,
-) -> Result<(String, String)> {
+) -> Result<(ReprType, String)> {
     // A refused construct stays the typed `InvalidArgument` it is; anything xrust refuses
     // is an `Endpoint` error.
     let compiled = compiled_for_modules(stylesheet, modules)?;
     parameters::validate(&compiled.parameters, params)?;
     // Explicit labels take precedence; otherwise use the method resolved from the result
     // tree by the same run that serializes it (including the implicit HTML/XML choice).
-    let media = as_media.or(compiled.output_media_type.as_deref());
     // Keep the existing text/plain label behavior, and always serialize method="text"
     // as text even when its label is a more specific media type, such as N-Triples.
     let text_output = compiled.output_method() == Some("text")
-        || as_media.is_some_and(|m| m.split(';').next().unwrap_or(m).trim() == "text/plain");
+        || as_media
+            .as_ref()
+            .is_some_and(|m| m.media_type.eq_ignore_ascii_case("text/plain"));
+    let media = match as_media {
+        Some(media) => Some(media),
+        None => compiled
+            .output_media_type
+            .as_deref()
+            .map(|media| output_contract::media_type(media, "stylesheet"))
+            .transpose()?,
+    };
     let (out, implied_media) = compiled.run_with_parameters(source, text_output, params)?;
-    Ok((media.unwrap_or(implied_media).to_string(), out))
+    let media =
+        media.unwrap_or_else(|| ReprType::new(implied_media).with_param("charset", "utf-8"));
+    Ok((media, out))
 }
 
 /// An error as the plain-string API spells it: an `Endpoint` error is its message alone (as
@@ -866,6 +877,12 @@ fn parse_xml(s: &str) -> std::result::Result<IdNode, XsltError> {
         }),
     )?;
     Ok(doc)
+}
+
+fn is_xml_whitespace(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
 }
 
 #[cfg(test)]

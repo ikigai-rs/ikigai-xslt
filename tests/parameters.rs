@@ -287,3 +287,41 @@ fn defaults_keep_namespaces_declared_on_the_parameter() {
     let repr = futures::executor::block_on(kernel.issue(req, &Capability::root())).unwrap();
     assert_eq!(String::from_utf8(repr.bytes).unwrap(), "Default title");
 }
+
+#[test]
+fn a_parameter_cannot_have_both_select_and_default_content() {
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    let style = STYLE.replace(
+        "<xsl:param name=\"feed\" select=\"'default feed'\"/>",
+        "<xsl:param name=\"feed\" select=\"'default feed'\">other default</xsl:param>",
+    );
+    let result = issue(&kernel, &style, &[]);
+    assert!(
+        matches!(&result, Err(Error::InvalidArgument { name, detail })
+        if name == "stylesheet" && detail.contains("select") && detail.contains("content")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_omitted_parameter_without_a_default_is_an_empty_string() {
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
+      <xsl:output method="text"/>
+      <xsl:param name="empty"/>
+      <xsl:template match="/"><xsl:value-of select="$empty = ''"/></xsl:template>
+    </xsl:stylesheet>"#;
+    assert_eq!(issue(&kernel, style, &[]).unwrap(), "true");
+}
+
+#[test]
+#[ignore = "content defaults need a result tree fragment constructor"]
+fn a_content_default_is_one_result_tree_fragment() {
+    let kernel = Kernel::new(Arc::new(ikigai_xslt::space()));
+    let style = r#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
+      <xsl:output method="text"/>
+      <xsl:param name="p"><a>A</a><b>B</b></xsl:param>
+      <xsl:template match="/"><xsl:value-of select="$p"/></xsl:template>
+    </xsl:stylesheet>"#;
+    assert_eq!(issue(&kernel, style, &[]).unwrap(), "AB");
+}

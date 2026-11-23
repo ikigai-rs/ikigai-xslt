@@ -8,7 +8,7 @@ use ikigai_core::{Error, Result};
 use qualname::{NamespaceUri, NcName, QName};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use xrust::item::{Item, Node};
+use xrust::item::{Item, Node, NodeType};
 use xrust::transform::context::Context;
 use xrust::value::Value;
 use xrust::xdmerror::Error as XsltError;
@@ -59,15 +59,42 @@ pub(crate) fn prepare(doc: &IdNode) -> Result<Vec<Parameter>> {
                 detail: format!("duplicate top-level xsl:param `{name}`"),
             });
         }
+        let has_content = has_default_content(&param);
+        if has_content
+            && param
+                .get_attribute_node(&QName::try_from("select").unwrap())
+                .is_some()
+        {
+            return Err(Error::InvalidArgument {
+                name: "stylesheet".into(),
+                detail: format!("top-level xsl:param `{name}` has both select and default content; specify only one"),
+            });
+        }
         let parameter = Parameter {
             name,
             supplied: format!("{private}{}s", parameters.len()),
             value: format!("{private}{}v", parameters.len()),
         };
-        adapt(&mut param, &parameter).map_err(|e| Error::Endpoint(e.message))?;
+        adapt(&mut param, &parameter, has_content).map_err(|e| Error::Endpoint(e.message))?;
         parameters.push(parameter);
     }
     Ok(parameters)
+}
+
+fn has_default_content(param: &IdNode) -> bool {
+    let space = QName::new_from_parts(
+        NcName::try_from("space").unwrap(),
+        Some(NamespaceUri::try_from("http://www.w3.org/XML/1998/namespace").unwrap()),
+    );
+    let preserve_space = std::iter::once(param.clone())
+        .chain(param.ancestor_iter())
+        .find_map(|node| node.get_attribute_node(&space))
+        .is_some_and(|attr| attr.value().to_string().eq_ignore_ascii_case("preserve"));
+    param.child_iter().any(|child| match child.node_type() {
+        NodeType::Text => preserve_space || !crate::is_xml_whitespace(&child.to_string()),
+        NodeType::Comment | NodeType::ProcessingInstruction => false,
+        _ => true,
+    })
 }
 
 fn element(doc: &IdNode, local: &str) -> std::result::Result<IdNode, XsltError> {
@@ -83,7 +110,11 @@ fn attribute(node: &IdNode, name: &str, value: &str) -> std::result::Result<(), 
     )
 }
 
-fn adapt(param: &mut IdNode, binding: &Parameter) -> std::result::Result<(), XsltError> {
+fn adapt(
+    param: &mut IdNode,
+    binding: &Parameter,
+    has_content: bool,
+) -> std::result::Result<(), XsltError> {
     let mut variable = element(param, "variable")?;
     for ns in param.namespace_iter() {
         variable.add_namespace(ns.deep_copy()?)?;
@@ -108,10 +139,14 @@ fn adapt(param: &mut IdNode, binding: &Parameter) -> std::result::Result<(), Xsl
         let sequence = element(param, "sequence")?;
         attribute(&sequence, "select", &select.value().to_string())?;
         otherwise.push(sequence)?;
-    } else {
+    } else if has_content {
         for child in param.child_iter().collect::<Vec<_>>() {
             otherwise.push(child)?;
         }
+    } else {
+        let sequence = element(param, "sequence")?;
+        attribute(&sequence, "select", "''")?;
+        otherwise.push(sequence)?;
     }
     choose.push(otherwise)?;
     variable.push(choose)?;
