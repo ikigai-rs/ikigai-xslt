@@ -742,3 +742,26 @@ fn xslt_union_is_in_document_order_without_duplicate_nodes() {
         assert_eq!(transform_str("<doc><v>2</v><v>10</v></doc>", &style), format!("<out>{expected}</out>"));
     }
 }
+
+/// ikigai (ledger #4053): the compiled stylesheet (named templates, stylesheet variables and
+/// key declarations) is shared between the contexts each path step derives, not copied into
+/// each. What a named template sees must not change: called from inside nested paths, it
+/// still gets its parameters, the caller's focus, the stylesheet variables and the keys, and a
+/// local variable in one row does not leak into the next.
+#[test]
+fn xslt_named_template_from_nested_path_sees_its_scope() {
+    let style = stylesheet(
+        r#"<xsl:key name="byf" match="row" use="e/f"/>
+<xsl:variable name="g" select="'G'"/>
+<xsl:template match="/"><out><xsl:for-each select="doc/row"><xsl:variable name="v" select="a/b/c"/><xsl:call-template name="show"><xsl:with-param name="p" select="e/f"/><xsl:with-param name="q" select="$v"/></xsl:call-template></xsl:for-each></out></xsl:template>
+<xsl:template name="show"><xsl:param name="p"/><xsl:param name="q"/><r><xsl:value-of select="concat($g, ':', $p, ':', $q, ':', a/b/d, ':', key('byf', $p)/a/b/c)"/><xsl:call-template name="inner"><xsl:with-param name="p" select="concat($p, '!')"/></xsl:call-template></r></xsl:template>
+<xsl:template name="inner"><xsl:param name="p"/>[<xsl:value-of select="concat($p, $g, a/b/d)"/>]</xsl:template>"#,
+    );
+    assert_eq!(
+        transform_str(
+            "<doc><row><a><b><c>c0</c><d>d0</d></b></a><e><f>f0</f></e></row><row><a><b><c>c1</c><d>d1</d></b></a><e><f>f1</f></e></row></doc>",
+            &style
+        ),
+        "<out><r>G:f0:c0:d0:c0[f0!Gd0]</r><r>G:f1:c1:d1:c1[f1!Gd1]</r></out>"
+    );
+}

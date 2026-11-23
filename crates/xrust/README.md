@@ -1,4 +1,4 @@
-> **This is `ikigai-xrust` 2.3.0-ikigai.2, not xrust.** It is xrust 2.3.0, as published on
+> **This is `ikigai-xrust` 2.3.0-ikigai.3, not xrust.** It is xrust 2.3.0, as published on
 > crates.io, with the fixes below, carried by
 > [ikigai-xslt](https://github.com/ikigai-rs/ikigai-xslt) until a release of xrust includes
 > them. Each is drafted for upstream, as issue text and a patch, in that repository's
@@ -25,7 +25,12 @@
 >   bracket costs ~20 KiB of stack in release instead of ~150 KiB, and an XPath expression or
 >   pattern nesting brackets deeper than `parser::xpath::MAX_NESTING` (64) is refused with
 >   `LimitExceeded` by a scan before it is parsed; 2.3.0 overflowed the stack, aborting the
->   process (`src/parser/mod.rs`, `src/parser/xpath/mod.rs`, `src/pattern.rs`; #3702).
+>   process (`src/parser/mod.rs`, `src/parser/xpath/mod.rs`, `src/pattern.rs`; #3702);
+> - a path step shares the compiled stylesheet's named templates and functions, stylesheet
+>   variables and key declarations with the context it derives, copying them only when
+>   written; 2.3.0 deep-copied them all on every step, so a row cost ~28 µs more for each
+>   named template declared, called or not (`src/transform/context.rs`; 2.3.0-ikigai.3,
+>   ledger #4053).
 >
 > The public API adds `parser::xpath::MAX_NESTING`, and `ParserState` now dereferences to a
 > public `ParserStateFields` that holds its fields; nothing is removed. The library is still named `xrust`, so code that

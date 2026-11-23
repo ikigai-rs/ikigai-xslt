@@ -17,7 +17,7 @@
 [package]
 edition = "2024"
 name = "ikigai-xrust"
-version = "2.3.0-ikigai.2"
+version = "2.3.0-ikigai.3"
 authors = [
     "Steve Ball <Steve.Ball@explain.com.au>",
     "Daniel Murphy <daniel@devasta.ie>",
@@ -329,6 +329,12 @@ path = "tests/smite-xslt.rs"
 [[bench]]
 name = "bench_smite"
 path = "benches/bench_smite.rs"
+harness = false
+
+# ikigai (ledger #4053): what a path step costs as the stylesheet grows.
+[[bench]]
+name = "bench_context"
+path = "benches/bench_context.rs"
 harness = false
 
 [dependencies.chrono]
