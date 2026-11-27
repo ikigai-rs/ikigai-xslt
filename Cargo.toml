@@ -2,7 +2,7 @@
 name = "ikigai-xslt"
 # 0.4.1: request arguments reach declared top-level xsl:param values (ledger #2521); the core
 # floor rises to 0.2.5, where a reference argument is settled by the kernel (ledger #2511).
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -29,9 +29,10 @@ async-trait = "0.1"
 # removed `Context::populate_key_values` (`key()` now indexes lazily), made
 # `ParseError::MissingNameSpace` a struct variant, and moved to qualname 0.0.2. So nothing
 # below 2.3 compiles this crate, and every ikigai-xslt through 0.3.0 (`xrust = "2.1.0"`) stopped
-# building on a fresh resolve the day 2.3.0 shipped. ⚠ The caret admits a later 2.x, which may
-# break the same way: a fresh-resolve build is the only thing that would notice.
-xrust = "2.3.0"
+# building on a fresh resolve the day 2.3.0 shipped.
+# xrust 2.4.0 added required Node methods, changed the from_document callback type,
+# and removed StaticContextBuilder::fetcher (ledger #4475).
+xrust = ">=2.3.0, <2.4"
 # Only to NAME the types in xrust's `Node` trait, which `src/node_id.rs` implements (ledger
 # #1047): xrust does not re-export them. It must be the qualname xrust itself depends on — 0.0.1
 # for xrust 2.1 and 2.2, 0.0.2 for xrust 2.3 — and a `^0.0.2` pin is exactly `=0.0.2`. If a
