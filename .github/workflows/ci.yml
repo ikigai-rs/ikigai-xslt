@@ -11,3 +11,15 @@ jobs:
     with:
       wasm-lib: true
       wasm-features: module
+  # The xrust XML and XML ID conformance tests build only under their features, which the shared
+  # gates never enable, so a broken one went unnoticed (ledger #4478). Compile them on every PR.
+  xrust-conformance:
+    name: Compile xrust XML and XML ID conformance tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p ikigai-xrust --tests --features test-conformance-xml,test-conformance-xmlid
