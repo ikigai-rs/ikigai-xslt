@@ -10,11 +10,14 @@ These are split into multiple files so rust can compile and test in parallel.
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
 #[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::{ParseError, ParserStateBuilder, StaticStateBuilder, xml};
+use xrust::parser::{ParserStateBuilder, StaticStateBuilder, xml};
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::trees::smite::RNode;
 #[cfg(all(test, feature = "test-conformance-xml"))]
@@ -26,7 +29,7 @@ fn test_ibm_notwf(xmldoc: &str) {
     let parseresult = xml::parse(
         testxml,
         xmldoc,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_err());
@@ -1585,7 +1588,7 @@ fn ibmnotwf_p61ibm61n01xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1616,7 +1619,7 @@ fn ibmnotwf_p62ibm62n01xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1647,7 +1650,7 @@ fn ibmnotwf_p62ibm62n02xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1678,7 +1681,7 @@ fn ibmnotwf_p62ibm62n03xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1709,7 +1712,7 @@ fn ibmnotwf_p62ibm62n04xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1740,7 +1743,7 @@ fn ibmnotwf_p62ibm62n05xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1771,7 +1774,7 @@ fn ibmnotwf_p62ibm62n06xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1802,7 +1805,7 @@ fn ibmnotwf_p62ibm62n07xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1833,7 +1836,7 @@ fn ibmnotwf_p62ibm62n08xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1864,7 +1867,7 @@ fn ibmnotwf_p63ibm63n01xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1895,7 +1898,7 @@ fn ibmnotwf_p63ibm63n02xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1926,7 +1929,7 @@ fn ibmnotwf_p63ibm63n03xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -1957,7 +1960,7 @@ fn ibmnotwf_p63ibm63n04xml() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();

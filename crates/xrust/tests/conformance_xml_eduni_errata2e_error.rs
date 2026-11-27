@@ -5,11 +5,12 @@ Richard Tobin's XML 1.0 2nd edition errata test suite.
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
-#[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::ParseError;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::parser::xml;
 #[cfg(all(test, feature = "test-conformance-xml"))]
@@ -21,7 +22,7 @@ fn test_eduni_errata2e_error(xmldoc: &str) {
     let parseresult = xml::parse(
         testxml,
         xmldoc,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_err());

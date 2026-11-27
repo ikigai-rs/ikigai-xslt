@@ -5,11 +5,14 @@ OASIS/NIST test cases
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
 #[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::{ParseError, xml};
+use xrust::parser::xml;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::trees::smite::RNode;
 
@@ -33,7 +36,7 @@ fn op11pass1() {
         fs::read_to_string("tests/conformance/xml/xmlconf/oasis/p11pass1.xml")
             .unwrap()
             .as_str(),
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_ok());

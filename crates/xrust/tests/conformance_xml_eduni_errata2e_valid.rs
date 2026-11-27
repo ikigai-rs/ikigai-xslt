@@ -5,11 +5,14 @@ Richard Tobin's XML 1.0 2nd edition errata test suite.
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
 #[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::{ParseError, ParserStateBuilder, StaticStateBuilder, xml};
+use xrust::parser::{ParserStateBuilder, StaticStateBuilder, xml};
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::trees::smite::RNode;
 #[cfg(all(test, feature = "test-conformance-xml"))]
@@ -21,7 +24,7 @@ use xrust::{Error, ErrorKind};
 fn test_eduni_errata2e_valid(xmldoc: &str, xmlcanondoc: Option<&str>) {
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -40,7 +43,7 @@ fn test_eduni_errata2e_valid(xmldoc: &str, xmlcanondoc: Option<&str>) {
         let canonicalparseresult = xml::parse(
             canonicalxml,
             xmlcanondoc.unwrap(),
-            Some(|_: &_| Err(ParseError::MissingNameSpace)),
+            Some(|p: &_| Err(namespace::missing(p))),
         );
         assert!(canonicalparseresult.is_ok());
         assert_eq!(doc.get_canonical().unwrap(), canonicalparseresult.unwrap());

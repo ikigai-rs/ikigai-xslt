@@ -1,11 +1,14 @@
 #[cfg(all(test, feature = "test-conformance-xmlid"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xmlid"))]
 use qualname::{NamespaceMap, NamespacePrefix};
 #[cfg(all(test, feature = "test-conformance-xmlid"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xmlid"))]
 use xrust::item::{Node, NodeType};
 #[cfg(all(test, feature = "test-conformance-xmlid"))]
-use xrust::parser::{ParseError, xml};
+use xrust::parser::xml;
 #[cfg(all(test, feature = "test-conformance-xmlid"))]
 use xrust::trees::smite::RNode;
 
@@ -34,7 +37,7 @@ fn normal_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -70,7 +73,7 @@ fn undecl_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -106,7 +109,7 @@ fn declar_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -142,7 +145,7 @@ fn declar_002() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -178,7 +181,7 @@ fn baddcl_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -203,7 +206,7 @@ fn dupdup_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -232,7 +235,7 @@ fn baddcl_002() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -257,7 +260,7 @@ fn dupdup_002() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -282,7 +285,7 @@ fn okchar_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -319,7 +322,7 @@ fn okchar_002() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -355,7 +358,7 @@ fn xref_001() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -380,7 +383,7 @@ fn normal_002() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 
@@ -417,7 +420,7 @@ fn normal_003() {
             .as_str(),
         Some(|p: &NamespacePrefix| {
             nm.namespace_uri(&Some(p.clone()))
-                .ok_or(ParseError::MissingNameSpace)
+                .ok_or_else(|| namespace::missing(p))
         }),
     );
 

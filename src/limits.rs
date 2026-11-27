@@ -846,8 +846,12 @@ mod pool {
     }
 
     /// A transient refusal when too many abandoned transforms are still running (ledger #1040).
-    fn refuse_if_overdue() -> Result<()> {
+    fn refuse_if_overdue(#[cfg(test)] isolated: Option<&TestAdmission>) -> Result<()> {
         let (running, most) = (overdue(), max_overdue_transforms());
+        #[cfg(test)]
+        let (running, most) = isolated.map_or((running, most), |admission| {
+            (admission.overdue.load(Ordering::SeqCst), admission.cap)
+        });
         if running >= most {
             return Err(Error::Unavailable(format!(
                 "Retry shortly. {running} XSLT transforms are still running after their callers' \
@@ -862,7 +866,11 @@ mod pool {
 
     /// Wrap `work` as a job, with the state its caller and its worker share and the channel
     /// its outcome comes back on. `on_panic` runs on the worker after `work` panicked.
-    fn wrap<T, F>(work: F, on_panic: Option<fn()>) -> (Job, Arc<Mutex<State>>, Receiver<Outcome<T>>)
+    fn wrap<T, F>(
+        work: F,
+        on_panic: Option<fn()>,
+        #[cfg(test)] isolated: Option<&'static TestAdmission>,
+    ) -> (Job, Arc<Mutex<State>>, Receiver<Outcome<T>>)
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
@@ -891,7 +899,10 @@ mod pool {
             };
             if abandoned {
                 // Uncounted only now that it has actually finished.
-                OVERDUE.fetch_sub(1, Ordering::SeqCst);
+                let counter = &OVERDUE;
+                #[cfg(test)]
+                let counter = isolated.map_or(counter, |admission| &admission.overdue);
+                counter.fetch_sub(1, Ordering::SeqCst);
                 return false;
             }
             let reusable = outcome.is_ok();
@@ -913,6 +924,7 @@ mod pool {
         state: &Mutex<State>,
         reply: &Receiver<Outcome<T>>,
         overdue_hook: impl FnOnce(),
+        #[cfg(test)] isolated: Option<&TestAdmission>,
     ) -> Result<Outcome<T>> {
         let lost = || Error::Unavailable("the XSLT thread exited without an answer".to_string());
         let Some(budget) = budget else {
@@ -932,7 +944,10 @@ mod pool {
                 match was {
                     State::Queued => Err(timeout(budget)),
                     State::Running => {
-                        OVERDUE.fetch_add(1, Ordering::SeqCst);
+                        let counter = &OVERDUE;
+                        #[cfg(test)]
+                        let counter = isolated.map_or(counter, |admission| &admission.overdue);
+                        counter.fetch_add(1, Ordering::SeqCst);
                         overdue_hook();
                         Err(timeout(budget))
                     }
@@ -989,9 +1004,17 @@ mod pool {
         F: FnOnce() -> T + Send + 'static,
     {
         if budget.is_some() {
-            refuse_if_overdue()?;
+            refuse_if_overdue(
+                #[cfg(test)]
+                None,
+            )?;
         }
-        let (mut job, state, reply) = wrap(work, None);
+        let (mut job, state, reply) = wrap(
+            work,
+            None,
+            #[cfg(test)]
+            None,
+        );
         // An idle thread can have exited (its queue then refuses the job and hands it back);
         // fall through to a fresh one rather than fail the call.
         let worker = loop {
@@ -1010,7 +1033,14 @@ mod pool {
             }
         };
         // On a timeout `worker` drops when this returns, so the thread exits after this job.
-        let outcome = wait(budget, &state, &reply, || {})?;
+        let outcome = wait(
+            budget,
+            &state,
+            &reply,
+            || {},
+            #[cfg(test)]
+            None,
+        )?;
         if outcome.is_ok() {
             let mut idle = lock(&IDLE);
             if idle.len() < MAX_IDLE_THREADS {
@@ -1095,17 +1125,52 @@ mod pool {
     /// Stylesheet threads, most recently used first, at most [`MAX_STYLESHEET_THREADS`]. A
     /// value rather than only the one static so a test can have a set no other test touches.
     /// Lock order: this, then a home's queue; a home's thread takes only its queue.
-    pub(super) struct Homes(Mutex<Vec<Arc<Home>>>);
+    pub(super) struct Homes {
+        homes: Mutex<Vec<Arc<Home>>>,
+        #[cfg(test)]
+        isolated: Option<TestAdmission>,
+    }
+
+    #[cfg(test)]
+    struct TestAdmission {
+        overdue: AtomicUsize,
+        cap: usize,
+    }
 
     impl Homes {
         pub(super) const fn new() -> Self {
-            Homes(Mutex::new(Vec::new()))
+            Self {
+                homes: Mutex::new(Vec::new()),
+                #[cfg(test)]
+                isolated: None,
+            }
+        }
+
+        /// Keep deliberately overdue test work out of the process-wide admission count.
+        #[cfg(test)]
+        pub(super) const fn isolated(cap: usize) -> Self {
+            Self {
+                homes: Mutex::new(Vec::new()),
+                isolated: Some(TestAdmission {
+                    overdue: AtomicUsize::new(0),
+                    cap,
+                }),
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn overdue(&self) -> usize {
+            self.isolated
+                .as_ref()
+                .unwrap()
+                .overdue
+                .load(Ordering::SeqCst)
         }
 
         /// Queue `job` on `key`'s home, starting one (and retiring the least recently used
         /// past [`MAX_STYLESHEET_THREADS`]) if there is none.
         fn enqueue(&self, key: &str, job: Job) -> Result<Arc<Home>> {
-            Self::enqueue_in(&mut lock(&self.0), key, job)
+            Self::enqueue_in(&mut lock(&self.homes), key, job)
         }
 
         fn enqueue_in(homes: &mut Vec<Arc<Home>>, key: &str, job: Job) -> Result<Arc<Home>> {
@@ -1151,7 +1216,7 @@ mod pool {
         /// Done whether or not `home` is still listed: one already let go (evicted or
         /// released) is still draining its queue, and the calls in it should not wait either.
         fn rehome(&self, home: &Arc<Home>) {
-            let mut homes = lock(&self.0);
+            let mut homes = lock(&self.homes);
             if let Some(i) = homes.iter().position(|h| Arc::ptr_eq(h, home)) {
                 homes.remove(i);
             }
@@ -1164,7 +1229,7 @@ mod pool {
 
         /// Let every thread go: each finishes what it was given, then exits.
         pub(super) fn release(&self) {
-            for home in lock(&self.0).drain(..) {
+            for home in lock(&self.homes).drain(..) {
                 retire(&home, false);
             }
         }
@@ -1172,7 +1237,7 @@ mod pool {
         /// How many calls wait for `key`'s thread (not counting the one it is running).
         #[cfg(test)]
         pub(super) fn queued(&self, key: &str) -> usize {
-            lock(&self.0)
+            lock(&self.homes)
                 .iter()
                 .find(|h| &*h.key == key)
                 .map_or(0, |h| lock(&h.queue).jobs.len())
@@ -1191,11 +1256,26 @@ mod pool {
         F: FnOnce() -> T + Send + 'static,
     {
         if budget.is_some() {
-            refuse_if_overdue()?;
+            refuse_if_overdue(
+                #[cfg(test)]
+                homes.isolated.as_ref(),
+            )?;
         }
-        let (job, state, reply) = wrap(work, Some(reset));
+        let (job, state, reply) = wrap(
+            work,
+            Some(reset),
+            #[cfg(test)]
+            homes.isolated.as_ref(),
+        );
         let home = homes.enqueue(key, job)?;
-        let outcome = wait(budget, &state, &reply, || homes.rehome(&home))?;
+        let outcome = wait(
+            budget,
+            &state,
+            &reply,
+            || homes.rehome(&home),
+            #[cfg(test)]
+            homes.isolated.as_ref(),
+        )?;
         answer(outcome)
     }
 }
@@ -1343,8 +1423,8 @@ mod tests {
         assert_eq!(on_xslt_stack(|| 3).unwrap(), 3);
     }
 
-    /// The stylesheet threads (ledger #2826), on a set of their own so no other test's
-    /// stylesheets can evict these mid-test.
+    /// Exercise a private set of stylesheet threads and a one-job overdue cap without
+    /// evicting other tests' stylesheets or refusing their work.
     #[test]
     fn a_stylesheet_thread_runs_its_calls_in_turn_and_drops_what_nobody_waits_for() {
         use super::pool::{run_keyed, Homes};
@@ -1353,7 +1433,7 @@ mod tests {
         use std::thread::{self, JoinHandle, ThreadId};
         use std::time::Instant;
 
-        static HOMES: Homes = Homes::new();
+        static HOMES: Homes = Homes::isolated(1);
         static RESETS: AtomicUsize = AtomicUsize::new(0);
         fn reset() {
             RESETS.fetch_add(1, SeqCst);
@@ -1424,7 +1504,7 @@ mod tests {
         assert!(matches!(late, Err(Error::Timeout(_))), "{late:?}");
         assert!(start.elapsed() < Duration::from_millis(500));
         assert_eq!(
-            overdue_transforms(),
+            HOMES.overdue(),
             0,
             "a call that never started is not overdue"
         );
@@ -1439,10 +1519,12 @@ mod tests {
         //    to a new thread rather than wait for it.
         let (started, raised) = flag();
         let (tx, rx) = mpsc::channel();
+        let (finish, released) = mpsc::channel();
         let overdue = call("three", Duration::from_millis(300), move || {
             tx.send(me()).unwrap();
             raised.store(true, SeqCst);
-            thread::sleep(Duration::from_millis(2000));
+            // Hold the overdue call until the admission checks have run.
+            let _ = released.recv_timeout(Duration::from_secs(10));
         });
         until("the overdue call to start", || started.load(SeqCst));
         let start = Instant::now();
@@ -1456,8 +1538,15 @@ mod tests {
         );
         assert_ne!(moved, rx.recv().unwrap(), "it ran on a new thread");
         assert!(matches!(overdue.join().unwrap(), Err(Error::Timeout(_))));
-        assert_eq!(overdue_transforms(), 1);
-        until("the overdue work to finish", || overdue_transforms() == 0);
+        assert_eq!(HOMES.overdue(), 1);
+        assert!(matches!(
+            run_keyed(&HOMES, "three", Some(long), reset, me),
+            Err(Error::Unavailable(m)) if m.contains("still running")
+        ));
+        assert_eq!(overdue_transforms(), 0);
+        assert_eq!(on_xslt_stack_within(long, || 42).unwrap(), 42);
+        finish.send(()).unwrap();
+        until("the overdue work to finish", || HOMES.overdue() == 0);
 
         // 4. A panic is answered; the thread stays, forgets its compile (`reset`), and runs the
         //    call queued behind it.
