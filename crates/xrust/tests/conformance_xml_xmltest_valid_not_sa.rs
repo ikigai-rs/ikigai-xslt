@@ -8,11 +8,14 @@ James Clark XMLTEST cases - Standalone
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
 #[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::{ParseError, ParserStateBuilder, StaticStateBuilder, xml};
+use xrust::parser::{ParserStateBuilder, StaticStateBuilder, xml};
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::trees::smite::RNode;
 #[cfg(all(test, feature = "test-conformance-xml"))]
@@ -24,7 +27,7 @@ use xrust::{Error, ErrorKind};
 fn test_xmltest_valid_not_sa(xmldoc: &str, xmlcanondoc: &str) {
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -38,7 +41,7 @@ fn test_xmltest_valid_not_sa(xmldoc: &str, xmlcanondoc: &str) {
     let canonicalparseresult = xml::parse(
         canonicalxml,
         xmlcanondoc,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_ok());

@@ -9,11 +9,14 @@ James Clark XMLTEST cases - Standalone
 */
 
 #[cfg(all(test, feature = "test-conformance-xml"))]
+#[path = "support/namespace.rs"]
+mod namespace;
+#[cfg(all(test, feature = "test-conformance-xml"))]
 use std::fs;
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::item::Node;
 #[cfg(all(test, feature = "test-conformance-xml"))]
-use xrust::parser::{ParseError, ParserStateBuilder, StaticStateBuilder, xml};
+use xrust::parser::{ParserStateBuilder, StaticStateBuilder, xml};
 #[cfg(all(test, feature = "test-conformance-xml"))]
 use xrust::trees::smite::RNode;
 #[cfg(all(test, feature = "test-conformance-xml"))]
@@ -34,13 +37,13 @@ fn test_xmltest_valid_sa(xmldoc: &str, xmlcanondoc: &str) {
     let parseresult = xml::parse(
         testxml,
         xmldoc,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
     let canonicalxml = RNode::new_document();
     let canonicalparseresult = xml::parse(
         canonicalxml.clone(),
         xmlcanondoc,
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_ok());
@@ -2083,7 +2086,7 @@ fn validsa097() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -2104,7 +2107,7 @@ fn validsa097() {
         fs::read_to_string("tests/conformance/xml/xmlconf/xmltest/valid/sa/out/097.xml")
             .unwrap()
             .as_str(),
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_ok());
@@ -2171,7 +2174,7 @@ fn validsa100() {
 
     let ss = StaticStateBuilder::new()
         .dtd_resolver(dtdfileresolve())
-        .namespace(|_: &_| Err(ParseError::MissingNameSpace))
+        .namespace(|p: &_| Err(namespace::missing(p)))
         .build();
 
     let testxml = RNode::new_document();
@@ -2192,7 +2195,7 @@ fn validsa100() {
         fs::read_to_string("tests/conformance/xml/xmlconf/xmltest/valid/sa/out/100.xml")
             .unwrap()
             .as_str(),
-        Some(|_: &_| Err(ParseError::MissingNameSpace)),
+        Some(|p: &_| Err(namespace::missing(p))),
     );
 
     assert!(parseresult.is_ok());
